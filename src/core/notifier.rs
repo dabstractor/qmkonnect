@@ -43,7 +43,8 @@ static NOTIFIER: Lazy<Arc<Mutex<Box<dyn Notifier>>>> =
 static DEBOUNCER: Lazy<Arc<Mutex<DebounceState>>> = Lazy::new(|| {
     Arc::new(Mutex::new(DebounceState {
         last_message: None,
-        last_activity: Instant::now(),
+        last_sent_time: Instant::now(),
+        debounce_window_start: None,
         timer_running: false,
     }))
 });
@@ -62,7 +63,8 @@ pub fn set_notifier(notifier: Box<dyn Notifier>) {
 
 struct DebounceState {
     last_message: Option<String>,
-    last_activity: Instant,
+    last_sent_time: Instant,
+    debounce_window_start: Option<Instant>,
     timer_running: bool,
 }
 
@@ -85,9 +87,9 @@ pub fn notify_qmk(
     let should_send_now = {
         let mut state = debouncer.lock().unwrap();
         let now = Instant::now();
-        let elapsed = now.duration_since(state.last_activity);
+        let elapsed = now.duration_since(state.last_sent_time);
 
-        // Check if this is the first message before updating state
+        // Check if this is the first message or if debounce window has expired
         let is_first_message = state.last_message.is_none();
 
         #[cfg(test)]
@@ -95,12 +97,6 @@ pub fn notify_qmk(
             "is_first_message: {}, elapsed: {:?}",
             is_first_message, elapsed
         );
-
-        // Update activity timestamp
-        state.last_activity = now;
-
-        // Store the latest message
-        state.last_message = Some(message.clone());
 
         // Determine if we should send immediately
         // For tests, use a slightly higher threshold to avoid timing issues
@@ -111,9 +107,22 @@ pub fn notify_qmk(
         #[cfg(not(test))]
         let should_send_now = elapsed > DEBOUNCE_INTERVAL || is_first_message;
 
-        // Start the timer thread if not already running
+        // Store the latest message (always store for potential debounced send)
+        state.last_message = Some(message.clone());
+
+        // If sending now, update last_sent_time and start a new debounce window
+        if should_send_now {
+            state.last_sent_time = now;
+            state.debounce_window_start = Some(now);
+        }
+
+        // Start the timer thread if not already running and we're not sending immediately
         if !state.timer_running && !should_send_now {
             state.timer_running = true;
+            // If we don't have a debounce window start time, set it now
+            if state.debounce_window_start.is_none() {
+                state.debounce_window_start = Some(now);
+            }
             let debouncer_clone = Arc::clone(&debouncer);
             let notifier_clone = get_notifier();
             thread::spawn(move || debounce_timer(debouncer_clone, notifier_clone));
@@ -150,13 +159,20 @@ fn debounce_timer(debouncer: Arc<Mutex<DebounceState>>, notifier: Arc<Mutex<Box<
         let (should_exit, message_to_send, verbose_mode) = {
             let mut state = debouncer.lock().unwrap();
             let now = Instant::now();
-            let elapsed = now.duration_since(state.last_activity);
+            
+            // Check if debounce window has expired
+            let should_send = if let Some(window_start) = state.debounce_window_start {
+                now.duration_since(window_start) >= DEBOUNCE_INTERVAL
+            } else {
+                false // No window started, shouldn't happen but handle gracefully
+            };
 
-            // If 100ms have passed without activity, send the last message
-            if elapsed >= Duration::from_millis(100) {
+            if should_send {
                 let message = state.last_message.clone();
                 state.last_message = None;
                 state.timer_running = false;
+                state.debounce_window_start = None; // Reset the debounce window
+                state.last_sent_time = now; // Update last sent time
                 (true, message, false) // Exit after sending
             } else {
                 (false, None, false) // Continue waiting
@@ -240,19 +256,24 @@ mod tests {
 
     // Reset test state between tests
     fn reset_test_state() {
+        // Wait for any ongoing timers to finish first
+        thread::sleep(Duration::from_millis(300));
+        
         // Reset the debouncer
         let mut state = DEBOUNCER.lock().unwrap();
         *state = DebounceState {
             last_message: None,
-            last_activity: Instant::now(),
+            last_sent_time: Instant::now(),
+            debounce_window_start: None,
             timer_running: false,
         };
+        drop(state); // Release the lock
 
         // Reset the global mock
         reset_global_mock();
 
-        // Make sure any ongoing threads finish
-        thread::sleep(Duration::from_millis(300));
+        // Additional wait to ensure cleanup is complete
+        thread::sleep(Duration::from_millis(100));
     }
 
     #[test]
