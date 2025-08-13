@@ -1,5 +1,5 @@
 ---
-layout: page
+layout: default
 icon: fas fa-play
 order: 4
 ---

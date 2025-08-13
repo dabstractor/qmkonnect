@@ -1,5 +1,5 @@
 ---
-layout: page
+layout: default
 icon: fas fa-cog
 order: 3
 ---

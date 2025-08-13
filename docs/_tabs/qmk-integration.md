@@ -1,5 +1,5 @@
 ---
-layout: page
+layout: default
 icon: fas fa-keyboard
 order: 5
 ---

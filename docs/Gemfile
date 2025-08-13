@@ -1,11 +1,15 @@
 source 'https://rubygems.org'
 
-gem "jekyll", "~> 4.4.1"
-gem "jekyll-theme-chirpy", "~> 7.2"
+# Use GitHub Pages gem for compatibility
+gem "github-pages", group: :jekyll_plugins
 
-# Chirpy dependencies
-gem "html-proofer", "~> 5.0", group: :test
-
-# Standard gems
+# Required gems for Ruby 3.4
 gem "erb"
-gem "logger"
+
+# Standard Jekyll plugins
+gem "jekyll-feed"
+gem "jekyll-sitemap"
+gem "jekyll-remote-theme"
+
+# Fix Faraday warnings
+gem "faraday-retry"

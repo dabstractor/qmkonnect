@@ -1,233 +1,122 @@
 ---
-title: Usage
 layout: default
-nav_order: 4
+title: Usage
+permalink: /usage/
 ---
 
 # Usage Guide
 
-Learn how to use QMKonnect across different platforms.
+QMKonnect runs in the background, automatically detecting window changes and communicating with your QMK keyboard. Here's how to start, stop, and manage the application.
 
-## Basic Operation
-
-QMKonnect runs in the background, detecting window changes and talking to your QMK keyboard.
-
-### Starting QMKonnect
-
-#### Windows
-- **Automatic**: Starts with Windows if installed via MSI
-- **Manual**: Run "QMKonnect" from Start Menu or system tray
-
-#### Linux
-- **Systemd Service**: `systemctl --user start qmkonnect`
-- **Manual**: `qmkonnect &`
-- **With Logging**: `qmkonnect -v`
-
-#### macOS
-- **Application**: Launch QMKonnect.app from Applications
-
-### Stopping QMKonnect
-
-#### Windows
-- Right-click system tray icon → "Quit"
-- Task Manager → End process
-
-#### Linux
-- `systemctl --user stop qmkonnect`
-- `pkill qmkonnect`
-
-#### macOS
-- Quit from application menu
-- Activity Monitor → Force Quit
-
-## Command Line Options (Linux Only)
-
-```bash
-qmkonnect [OPTIONS]
-
-Options:
-    -c, --config         Create a default configuration file
-    -r, --reload         Reload configuration from file
-    -v, --verbose        Enable verbose logging
-    -h, --help          Show help information
-    -V, --version       Show version information
-```
-
-Windows and macOS users interact with QMKonnect through the GUI only.
-
-## Window Detection
-
-QMKonnect monitors active window changes and extracts:
-
-- **Application Class**: The application identifier (e.g., "firefox", "code")
-- **Window Title**: The current window title (e.g., "README.md - Visual Studio Code")
-
-### Data Format
-
-Information is sent to your keyboard in this format:
-```
-{application_class}{GS}{window_title}
-```
-
-Where `{GS}` is the Group Separator character (ASCII 0x1D).
-
-### Examples
-
-| Application | Window Title | Sent Data |
-|-------------|--------------|-----------|
-| VS Code | `main.rs - qmkonnect` | `code{GS}main.rs - qmkonnect` |
-| Firefox | `GitHub - Mozilla Firefox` | `firefox{GS}GitHub - Mozilla Firefox` |
-| Terminal | `~/projects/qmkonnect` | `terminal{GS}~/projects/qmkonnect` |
-
-## Platform-Specific Features
+## Starting QMKonnect
 
 ### Windows
+- **Automatic startup**: If installed via MSI, starts automatically with Windows
+- **Manual start**: Find "QMKonnect" in Start Menu or double-click the desktop shortcut
+- **System tray**: Look for the QMKonnect icon in your system tray when running
 
-#### System Tray Integration
-- **Icon**: Shows QMKonnect status
-- **Right-click menu**:
-  - Show/Hide console
-  - Reload configuration
-  - View logs
-  - Quit application
+### Linux  
+- **Automatic startup**: `systemctl --user enable qmkonnect` (runs on login)
+- **Manual start**: `qmkonnect` or `systemctl --user start qmkonnect`
+- **Check status**: `systemctl --user status qmkonnect`
 
-#### Startup Behavior
-- Starts with Windows
-- Runs in background
-- Only runs one instance
+### macOS
+- **Manual start**: Launch QMKonnect.app from Applications folder
+- **Menu bar**: Look for the QMKonnect icon in your menu bar when running
 
-#### Logging
-- Windows Event Log integration
-- Console output (if enabled)
-- File logging (configurable)
+## Stopping QMKonnect
+
+### Windows
+Right-click the system tray icon and select "Quit"
 
 ### Linux
-
-#### Hyprland Integration
-QMKonnect integrates directly with Hyprland's event system:
-
 ```bash
-# Check Hyprland socket
-echo $HYPRLAND_INSTANCE_SIGNATURE
-
-# Monitor events manually
-socat -u UNIX-CONNECT:/tmp/hypr/$HYPRLAND_INSTANCE_SIGNATURE/.socket2.sock -
+systemctl --user stop qmkonnect
 ```
 
-**Note**: Only Hyprland is supported on Linux. Other window managers are not supported yet. Please contribute support for your window manager!
+### macOS  
+Quit from the menu bar icon or application menu
 
-#### Systemd Integration
+## Auto-Start on Boot
+
+### Windows
+Auto-start is automatically configured when using the MSI installer. To disable:
+1. Open Task Manager → Startup tab
+2. Find "QMKonnect" and disable it
+
+### Linux
 ```bash
-# Check service status
-systemctl --user status qmkonnect
-
-# View logs
-journalctl --user -u qmkonnect -f
-
-# Enable auto-start
+# Enable auto-start on login
 systemctl --user enable qmkonnect
+
+# Disable auto-start
+systemctl --user disable qmkonnect
 ```
 
 ### macOS
+1. System Preferences → Users & Groups → Login Items
+2. Add QMKonnect.app to start automatically
 
-#### Accessibility Permissions
-QMKonnect requires accessibility permissions to monitor windows:
+## How It Works
 
-1. System Preferences → Security & Privacy → Privacy
-2. Select "Accessibility" from the left panel
-3. Click the lock to make changes
-4. Add QMKonnect to the list of allowed applications
+Once running, QMKonnect automatically:
 
-#### Application Bundle
-The macOS version runs as an app bundle with:
-- Menu bar integration
-- Standard app lifecycle
-- System notification support
+1. **Monitors window changes** - detects when you switch between applications
+2. **Extracts window information** - gets the application name and window title  
+3. **Sends data to your keyboard** - your QMK firmware receives this information
+4. **Triggers layer changes** - your keyboard responds based on your configuration
 
-## Use Cases
+The magic happens in your QMK firmware configuration - QMKonnect just provides the window information your keyboard needs to make intelligent decisions.
 
-QMKonnect enables context-aware keyboard behavior by sending window information to your QMK keyboard. The actual layer switching and command execution is handled by your QMK firmware using the framework's macros.
+## System Integration
 
-Common use cases include:
-- **Development Environment**: Switch to coding layers when IDEs are active
-- **Gaming Setup**: Automatically enter gaming mode for games
-- **Media Control**: Activate media layers for music/video applications
-- **Browser Navigation**: Enable browser-specific shortcuts
-- **Terminal Commands**: Context-aware terminal shortcuts
+### Windows
+- **System tray integration**: Right-click the tray icon for settings and status
+- **Runs in background**: Minimal resource usage
+- **Auto-updates**: Receives automatic updates when available
 
-For implementation examples, see the [QMK Integration Guide]({{ site.baseurl }}/qmk-integration) and [Examples]({{ site.baseurl }}/examples).
+### Linux  
+- **Systemd service**: Integrates with your system's service management
+- **Hyprland support**: Currently supports Hyprland window manager only
+- **Lightweight**: Designed for minimal system impact
 
-## Monitoring and Debugging
+### macOS
+- **Menu bar integration**: Access settings and status from the menu bar
+- **Accessibility permissions**: Requires one-time setup for window monitoring
+- **Native app bundle**: Standard macOS application behavior
 
-### Verbose Mode
+## What QMKonnect Enables
 
-Run with verbose logging to see all activity:
+With QMKonnect running, your keyboard becomes context-aware:
 
-```bash
-qmkonnect -v
-```
+- **Development environments**: Automatically switch to coding-focused layouts when opening IDEs
+- **Gaming**: Enter gaming mode when launching games  
+- **Browser work**: Activate browser-specific shortcuts and layers
+- **Terminal usage**: Switch to terminal-optimized layouts
+- **Media control**: Enable media keys when using music/video applications
 
-Output includes:
-- Window change events
-- Application detection
-- Data sent to keyboard
-- Connection status
-- Error messages
+The behavior is entirely customized in your QMK firmware - QMKonnect just provides the window information your keyboard needs.
 
-### Debug Mode (Linux Only)
+## Status and Monitoring
 
-For detailed troubleshooting on Linux:
+### Check if QMKonnect is Running
 
-```bash
-qmkonnect --debug
-```
+- **Windows**: Look for the QMKonnect icon in your system tray
+- **Linux**: `systemctl --user status qmkonnect`
+- **macOS**: Look for the QMKonnect icon in your menu bar
 
-Shows:
-- Raw window data
-- Filtering decisions
-- Communication protocol details
-- Timing information
+### Verify Keyboard Connection
 
-### Log Files
+If your layers aren't switching as expected:
+1. Check that QMKonnect shows as "connected" in the system tray/menu bar
+2. Verify your QMK firmware is properly configured with the qmk-notifier module
+3. Test by switching between different applications
 
-On Linux, logs are available through systemd:
-
-```bash
-# View logs
-journalctl --user -u qmkonnect -f
-```
-
-Windows and macOS users can view logs through the system tray interface.
-
-## Troubleshooting
-
-### Common Issues
-
-1. **No window detection**:
-   - Check if QMKonnect is running
-   - Verify platform-specific permissions
-   - Test with `qmkonnect -v`
-
-2. **Keyboard not responding**:
-   - Verify keyboard configuration
-   - Check QMK firmware has notifier module
-   - Test connection with `qmkonnect --test-connection`
-
-3. **High CPU usage**:
-   - Increase polling interval
-   - Use application filtering
-   - Check for infinite loops in logs
-
-### Getting Help
-
-- Check the [troubleshooting guide]({{ site.baseurl }}/troubleshooting)
-- Review [GitHub issues](https://github.com/dabstractor/qmkonnect/issues)
-- Enable debug logging for detailed information
+For detailed troubleshooting, see the [troubleshooting guide]({{ site.baseurl }}/troubleshooting).
 
 ---
 
 ## Next Steps
 
-- [Set up QMK integration]({{ site.baseurl }}/qmk-integration)
-
+- [See real-world examples]({{ site.baseurl }}/examples)
 - [Learn about troubleshooting]({{ site.baseurl }}/troubleshooting)

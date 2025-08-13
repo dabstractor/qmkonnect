@@ -1,12 +1,12 @@
 ---
-title: Configuration
 layout: default
-nav_order: 3
+title: Configuration
+permalink: /configuration/
 ---
 
 # Configuration Guide
 
-QMKonnect requires only two configuration values: your keyboard's vendor ID and product ID. The configuration method varies by platform.
+This guide covers configuring QMKonnect to communicate with your keyboard. You only need to provide two values: your keyboard's vendor ID and product ID.
 
 ## Platform-Specific Configuration
 
@@ -162,48 +162,118 @@ product_id = 0x5678
 
 ## Validation
 
-To validate your configuration:
+After configuration, test that QMKonnect can detect your keyboard:
 
+### Windows & macOS
+Check the system tray/menu bar icon - it should show as connected.
+
+### Linux
 ```bash
 # Test with verbose output to see if keyboard is detected
 qmkonnect -v
 ```
 
-## Troubleshooting Configuration
+If you see "Keyboard detected" messages, you're ready to use QMKonnect.
 
-### Common Issues
+## Troubleshooting
 
-1. **Keyboard not detected**:
-   - Verify vendor_id and product_id are correct
-   - Check if keyboard supports Raw HID
-   - Ensure QMK firmware has the notifier module
+If your keyboard isn't detected:
 
-2. **Permission errors (Linux)**:
-   - Add user to appropriate groups: `sudo usermod -a -G input,plugdev $USER`
-   - Check udev rules are installed correctly
+1. **Double-check your vendor/product IDs** - they must match exactly
+2. **Verify Raw HID is enabled** in your QMK firmware 
+3. **Check permissions** (Linux users may need to be in `input` and `plugdev` groups)
 
-3. **Configuration not loading**:
-   - Verify file path and permissions
-   - Check TOML syntax with a validator
-   - Use `qmkonnect -v` to see detailed error messages
+For detailed troubleshooting steps, see the [troubleshooting guide]({{ site.baseurl }}/troubleshooting).
 
-### Debug Mode
+---
 
-Run with maximum verbosity to diagnose issues:
+## QMK Firmware Configuration
 
-```bash
-qmkonnect -v --debug
+Once QMKonnect can detect your keyboard, configure your QMK firmware to respond to window changes.
+
+The qmk-notifier framework provides two main configuration macros:
+
+### Layer Switching with DEFINE_SERIAL_LAYERS
+
+Automatically switch layers based on active windows:
+
+```c
+DEFINE_SERIAL_LAYERS({
+    // Basic application matching
+    { "*calculator*", _NUMPAD },
+    { "*chrome*", _BROWSER },
+    { "*terminal*", _TERMINAL },
+    
+    // Specific window title matching
+    { WT("*chrome*", "*jitsi*"), _JITSI },
+    { WT("alacritty", "terminal"), _TERMINAL },
+    
+    // Gaming applications
+    { "steam_app*", _GAMING },
+    { WT("cs2", "Counter-Strike 2"), _GAMING },
+});
 ```
 
-This will show:
-- Configuration file loading
-- Keyboard detection attempts
-- Window monitoring events
-- Communication with keyboard
+### Custom Commands with DEFINE_SERIAL_COMMANDS
+
+Execute custom functions based on window changes:
+
+```c
+DEFINE_SERIAL_COMMANDS({
+    // Disable vim mode for specific applications
+    { "neovide", &disable_vim_mode },
+    { "alacritty", &disable_vim_mode },
+    
+    // Multiple commands for AI chat interfaces
+    { WT("*chrome*", "*claude*"), &vim_insert, &disable_vim_mode },
+    { WT("*chrome*", "*chatgpt*"), &vim_insert, &disable_vim_mode },
+    
+    // Gaming applications
+    { WT("steam_app*", "*"), &disable_vim_mode },
+});
+```
+
+## Framework Elements
+
+### Available Macros
+
+- **`DEFINE_SERIAL_LAYERS`**: Maps window patterns to keyboard layers
+- **`DEFINE_SERIAL_COMMANDS`**: Maps window patterns to command functions  
+- **`WT(class, title)`**: Helper macro to match both window class and title
+- **Wildcard matching**: Use `*` for pattern matching (e.g., `"*chrome*"`)
+
+### Understanding Window Matching
+
+QMKonnect sends window information in this format:
+```
+{application_class}{GS}{window_title}
+```
+Where `{GS}` is the Group Separator character (ASCII 0x1D).
+
+Examples:
+- VS Code: `code{GS}main.rs - qmkonnect`
+- Firefox: `firefox{GS}GitHub - Mozilla Firefox`
+- Terminal: `terminal{GS}~/projects/qmkonnect`
+
+## Pattern Matching Examples
+
+```c
+// Match any calculator app
+{ "*calculator", _NUMPAD }
+
+// Match specific browser with specific site
+{ WT("*chrome*", "*jitsi*"), _JITSI }
+
+// Match terminal with specific title
+{ WT("alacritty", "terminal"), _TERMINAL }
+
+// Match any Steam game
+{ "steam_app*", _GAMING }
+```
 
 ---
 
 ## Next Steps
 
-- [Learn about QMK integration]({{ site.baseurl }}/qmk-integration)
-- [Explore usage examples]({{ site.baseurl }}/usage)
+- [Learn how to use QMKonnect]({{ site.baseurl }}/usage)
+- [See real-world examples]({{ site.baseurl }}/examples)

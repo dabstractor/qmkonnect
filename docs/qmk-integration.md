@@ -1,7 +1,7 @@
 ---
-title: QMK Integration
 layout: default
-nav_order: 5
+title: QMK Integration
+permalink: /qmk-integration/
 ---
 
 # QMK Integration Guide
@@ -54,168 +54,121 @@ In your `config.h`, ensure your keyboard has unique IDs:
 #define RAW_USAGE_ID   0x61
 ```
 
-## Correct Integration Method
+## Integration Steps
 
-The recommended way to integrate with QMKonnect uses the framework's macros:
+### Step 1: Add the QMK Notifier Module
 
-### keymap.c
+In your QMK keymap directory:
+
+```bash
+git submodule add https://github.com/dabstractor/qmk-notifier.git lib/qmk-notifier
+```
+
+### Step 2: Update rules.mk
+
+Add to your keymap's `rules.mk`:
+
+```make
+# Enable Raw HID support
+RAW_ENABLE = yes
+
+# Include the notifier module
+SRC += lib/qmk-notifier/qmk_notifier.c
+```
+
+### Step 3: Update config.h
+
+Add to your keymap's `config.h`:
+
+```c
+// Enable Raw HID
+#define RAW_USAGE_PAGE 0xFF60
+#define RAW_USAGE_ID   0x61
+```
+
+### Step 4: Basic keymap.c Setup
+
 ```c
 #include QMK_KEYBOARD_H
 #include "raw_hid.h"
 #include "./qmk-notifier/notifier.h"
 
+// Forward Raw HID data to the notifier
 void raw_hid_receive(uint8_t *data, uint8_t length) {
     hid_notify(data, length);
 }
 
+// Define your layers
 #define _QWERTY      0
-#define _NEOVIM      1
-#define _BROWSER     2
-#define _TERMINAL    3
-#define _JITSI       4
-#define _CLICKUP     5
-#define _MATTERHORN  6
-#define _INKSCAPE    7
-#define _GAMING      8
+#define _BROWSER     1
+#define _TERMINAL    2
+#define _GAMING      3
+// Add more layers as needed
 
 // Your keymap definitions here...
-
-DEFINE_SERIAL_COMMANDS({
-    { "neovide", &disable_vim_mode },
-    { "alacritty", &disable_vim_mode },
-    { "*iterm*", &disable_vim_mode },
-    { "*claude*", &vim_lazy_insert, &disable_vim_mode },
-    { WT("*chrome*", "*claude*"), &vim_insert, &disable_vim_mode },
-    { WT("*chrome*", "*chatgpt*"), &vim_insert, &disable_vim_mode },
-    { WT("*chrome*", "*deepseek*"), &vim_insert, &disable_vim_mode },
-    { WT("*chrome*", "*gemini*"), &vim_insert, &disable_vim_mode },
-    { WT("*brave*", "*claude*"), &vim_insert, &disable_vim_mode },
-    { WT("*brave*", "*chatgpt*"), &vim_insert, &disable_vim_mode },
-    { WT("*brave*", "*deepseek*"), &vim_insert, &disable_vim_mode },
-    { WT("*brave*", "gemini*"), &vim_insert, &disable_vim_mode },
-    { WT("*brave*", "*ai*studio*"), &vim_insert, &disable_vim_mode },
-    { WT("*", "*orderlands*"), &disable_vim_mode },
-    { WT("steam_app*", "*"), &disable_vim_mode },
-    { WT("cs2", "Counter-Strike 2"), &disable_vim_mode },
-});
-
-DEFINE_SERIAL_LAYERS({
-    { "*calculator", _NUMPAD },
-    { WT("*chrome*", "*jitsi*"), _JITSI },
-    { WT("alacritty", "terminal"), _TERMINAL },
-    { WT("alacritty", "alacritty"), _TERMINAL },
-    { "*iterm*", _TERMINAL },
-    { WT("*alacritty*", "*matterhorn*"), _MATTERHORN },
-    { "*chrome*", _BROWSER },
-    { "*brave*", _BROWSER },
-    { WT("org.gnome.Nautilus", "*"), _BROWSER },
-    { "inkscape", _INKSCAPE },
-    { WT("steam_app*", "*"), _GAMING },
-});
-
+const uint16_t PROGMEM keymaps[][MATRIX_ROWS][MATRIX_COLS] = {
+    // Your layer definitions
+};
 ```
 
-## Framework Elements
+## Configuring Window-Based Behavior
 
-The framework provides these essential macros and helpers:
+With the qmk-notifier module integrated, you can configure how your keyboard responds to window changes.
 
-- **`DEFINE_SERIAL_LAYERS`**: Maps window patterns to keyboard layers
-- **`DEFINE_SERIAL_COMMANDS`**: Maps window patterns to command functions  
-- **`WT(class, title)`**: Helper macro to match both window class and title
-- **Wildcard matching**: Use `*` for pattern matching (e.g., `"*chrome*"`)
+For detailed configuration of the `DEFINE_SERIAL_LAYERS` and `DEFINE_SERIAL_COMMANDS` macros, see the [Configuration Guide]({{ site.baseurl }}/configuration#qmk-firmware-configuration).
 
-## Pattern Matching Examples
+## Compiling Your Firmware
 
-```c
-// Match any calculator app
-{ "*calculator", _NUMPAD }
+After adding the qmk-notifier integration:
 
-// Match specific browser with specific site
-{ WT("*chrome*", "*jitsi*"), _JITSI }
+```bash
+# In your QMK firmware directory
+qmk compile -kb your_keyboard -km your_keymap
 
-// Match terminal with specific title
-{ WT("alacritty", "terminal"), _TERMINAL }
-
-// Match any Steam game
-{ "steam_app*", _GAMING }
-
-// Match specific game by both class and title
-{ WT("cs2", "Counter-Strike 2"), _GAMING }
+# Flash to keyboard
+qmk flash -kb your_keyboard -km your_keymap
 ```
 
 ## Testing Your Integration
 
-### 1. Verify Raw HID
+### Basic Verification
 
-```bash
-# Test if keyboard accepts Raw HID
-qmkonnect --test-connection
-```
+1. **Compile and flash** your firmware with the integration
+2. **Install and configure** QMKonnect with your keyboard's vendor/product IDs
+3. **Test communication** by switching between different applications
 
-### 2. Debug Mode
+### Debug Output
 
-```bash
-# See what data is being sent
-qmkonnect --debug
-```
-
-### 3. QMK Console
-
-Enable console output in your QMK firmware:
+Add console output to your keymap for debugging:
 
 ```c
 #ifdef CONSOLE_ENABLE
 void qmk_notifier_notify(const char* app_class, const char* window_title) {
     printf("App: %s, Title: %s\n", app_class, window_title);
-    // Your handling code here
+    // Your layer switching logic here
 }
 #endif
 ```
 
-## Troubleshooting
-
-### Common Issues
-
-1. **No communication with keyboard**:
-   - Verify Raw HID is enabled in `rules.mk`
-   - Check vendor/product IDs match
-   - Ensure qmk-notifier module is included
-
-2. **Notifications not received**:
-   - Verify `qmk_notifier_notify()` function is implemented
-   - Check QMK console output
-   - Test with simple debug prints
-
-3. **Layer switching not working**:
-   - Verify layer definitions
-   - Check layer switching logic
-   - Use `layer_state_set_user()` for debugging
-
-### Debug Tips
-
-```c
-// Add debug output to your keymap
-void qmk_notifier_notify(const char* app_class, const char* window_title) {
-    #ifdef CONSOLE_ENABLE
-    printf("Received: app='%s', title='%s'\n", app_class, window_title);
-    printf("Current layer: %d\n", get_highest_layer(layer_state));
-    #endif
-    
-    // Your notification handling
-}
+Then monitor QMK console output:
+```bash
+qmk console
 ```
 
-## Performance Considerations
+## Common Issues
 
-- Keep notification handlers lightweight
-- Avoid blocking operations in callbacks
-- Use layer overlays instead of full layer switches when possible
-- Cache frequently used strings to avoid repeated comparisons
+If your integration isn't working:
+
+1. **No communication**: Check that Raw HID is enabled and vendor/product IDs match
+2. **No layer switching**: Verify your layer definitions and DEFINE_SERIAL_LAYERS syntax  
+3. **Compilation errors**: Ensure qmk-notifier submodule is properly added and SRC is updated
+
+For detailed troubleshooting, see the [troubleshooting guide]({{ site.baseurl }}/troubleshooting).
 
 ---
 
 ## Next Steps
 
-- [Learn about troubleshooting]({{ site.baseurl }}/troubleshooting)
-- [Check out example configurations]({{ site.baseurl }}/examples)
-- [Contribute to the project](https://github.com/dabstractor/qmkonnect)
+- [Configure QMKonnect with your keyboard IDs]({{ site.baseurl }}/configuration)
+- [Learn how to use QMKonnect]({{ site.baseurl }}/usage)
+- [See real-world examples]({{ site.baseurl }}/examples)

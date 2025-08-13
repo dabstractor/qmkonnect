@@ -2,6 +2,8 @@
 
 Detects window changes and tells your QMK keyboard what app you're using so it can switch layers automatically.
 
+*📖 [Complete documentation](docs/llms_full.txt) - All guides in one comprehensive file*
+
 ## Overview
 
 QMKonnect watches which window is active and sends that info to your QMK keyboard. Your keyboard can then switch layers or run commands based on what app you're using.

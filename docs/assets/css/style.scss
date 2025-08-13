@@ -1,0 +1,158 @@
+---
+---
+
+@import "{{ site.theme }}";
+
+/* Floating navigation sidebar */
+#header {
+  position: fixed !important;
+  top: 0 !important;
+  left: 0 !important;
+  width: 280px !important;
+  height: 100% !important;
+  background: #2a2a2a !important;
+  border-right: 1px solid #555 !important;
+  box-shadow: 2px 0 8px rgba(0, 0, 0, 0.4) !important;
+  z-index: 1000 !important;
+  padding: 20px 0 !important;
+  float: left !important;
+}
+
+#header nav {
+  background: transparent !important;
+  margin: 0 !important;
+  padding: 0 15px !important;
+  max-width: none !important;
+}
+
+#header nav ul {
+  list-style: none !important;
+  padding: 0 !important;
+  margin: 0 !important;
+}
+
+#header nav ul li {
+  display: block !important;
+  margin: 5px 0 !important;
+  padding: 8px 0 !important;
+  border-bottom: 1px solid #434343 !important;
+}
+
+#header nav ul li:last-child {
+  border-bottom: none !important;
+}
+
+#header nav ul li a {
+  color: #e0e0e0 !important;
+  text-decoration: none !important;
+  font-size: 15px !important;
+  font-weight: 700 !important;
+  display: block !important;
+  padding: 12px 20px !important;
+  border-radius: 4px !important;
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5) !important;
+  transition: all 0.2s ease !important;
+}
+
+#header nav ul li a:hover {
+  background: #6644aa !important;
+  color: #ffffff !important;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.7) !important;
+}
+
+#header nav ul li.fork {
+  float: none !important;
+  margin-left: 0 !important;
+}
+
+#header nav ul li.downloads {
+  float: none !important;
+  margin-left: 0 !important;
+}
+
+/* Main content area - truly centered */
+.wrapper {
+  margin-left: 280px !important;
+  margin-right: auto !important;
+  width: calc(100% - 280px) !important;
+  max-width: none !important;
+  padding: 0 !important;
+  margin-top: 0 !important;
+}
+
+/* Center the actual content within the wrapper */
+.wrapper section {
+  max-width: 800px !important;
+  margin: 0 auto !important;
+  padding: 20px 40px !important;
+}
+
+/* Remove blue background - this overrides the default theme */
+#header nav {
+  background: transparent !important;
+  background-color: transparent !important;
+}
+
+/* Global link styling - darker purple theme */
+a {
+  color: #4a2c7a !important;
+  text-decoration: none !important;
+}
+
+a:hover {
+  color: #6644aa !important;
+  text-decoration: underline !important;
+}
+
+/* Override any blue background declarations with maximum specificity */
+html body #header nav,
+html body #header nav *,
+#header nav,
+#header nav *,
+body #header nav,
+nav {
+  background: transparent !important;
+  background-color: transparent !important;
+  background-image: none !important;
+}
+
+/* Hide original header styles that conflict */
+#header {
+  height: 100% !important;
+  width: 280px !important;
+  border-bottom: none !important;
+  box-shadow: 2px 0 8px rgba(0, 0, 0, 0.4) !important;
+}
+
+/* Mobile responsiveness */
+@media print, screen and (max-width: 720px) {
+  #header {
+    position: relative !important;
+    width: 100% !important;
+    height: auto !important;
+    border-right: none !important;
+    border-bottom: 1px solid #555 !important;
+    float: none !important;
+  }
+  
+  .wrapper {
+    margin-left: 0 !important;
+    width: 100% !important;
+    margin-top: 0 !important;
+  }
+  
+  .wrapper section {
+    margin: 0 !important;
+    padding: 15px 20px !important;
+  }
+  
+  #header nav ul li {
+    display: inline-block !important;
+    margin: 0 5px !important;
+    padding: 5px 0 !important;
+    border-bottom: none !important;
+  }
+}

@@ -1,7 +1,7 @@
 ---
-title: Installation
 layout: default
-nav_order: 2
+title: Installation
+permalink: /installation/
 ---
 
 # Installation Guide
@@ -157,14 +157,10 @@ After installation, verify QMKonnect is working:
 
 After installation:
 
-1. [Configure your keyboard settings]({{ site.baseurl }}/configuration)
-2. [Set up your QMK firmware]({{ site.baseurl }}/qmk-integration)
-3. [Learn about usage and features]({{ site.baseurl }}/usage)
+1. [Set up your QMK firmware]({{ site.baseurl }}/qmk-integration)
+2. [Configure your keyboard settings]({{ site.baseurl }}/configuration)
+3. [Start using QMKonnect]({{ site.baseurl }}/usage)
 
-## Troubleshooting
+---
 
-If you encounter issues during installation:
-
-- Check the [troubleshooting guide]({{ site.baseurl }}/troubleshooting)
-- Review the [GitHub issues](https://github.com/dabstractor/qmkonnect/issues)
-- Ensure your system meets the requirements
+📖 **[Complete Documentation]({{ site.baseurl }}/llms_full.txt)** - All guides in one comprehensive file

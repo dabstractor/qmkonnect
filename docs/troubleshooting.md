@@ -1,12 +1,74 @@
 ---
-title: Troubleshooting
 layout: default
-nav_order: 6
+title: Troubleshooting
+permalink: /troubleshooting/
 ---
 
 # Troubleshooting Guide
 
 Common issues and solutions for QMKonnect across different platforms.
+
+## Debugging Tools
+
+Before diving into specific issues, familiarize yourself with these debugging tools:
+
+### Linux Command Line Options
+
+```bash
+qmkonnect [OPTIONS]
+
+Options:
+    -c, --config         Create a default configuration file
+    -r, --reload         Reload configuration from file  
+    -v, --verbose        Enable verbose logging
+    --debug              Maximum verbosity for debugging
+    --test-connection    Test keyboard connection
+    -h, --help          Show help information
+    -V, --version       Show version information
+```
+
+### Verbose Logging
+
+Run with verbose logging to see all activity:
+
+```bash
+# Linux
+qmkonnect -v
+
+# Shows:
+# - Window change events
+# - Application detection  
+# - Data sent to keyboard
+# - Connection status
+# - Error messages
+```
+
+### Debug Mode (Linux)
+
+For detailed troubleshooting:
+
+```bash
+qmkonnect --debug
+
+# Shows:
+# - Raw window data
+# - Filtering decisions
+# - Communication protocol details
+# - Timing information
+```
+
+### View Logs
+
+**Linux (systemd):**
+```bash
+# View logs
+journalctl --user -u qmkonnect -f
+
+# Check service status  
+systemctl --user status qmkonnect
+```
+
+**Windows & macOS:** Access logs through the system tray/menu bar interface.
 
 ## General Issues
 
@@ -38,23 +100,28 @@ Common issues and solutions for QMKonnect across different platforms.
 
 ### Keyboard Not Detected
 
-**Symptoms**: QMKonnect runs but doesn't communicate with keyboard
+**Symptoms**: QMKonnect runs but doesn't communicate with keyboard, layers don't switch
 
-**Diagnosis**:
+**Quick Diagnosis**:
 ```bash
-# Test keyboard connection
+# Linux - test keyboard connection
 qmkonnect --test-connection
 
-# List available HID devices
+# Check if keyboard shows up in verbose mode
+qmkonnect -v | grep -i "keyboard\|detect\|connect"
+```
+
+**Find Available HID Devices**:
+```bash
 # Linux:
 ls -la /dev/hidraw*
-cat /sys/class/hidraw/hidraw*/device/uevent
+cat /sys/class/hidraw/hidraw*/device/uevent | grep -E "HID_ID|HID_NAME"
 
-# Windows:
-# Use Device Manager to check HID devices
+# Windows (PowerShell):
+Get-WmiObject -Class Win32_USBHub | Where-Object {$_.Name -like "*keyboard*"}
 
 # macOS:
-system_profiler SPUSBDataType | grep -i keyboard
+system_profiler SPUSBDataType | grep -A 10 -B 10 -i keyboard
 ```
 
 **Solutions**:
@@ -86,38 +153,59 @@ system_profiler SPUSBDataType | grep -i keyboard
 
 ### Window Detection Not Working
 
-**Symptoms**: QMKonnect runs but doesn't detect window changes
+**Symptoms**: QMKonnect runs but doesn't detect window changes, keyboard doesn't switch layers when changing applications
+
+**Debugging Steps**:
+
+1. **Check verbose output for window events**:
+   ```bash
+   # Linux 
+   qmkonnect -v | grep -i "window\|app\|title"
+   
+   # You should see messages like:
+   # "Window changed: firefox -> Visual Studio Code" 
+   # "Sending: code{GS}main.rs - qmkonnect"
+   ```
+
+2. **Test window information format**:
+   
+   QMKonnect sends data in this format: `{application_class}{GS}{window_title}`
+   
+   Where `{GS}` is Group Separator (ASCII 0x1D). Examples:
+   - VS Code: `code{GS}main.rs - qmkonnect`
+   - Firefox: `firefox{GS}GitHub - Mozilla Firefox`  
+   - Terminal: `terminal{GS}~/projects/qmkonnect`
 
 **Platform-specific solutions**:
 
 #### Windows
 ```bash
-# Check if running as tray app
-qmkonnect --tray-app
-
-# Verify window hooks are working
-qmkonnect -v  # Look for window change events
+# Check if window hooks are working
+qmkonnect -v  # Look for "Window changed" messages
 ```
 
-#### Linux
+#### Linux (Hyprland Only)
 ```bash
 # Check Hyprland integration
 echo $HYPRLAND_INSTANCE_SIGNATURE
 
-# Test Hyprland socket
-socat -u UNIX-CONNECT:/tmp/hypr/$HYPRLAND_INSTANCE_SIGNATURE/.socket2.sock -
+# Test Hyprland socket manually
+socat -u UNIX-CONNECT:/tmp/hypr/$HYPRLAND_INSTANCE_SIGNATURE/.socket2.sock - | head -10
+
+# Should show window events when you switch applications
 ```
 
-**Note**: Only Hyprland is supported on Linux. Other window managers are not supported yet. Please contribute support for your window manager!
+**Note**: Only Hyprland is supported on Linux. Other window managers are not supported yet.
 
 #### macOS
-1. Grant Accessibility permissions:
-   - System Preferences → Security & Privacy → Privacy
-   - Select "Accessibility"
+1. **Grant Accessibility permissions** (required for window monitoring):
+   - System Preferences → Security & Privacy → Privacy  
+   - Select "Accessibility" from left panel
    - Add QMKonnect to allowed applications
 
-2. Test window detection:
+2. **Test window detection**:
    ```bash
+   # Run from terminal to see debug output
    ./QMKonnect.app/Contents/MacOS/qmkonnect -v
    ```
 
@@ -356,24 +444,49 @@ leaks qmkonnect
 
 ### Data Not Reaching Keyboard
 
-**Debug communication**:
-```bash
-# Show what's being sent
-qmkonnect --dry-run
+**Symptoms**: Window detection works, but keyboard layers don't change
 
-# Test with minimal data
-qmkonnect --debug
-```
+**Debug QMKonnect → Keyboard Communication**:
 
-**Check QMK side**:
-```c
-// Add debug output to QMK
-#ifdef CONSOLE_ENABLE
-void qmk_notifier_notify(const char* app_class, const char* window_title) {
-    printf("Received: app='%s', title='%s'\n", app_class, window_title);
-}
-#endif
-```
+1. **Verify data is being sent** (Linux):
+   ```bash
+   # Show what data is being sent to keyboard
+   qmkonnect --debug | grep -i "sending\|data"
+   
+   # Test connection specifically
+   qmkonnect --test-connection
+   ```
+
+2. **Check QMK firmware side**:
+   
+   Add debug output to your QMK keymap:
+   ```c
+   #ifdef CONSOLE_ENABLE
+   void qmk_notifier_notify(const char* app_class, const char* window_title) {
+       printf("Received: app='%s', title='%s'\n", app_class, window_title);
+       // Your layer switching logic here
+   }
+   #endif
+   ```
+   
+   Then monitor QMK console:
+   ```bash
+   qmk console
+   ```
+
+3. **Verify Raw HID setup**:
+   
+   Ensure your QMK firmware has:
+   ```make
+   # In rules.mk
+   RAW_ENABLE = yes
+   ```
+   
+   ```c
+   // In config.h  
+   #define RAW_USAGE_PAGE 0xFF60
+   #define RAW_USAGE_ID   0x61
+   ```
 
 ### Raw HID Issues
 
