@@ -28,10 +28,36 @@ impl Notifier for QmkNotifier {
             }
         }
 
-        match qmk_notifier::run(Some(message)) {
-            Ok(_) => Ok(()),
-            Err(e) => Err(Box::new(e)),
+        // Retry device connection with exponential backoff
+        for attempt in 1..=3 {
+            match qmk_notifier::run(Some(message.clone())) {
+                Ok(_) => return Ok(()),
+                Err(e) => {
+                    let error_str = e.to_string().to_lowercase();
+                    
+                    // Only retry for device-related errors
+                    if error_str.contains("no device found") || 
+                       error_str.contains("permission denied") || 
+                       error_str.contains("failed to open") {
+                        
+                        if attempt < 3 {
+                            let delay = Duration::from_millis(100 * attempt as u64);
+                            thread::sleep(delay);
+                            continue;
+                        }
+                        
+                        // After 3 attempts, log and return success to prevent service restart
+                        eprintln!("QMK device unavailable after {} attempts: {}", attempt, e);
+                        return Ok(()); // Don't fail the service for device issues
+                    }
+                    
+                    // For non-device errors, fail immediately
+                    return Err(Box::new(e));
+                }
+            }
         }
+        
+        Ok(())
     }
 }
 

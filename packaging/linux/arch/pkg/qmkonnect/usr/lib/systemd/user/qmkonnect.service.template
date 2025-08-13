@@ -1,5 +1,5 @@
 [Unit]
-Description=QMKonnect
+Description=QMKonnect - QMK Keyboard Window Notifier
 After=graphical-session.target
 
 # This handles the device dependency correctly:
@@ -7,11 +7,31 @@ After=graphical-session.target
 # 2. On unplug, it stops the service.
 BindsTo=dev-qmkonnect_device.device
 
+# Limit restart attempts to prevent infinite restart loops
+StartLimitBurst=5
+StartLimitIntervalSec=60
+
 [Service]
-# Wait for the Wayland socket to exist
-ExecStartPre=/bin/sh -c 'while ! [ -S "$XDG_RUNTIME_DIR/wayland-1" ]; do sleep 0.1; done'
+Type=simple
 
 ExecStart=/usr/bin/qmkonnect
+
+# Crash recovery settings
+Restart=always
+RestartSec=5
+
+# Environment settings
+Environment=RUST_BACKTRACE=1
+
+# Security settings (relaxed to allow access to user session)
+PrivateTmp=false
+ProtectSystem=full
+ProtectHome=false
+NoNewPrivileges=true
+
+# Allow access to device files and user runtime directory
+ReadWritePaths=/dev
+ReadWritePaths=%t
 
 [Install]
 # Hook the service into the user login process.

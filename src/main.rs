@@ -44,8 +44,6 @@ fn init_logging() -> Result<(), Box<dyn Error>> {
 }
 
 fn main() {
-
-    
     // Initialize logging first
     if let Err(e) = init_logging() {
         eprintln!("Failed to initialize logging: {}", e);
