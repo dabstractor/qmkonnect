@@ -30,7 +30,15 @@ impl Notifier for QmkNotifier {
 
         // Retry device connection with exponential backoff
         for attempt in 1..=3 {
-            match qmk_notifier::run(Some(message.clone())) {
+            let params = qmk_notifier::RunParameters::new(
+                qmk_notifier::RunCommand::SendMessage(message.clone()),
+                qmk_notifier::DEFAULT_VENDOR_ID,
+                qmk_notifier::DEFAULT_PRODUCT_ID,
+                qmk_notifier::DEFAULT_USAGE_PAGE,
+                qmk_notifier::DEFAULT_USAGE,
+                false, // verbose
+            );
+            match qmk_notifier::run(params) {
                 Ok(_) => return Ok(()),
                 Err(e) => {
                     let error_str = e.to_string().to_lowercase();
