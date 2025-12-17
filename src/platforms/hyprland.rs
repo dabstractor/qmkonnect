@@ -58,21 +58,14 @@ impl WindowMonitor for HyprlandMonitor {
     }
 
     fn start(&mut self) -> Result<(), Box<dyn Error>> {
-        // Check if we're running in Hyprland
-        if !is_hyprland_running() {
-            return Err("Not running in Hyprland environment".into());
-        }
+        // Wait for Hyprland to become available (handles boot race condition)
+        wait_for_hyprland(self.verbose)?;
 
         if self.verbose {
             println!("Starting Hyprland window monitor");
         }
 
         {
-            // Verify we can connect to Hyprland initially
-            if let Err(e) = hyprland::data::Monitors::get() {
-                return Err(format!("Failed to connect to Hyprland: {}", e).into());
-            }
-
             // Set polling to active
             {
                 let mut active = self.polling_active.lock().unwrap();
@@ -193,12 +186,54 @@ impl WindowMonitor for HyprlandMonitor {
     }
 }
 
-pub(crate) fn is_hyprland_running() -> bool {
-    match check_hyprland_environment() {
-        Ok(_) => true,
-        Err(e) => {
-            eprintln!("Hyprland environment check failed: {}", e);
-            false
+/// Waits for Hyprland to become available with exponential backoff.
+/// This handles the race condition where the service starts before Hyprland is ready.
+fn wait_for_hyprland(verbose: bool) -> Result<(), Box<dyn Error>> {
+    use hyprland::data::Monitors;
+
+    const MAX_WAIT_SECS: u64 = 30;
+    const INITIAL_DELAY_MS: u64 = 100;
+
+    let start = SystemTime::now();
+    let mut delay_ms = INITIAL_DELAY_MS;
+
+    loop {
+        let elapsed = start.elapsed().unwrap_or(Duration::from_secs(0));
+
+        // Check if Hyprland environment is available (socket exists)
+        match check_hyprland_environment() {
+            Err(e) => {
+                if elapsed.as_secs() >= MAX_WAIT_SECS {
+                    return Err(format!("Timed out waiting for Hyprland: {}", e).into());
+                }
+                if verbose {
+                    println!("Waiting for Hyprland environment ({}ms): {}", delay_ms, e);
+                }
+                thread::sleep(Duration::from_millis(delay_ms));
+                delay_ms = std::cmp::min(delay_ms * 2, 2000); // Cap at 2 seconds
+                continue;
+            }
+            Ok(_) => {}
+        }
+
+        // Environment exists, now verify IPC connection works
+        match Monitors::get() {
+            Ok(_) => {
+                if verbose && elapsed.as_millis() > 100 {
+                    println!("Hyprland ready after {}ms", elapsed.as_millis());
+                }
+                return Ok(());
+            }
+            Err(e) => {
+                if elapsed.as_secs() >= MAX_WAIT_SECS {
+                    return Err(format!("Timed out waiting for Hyprland IPC: {}", e).into());
+                }
+                if verbose {
+                    println!("Hyprland IPC not ready ({}ms): {}", delay_ms, e);
+                }
+                thread::sleep(Duration::from_millis(delay_ms));
+                delay_ms = std::cmp::min(delay_ms * 2, 2000);
+            }
         }
     }
 }
