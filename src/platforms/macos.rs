@@ -1,6 +1,6 @@
 #![allow(unexpected_cfgs)]
 #![cfg(target_os = "macos")]
-use crate::core::notifier;
+use crate::core::{notifier, QMKError, QMKResult};
 use crate::core::types::WindowInfo;
 use crate::platforms::WindowMonitor;
 use std::error::Error;
@@ -76,7 +76,7 @@ impl MacOSMonitor {
         }
     }
 
-    unsafe fn setup_observers(&mut self) -> Result<(), Box<dyn Error>> {
+    unsafe fn setup_observers(&mut self) -> QMKResult<()> {
         // Set global verbose flag for callbacks
         VERBOSE = self.verbose;
         let workspace: *mut Object = msg_send![class!(NSWorkspace), sharedWorkspace];
@@ -89,8 +89,12 @@ impl MacOSMonitor {
         use objc::runtime::{Class, Object, Sel};
 
             // Create a custom class for our observer
-            let superclass = Class::get("NSObject").unwrap();
-            let mut decl = ClassDecl::new("RustNotificationObserver", superclass).unwrap();
+            let superclass = Class::get("NSObject").ok_or_else(|| {
+                QMKError::Platform(crate::core::errors::PlatformError::MacOSCoreFoundation { code: -1 })
+            })?;
+            let mut decl = ClassDecl::new("RustNotificationObserver", superclass).ok_or_else(|| {
+                QMKError::Platform(crate::core::errors::PlatformError::MacOSCoreFoundation { code: -2 })
+            })?;
 
             // Add the notification handler method
             extern "C" fn notification_handler(_: &Object, _: Sel, _: *mut Object) {
@@ -111,7 +115,9 @@ impl MacOSMonitor {
 
             // Create an instance of our custom class
             let observer: *mut Object =
-                msg_send![Class::get("RustNotificationObserver").unwrap(), new];
+                msg_send![Class::get("RustNotificationObserver").ok_or_else(|| {
+                    QMKError::Platform(crate::core::errors::PlatformError::MacOSCoreFoundation { code: -3 })
+                })?, new];
 
             // Add the observer to the notification center
             let _: () = msg_send![notification_center,
@@ -145,6 +151,8 @@ impl MacOSMonitor {
         });
 
         Ok(())
+        // Replace all problematic Ok(()) with proper error handling mapping
+        .map_err(|_| QMKError::Platform(crate::core::errors::PlatformError::MacOSCoreFoundation { code: -6 }))
     }
 }
 
@@ -153,7 +161,7 @@ impl WindowMonitor for MacOSMonitor {
         "macOS"
     }
 
-    fn start(&mut self) -> Result<(), Box<dyn Error>> {
+    fn start(&mut self) -> QMKResult<()> {
         if self.verbose {
             println!("Starting macOS window monitor");
         }
@@ -161,10 +169,10 @@ impl WindowMonitor for MacOSMonitor {
         unsafe {
             // First, check and request screen recording permission.
             if !MacOSMonitor::request_screen_recording_permission() {
-                return Err("Screen recording permission not granted.".into());
+                return Err(QMKError::Platform(crate::core::errors::PlatformError::MacOSCoreFoundation { code: -4 }));
             }
 
-            self.setup_observers()?;
+            self.setup_observers().map_err(|e| QMKError::Platform(crate::core::errors::PlatformError::MacOSCoreFoundation { code: -5 }))?;
 
             // Capture the initial active application
             let _ = get_active_window_info().map(|info| {
@@ -189,7 +197,7 @@ impl WindowMonitor for MacOSMonitor {
     }
 }
 
-fn get_active_window_info() -> Result<Option<WindowInfo>, Box<dyn Error>> {
+fn get_active_window_info() -> QMKResult<Option<WindowInfo>> {
     unsafe {
         let workspace: *mut Object = msg_send![class!(NSWorkspace), sharedWorkspace];
         let app: *mut Object = msg_send![workspace, frontmostApplication];
@@ -253,7 +261,7 @@ fn get_active_window_info() -> Result<Option<WindowInfo>, Box<dyn Error>> {
 
         CFRelease(window_list as *const c_void);
 
-        Ok(Some(WindowInfo::new(app_name_str, window_title)))
+        Ok(Some(WindowInfo::new(app_name_str, window_title)).map_err(|_| QMKError::Platform(crate::core::errors::PlatformError::MacOSCoreFoundation { code: -8 }))
     }
 }
 
