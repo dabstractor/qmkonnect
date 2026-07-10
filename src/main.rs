@@ -79,6 +79,12 @@ fn run() -> Result<(), Box<dyn Error>> {
         return reload_config(verbose);
     }
 
+    // Check for platform list mode
+    if args.iter().any(|arg| arg == "-l" || arg == "--list") {
+        print_platforms();
+        return Ok(());
+    }
+
     // Use platform-specific runner
     let mut runner = runners::create_runner(verbose)?;
     runner.run(&args)
@@ -108,6 +114,22 @@ fn print_help() {
     }
 
     println!("\nRunning without options will start the notifier service");
+}
+
+fn print_platforms() {
+    println!("Supported platforms (this build):");
+
+    #[cfg(all(target_os = "linux", feature = "hyprland"))]
+    println!("  Linux (Hyprland)");
+
+    #[cfg(all(target_os = "linux", not(feature = "hyprland")))]
+    println!("  Linux (X11)");
+
+    #[cfg(target_os = "macos")]
+    println!("  macOS");
+
+    #[cfg(target_os = "windows")]
+    println!("  Windows");
 }
 
 
@@ -180,24 +202,8 @@ fn reload_config(verbose: bool) -> Result<(), Box<dyn Error>> {
 fn create_config() -> Result<(), Box<dyn Error>> {
     println!("Creating configuration...");
 
-    // Create config directory with platform-specific method
-    #[cfg(target_os = "linux")]
+    // platforms::create_config_dir dispatches per-OS and has a portable fallback
     let config_dir = platforms::create_config_dir()?;
-
-    #[cfg(target_os = "windows")]
-    let config_dir = platforms::create_config_dir()?;
-
-    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
-    let config_dir = {
-        // Default implementation for other platforms
-        if let Ok(xdg_config) = std::env::var("XDG_CONFIG_HOME") {
-            PathBuf::from(xdg_config).join("qmk-notifier")
-        } else if let Some(home) = dirs::home_dir() {
-            home.join(".config").join("qmk-notifier")
-        } else {
-            return Err("Could not determine configuration directory".into());
-        }
-    };
 
     // Create the config file using our new function
     let config_path = config_dir.join("config.toml");

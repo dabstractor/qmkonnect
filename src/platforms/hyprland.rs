@@ -18,20 +18,10 @@ use std::{
     time::{Duration, SystemTime},
 };
 
-// Custom struct to store window state that implements Clone
-#[derive(PartialEq, Debug)]
+#[derive(PartialEq, Debug, Clone)]
 struct WindowState {
     app_class: String,
     title: String,
-}
-
-impl Clone for WindowState {
-    fn clone(&self) -> Self {
-        Self {
-            app_class: self.app_class.clone(),
-            title: self.title.clone(),
-        }
-    }
 }
 
 pub struct HyprlandMonitor {
@@ -321,16 +311,10 @@ fn poll_window_state(
         (None, Some(_)) => true,
         (Some(_), None) => true,
         (Some(last), Some(current)) => {
-            // Only consider it changed if either:
-            // 1. We're moving from a window to empty workspace
-            // 2. We're moving from empty workspace to a window
-            // 3. We're changing between different windows
-            // But NOT if we're staying on an empty workspace
-            if last.app_class == "empty" && current.app_class == "empty" {
-                false // Don't report repeated empty workspace states
-            } else {
-                last.app_class != current.app_class || last.title != current.title
-            }
+            // Covers window-to-window changes as well as transitions to/from an
+            // empty workspace (represented as empty class and title), while
+            // repeated identical states compare equal and are not re-reported.
+            last.app_class != current.app_class || last.title != current.title
         }
         (None, None) => false,
     };

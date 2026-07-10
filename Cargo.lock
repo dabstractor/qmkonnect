@@ -90,12 +90,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "anyhow"
-version = "1.0.100"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a23eb6b1614318a8071c9b2521f36b424b2c83db5eb3a0fead4a6c0809af6e61"
-
-[[package]]
 name = "async-stream"
 version = "0.3.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -190,12 +184,6 @@ checksum = "2261d10cca569e4643e526d8dc2e62e433cc8aba21ab764233731f8d369bf394"
 dependencies = [
  "serde",
 ]
-
-[[package]]
-name = "block"
-version = "0.1.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0d8c1fef690941d3e7788d328517591fecc684c084084702d6ff1641e993699a"
 
 [[package]]
 name = "block-buffer"
@@ -2106,8 +2094,6 @@ dependencies = [
 name = "qmkonnect"
 version = "0.1.0"
 dependencies = [
- "anyhow",
- "block",
  "core-foundation 0.9.4",
  "core-graphics 0.23.2",
  "ctrlc",
@@ -2115,7 +2101,6 @@ dependencies = [
  "dispatch",
  "env_logger",
  "eventlog",
- "hidapi",
  "hyprland",
  "image",
  "libc",

@@ -14,26 +14,32 @@ pub trait Notifier: Send + Sync {
 
 // Real implementation that uses qmk_notifier
 pub struct QmkNotifier;
+
+/// Resolve vendor/product IDs from the user's config file, falling back to
+/// the qmk_notifier defaults. Read per-notification so config changes take
+/// effect without restarting the service.
+fn configured_ids() -> (u16, u16) {
+    crate::platforms::get_config_paths()
+        .into_iter()
+        .find(|p| p.exists())
+        .and_then(|p| crate::core::parse_config(&p).ok())
+        .map(|cfg| (cfg.vendor_id, cfg.product_id))
+        .unwrap_or((
+            qmk_notifier::DEFAULT_VENDOR_ID,
+            qmk_notifier::DEFAULT_PRODUCT_ID,
+        ))
+}
+
 impl Notifier for QmkNotifier {
     fn notify(&self, message: String) -> Result<(), Box<dyn Error + Send + Sync>> {
-        if let Ok(api) = hidapi::HidApi::new() {
-            for device in api.device_list() {
-                let _device_info = format!(
-                    "VID: 0x{:04X}, PID: 0x{:04X}, Usage Page: 0x{:04X}, Usage: 0x{:04X}",
-                    device.vendor_id(),
-                    device.product_id(),
-                    device.usage_page(),
-                    device.usage()
-                );
-            }
-        }
+        let (vendor_id, product_id) = configured_ids();
 
         // Retry device connection with exponential backoff
         for attempt in 1..=3 {
             let params = qmk_notifier::RunParameters::new(
                 qmk_notifier::RunCommand::SendMessage(message.clone()),
-                qmk_notifier::DEFAULT_VENDOR_ID,
-                qmk_notifier::DEFAULT_PRODUCT_ID,
+                vendor_id,
+                product_id,
                 qmk_notifier::DEFAULT_USAGE_PAGE,
                 qmk_notifier::DEFAULT_USAGE,
                 false, // verbose
@@ -80,6 +86,7 @@ static DEBOUNCER: Lazy<Arc<Mutex<DebounceState>>> = Lazy::new(|| {
         last_sent_time: Instant::now(),
         debounce_window_start: None,
         timer_running: false,
+        verbose: false,
     }))
 });
 
@@ -100,6 +107,7 @@ struct DebounceState {
     last_sent_time: Instant,
     debounce_window_start: Option<Instant>,
     timer_running: bool,
+    verbose: bool,
 }
 
 fn get_debouncer() -> Arc<Mutex<DebounceState>> {
@@ -143,6 +151,7 @@ pub fn notify_qmk(
 
         // Store the latest message (always store for potential debounced send)
         state.last_message = Some(message.clone());
+        state.verbose = verbose;
 
         // If sending now, update last_sent_time and start a new debounce window
         if should_send_now {
@@ -207,7 +216,7 @@ fn debounce_timer(debouncer: Arc<Mutex<DebounceState>>, notifier: Arc<Mutex<Box<
                 state.timer_running = false;
                 state.debounce_window_start = None; // Reset the debounce window
                 state.last_sent_time = now; // Update last sent time
-                (true, message, false) // Exit after sending
+                (true, message, state.verbose) // Exit after sending
             } else {
                 (false, None, false) // Continue waiting
             }
@@ -300,6 +309,7 @@ mod tests {
             last_sent_time: Instant::now(),
             debounce_window_start: None,
             timer_running: false,
+            verbose: false,
         };
         drop(state); // Release the lock
 
