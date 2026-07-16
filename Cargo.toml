@@ -1,6 +1,6 @@
 [package]
 name = "qmkonnect"
-version = "0.2.3"
+version = "0.2.4"
 edition = "2021"
 authors = ["Mulletware"]
 description = "Cross-platform window activity notifier for QMK keyboards"
