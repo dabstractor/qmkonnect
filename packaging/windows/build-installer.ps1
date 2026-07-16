@@ -138,7 +138,7 @@ Write-Info "Building Windows installer..."
 try {
     # Compile WiX source
     Write-Info "Compiling WiX source..."
-    & candle.exe installer.wxs -d Version=$Version -ext WixUtilExtension
+    & candle.exe installer.wxs -dVersion=$Version -ext WixUtilExtension
     
     if ($LASTEXITCODE -ne 0) {
         throw "WiX compilation failed"

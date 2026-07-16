@@ -64,7 +64,7 @@ REM Build installer
 echo Building Windows installer...
 
 echo Compiling WiX source...
-candle.exe installer.wxs -d Version=%VERSION% -ext WixUtilExtension
+candle.exe installer.wxs -dVersion=%VERSION% -ext WixUtilExtension
 if %errorlevel% neq 0 (
     echo ERROR: WiX compilation failed
     exit /b 1
