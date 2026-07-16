@@ -87,7 +87,7 @@
     <WixVariable Id="WixUILicenseRtf" Value="license.rtf" />
     
     <!-- Application icon -->
-    <Icon Id="AppIcon" SourceFile="../../packaging/Icon.png" />
+    <Icon Id="AppIcon" SourceFile="../../packaging/Icon.ico" />
     <Property Id="ARPPRODUCTICON" Value="AppIcon" />
     
     <!-- Custom action to stop running application -->
@@ -148,9 +148,9 @@
 
       <!-- Icon file -->
       <Component Id="IconFile" Guid="*">
-        <File Id="IconPng" 
-              Source="../../packaging/Icon.png" 
-              Name="Icon.png" 
+        <File Id="IconIco" 
+              Source="../../packaging/Icon.ico" 
+              Name="Icon.ico" 
               KeyPath="yes" />
       </Component>
 
