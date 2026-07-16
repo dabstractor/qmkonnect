@@ -472,6 +472,13 @@ mod tests {
         reset_test_state();
         set_notifier(Box::new(MockNotifier::new()));
 
+        // reset_test_state() uses a 50ms debounce window, but this test sleeps
+        // only 20ms to assert the 2nd message is still pending. On a loaded CI
+        // runner a 20ms sleep can overshoot the 50ms window and the worker
+        // flushes early (count jumps to 2). Widen this test's window so that
+        // can't happen; production interval is unaffected.
+        STATE.lock().unwrap().interval = Duration::from_millis(200);
+
         // First message - sent immediately
         let window1 = WindowInfo::new("App1".to_string(), "Title1".to_string());
         let _ = notify_qmk(&window1, true);
