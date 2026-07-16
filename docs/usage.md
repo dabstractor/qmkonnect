@@ -6,6 +6,11 @@ permalink: /usage/
 
 # Usage Guide
 
+> **Prerequisite:** This assumes you've already integrated the
+> [qmk-notifier](https://github.com/dabstractor/qmk-notifier) module into your
+> firmware (see [QMK Integration]({{ site.baseurl }}/qmk-integration)). QMKonnect
+> only sends window data — without the firmware module, nothing will switch.
+
 QMKonnect runs in the background, automatically detecting window changes and communicating with your QMK keyboard. Here's how to start, stop, and manage the application.
 
 ## Starting QMKonnect
@@ -40,9 +45,9 @@ Quit from the menu bar icon or application menu
 ## Auto-Start on Boot
 
 ### Windows
-Auto-start is automatically configured when using the MSI installer. To disable:
-1. Open Task Manager → Startup tab
-2. Find "QMKonnect" and disable it
+**Open at Login** is enabled by default. Toggle it from the system-tray icon → **Open at Login**.
+It's backed by the HKCU `Run` key (you can also disable it in Task Manager →
+Startup, but the tray toggle is the intended way).
 
 ### Linux
 ```bash

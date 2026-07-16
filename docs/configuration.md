@@ -6,7 +6,20 @@ permalink: /configuration/
 
 # Configuration Guide
 
-This guide covers configuring QMKonnect to communicate with your keyboard. You only need to provide two values: your keyboard's vendor ID and product ID.
+> **Firmware setup is a hard prerequisite.** QMKonnect only *sends* window
+data to your keyboard over Raw HID — your keyboard cannot react to it unless the
+[**qmk-notifier**](https://github.com/dabstractor/qmk-notifier) module is built
+into your firmware and you've defined layer/command rules there. See the
+[QMK Integration Guide]({{ site.baseurl }}/qmk-integration) for that setup. This
+page covers only the **desktop-side** configuration.
+
+This guide covers configuring the QMKonnect desktop app to communicate with your
+keyboard. Once your firmware is set up, **no vendor/product-ID configuration is
+needed for a single standard QMK keyboard** — QMKonnect auto-discovers any board
+using the default QMK Raw HID signature (usage page `0xFF60` / usage `0x61`).
+"Zero-config" refers *only* to these desktop IDs; you still must configure your
+firmware. You only set a vendor/product ID when you have *multiple* QMK keyboards
+connected and need to disambiguate which one QMKonnect targets.
 
 ## Platform-Specific Configuration
 
@@ -16,7 +29,7 @@ Both Windows and macOS use a settings dialog through the system tray:
 
 1. **Find the system tray icon** (QMKonnect icon in your system tray/menu bar)
 2. **Right-click the icon** and select "Settings"
-3. **Enter your keyboard IDs**:
+3. **Enter your keyboard IDs** (both fields are optional — leave either blank for auto-discovery):
    - **Vendor ID**: Your keyboard's vendor ID in hex format (e.g., `feed`)
    - **Product ID**: Your keyboard's product ID in hex format (e.g., `0000`)
 4. **Click OK** to save
@@ -33,18 +46,30 @@ Linux uses a TOML configuration file located at `~/.config/qmk-notifier/config.t
 qmkonnect -c
 ```
 
-This creates a default configuration file with these contents:
+This creates a default configuration file with every device-identifying field commented out, so QMKonnect auto-discovers any standard QMK keyboard out of the box:
 
 ```toml
 # QMKonnect Configuration
+#
+# All fields are OPTIONAL. By default QMKonnect auto-discovers any QMK
+# keyboard using the standard Raw HID usage page (0xFF60 / 0x61). Set
+# vendor_id/product_id only to disambiguate among multiple QMK keyboards,
+# or usage_page/usage to target a board that overrode RAW_USAGE_PAGE /
+# RAW_USAGE_ID in its firmware.
+#
+# usage_page = 0xff60
+# usage      = 0x61
+#
+# Debounce window (ms) for coalescing rapid window-change bursts before
+# sending to the keyboard. 0 disables debouncing entirely. Default 50.
+# debounce_ms = 50
+#
+# (Hyprland only) periodic active-window poll interval (ms).
+# 0 disables. Default 0.
+# poll_interval_ms = 0
 
-# Your QMK keyboard's vendor ID (in hex)
-vendor_id = 0xfeed
-
-# Your QMK keyboard's product ID (in hex)
-product_id = 0x0000
-
-# Add any other configuration options here
+# vendor_id  = 0xfeed   # unset: auto-discovery
+# product_id = 0x0000   # unset: auto-discovery
 ```
 
 #### Editing the Configuration
@@ -70,14 +95,14 @@ product_id = 0x5678  # Replace with your keyboard's product ID
 After editing the configuration file, reload it:
 
 ```bash
-qmkonnect -r
+sudo qmkonnect -r
 ```
 
-This updates the system configuration (udev rules) and reloads the settings.
+This rewrites the matching udev rule under `/etc/udev/rules.d` and reloads udev. Writing the rule requires root, so run it with `sudo`; without root, `qmkonnect -r` only prints the rule without installing it. This is only needed when you set an explicit vendor/product ID to disambiguate multiple keyboards — default keyboards need no rule and no reload.
 
 ## Finding Your Keyboard IDs
 
-To configure QMKonnect for your keyboard, you need to find your keyboard's vendor ID and product ID.
+Finding your keyboard's IDs is **optional** — you only need them to disambiguate among multiple QMK keyboards. Skip this section unless auto-discovery picks the wrong board. (Run `qmkonnect --list-devices` to see the exact IDs of connected keyboards.)
 
 ### Method 1: QMK Configuration
 
@@ -129,8 +154,10 @@ ioreg -p IOUSB | grep -A 10 -B 10 "keyboard\|Keyboard"
 After modifying the configuration file, reload it without restarting:
 
 ```bash
-qmkonnect -r
+sudo qmkonnect -r
 ```
+
+This rewrites the udev rule (requires root) and reloads it. Only needed when you set an explicit vendor/product ID — see the note above.
 
 ### Linux Additional Steps
 
@@ -146,19 +173,54 @@ systemctl --user restart qmkonnect
 
 ## Configuration Examples
 
-### Basic Configuration (Linux)
+### Zero desktop config (Linux)
+
+This is the **desktop-side** default — no IDs are set, so QMKonnect
+auto-discovers any single QMK keyboard. (Your firmware still needs qmk-notifier
+built in — see [QMK Integration]({{ site.baseurl }}/qmk-integration).)
 ```toml
-# Minimal configuration - just keyboard IDs
-vendor_id = 0xfeed
-product_id = 0x0000
+# vendor_id  = 0xfeed   # unset: auto-discovery
+# product_id = 0x0000   # unset: auto-discovery
 ```
 
-### Custom Keyboard IDs (Linux)
+### Disambiguate multiple keyboards (Linux)
 ```toml
-# Example with different keyboard IDs
-vendor_id = 0x1234
+# Pin a specific board when more than one QMK keyboard is connected
+vendor_id  = 0x1234
 product_id = 0x5678
 ```
+
+### Tuning (Linux, Hyprland)
+```toml
+# Coalesce rapid window-switch bursts (default 50 ms); poll for the active
+# window every 200 ms on Hyprland (default 0 = rely on IPC events).
+debounce_ms      = 50
+poll_interval_ms = 200
+```
+
+## Configuration Reference
+
+All keys are optional. With your firmware already running qmk-notifier, QMKonnect auto-discovers any standard QMK keyboard by the QMK Raw HID signature, so a single-keyboard desktop install needs no IDs set. (The firmware itself is *not* optional — see the [QMK Integration Guide]({{ site.baseurl }}/qmk-integration).)
+
+| Key | Default | Description |
+| --- | --- | --- |
+| `vendor_id` | unset (any) | USB vendor ID (hex). Set only to disambiguate among multiple QMK keyboards. |
+| `product_id` | unset (any) | USB product ID (hex). Set only to disambiguate among multiple QMK keyboards. |
+| `usage_page` | `0xff60` | HID usage page. Set only if your firmware overrode `RAW_USAGE_PAGE`. |
+| `usage` | `0x61` | HID usage. Set only if your firmware overrode `RAW_USAGE_ID`. |
+| `debounce_ms` | `50` | Window (ms) for coalescing rapid window-change bursts before sending to the keyboard. `0` disables debouncing. |
+| `poll_interval_ms` | `0` | (Hyprland only) periodic active-window poll interval (ms). `0` relies on IPC events instead of polling. |
+
+### CLI flags
+
+| Flag | Description |
+| --- | --- |
+| `-c`, `--config` | Create a default (commented-out) configuration file. |
+| `-r`, `--reload` | Re-read the config and write the matching udev rule (Linux; requires root). |
+| `-l`, `--list` | List the platforms supported by this build. |
+| `--list-devices` | List connected HID devices (VID/PID discovery). |
+| `-v`, `--verbose` | Enable verbose logging. |
+| `-h`, `--help` | Show help. |
 
 ## Validation
 
@@ -181,7 +243,7 @@ If your keyboard isn't detected:
 
 1. **Double-check your vendor/product IDs** - they must match exactly
 2. **Verify Raw HID is enabled** in your QMK firmware 
-3. **Check permissions** (Linux users may need to be in `input` and `plugdev` groups)
+3. **Check permissions** (Linux users may need to be in the `input` group; the udev rule also grants `uaccess`)
 
 For detailed troubleshooting steps, see the [troubleshooting guide]({{ site.baseurl }}/troubleshooting).
 

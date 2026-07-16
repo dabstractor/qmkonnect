@@ -16,19 +16,24 @@ Cross-platform window activity notifier for QMK keyboards
 
 QMKonnect watches which window is active and tells your QMK keyboard about it. Your keyboard can then switch layers or run commands based on what app you're using.
 
+> **⚠️ Firmware setup required.** QMKonnect only *sends* window data — your
+> keyboard needs the companion [**qmk-notifier**](https://github.com/dabstractor/qmk-notifier)
+> module built into its firmware to actually react. Without it, QMKonnect does
+> nothing useful. See the [QMK Integration Guide]({{ site.baseurl }}/qmk-integration).
+
 ### For Users
-Simple setup for everyday use with your QMK keyboard.
+Simple desktop setup (no vendor/product IDs needed for a single keyboard) — but your firmware must be configured first.
 
 ### For AI Agents and Developers
 Complete reference documentation available for automated tools at [llms_full.txt](llms_full.txt) - designed specifically for agents and LLMs that need comprehensive system understanding.
 
 ## Key Features
 
-- **Cross-Platform Support**: Works on Windows, Linux, and macOS
+- **Cross-Platform Support**: Works on Windows, Linux (Hyprland), and macOS
 - **Real-time Detection**: Detects window focus changes
-- **QMK Integration**: Talks to QMK keyboards via Raw HID
+- **QMK Integration**: Talks to QMK keyboards via Raw HID (firmware module required)
 - **Low Resource Usage**: Runs in the background
-- **Easy Configuration**: Simple config file
+- **Auto-Discovery**: Finds your keyboard by the QMK Raw HID signature — no IDs needed for a single board
 
 ### How It Works
 
@@ -43,10 +48,10 @@ Complete reference documentation available for automated tools at [llms_full.txt
 
 ## Quick Start
 
-1. **Download** the latest release for your platform
-2. **Install** using the provided installer or package
-3. **Configure** your keyboard settings
-4. **Start** monitoring window changes automatically
+1. **Set up your QMK firmware** with the qmk-notifier module — **required** ([QMK Integration]({{ site.baseurl }}/qmk-integration))
+2. **Download** the latest QMKonnect release for your platform
+3. **Install** using the provided installer or package
+4. **Run** it — a single standard keyboard needs no configuration
 
 [Installation Guide →]({{ site.baseurl }}/installation)
 
@@ -56,7 +61,7 @@ Complete reference documentation available for automated tools at [llms_full.txt
 
 QMKonnect works alongside other tools in the QMK notification ecosystem:
 
-- **[qmk-notifier](https://github.com/dabstractor/qmk-notifier)**: QMK firmware module for handling notifications
+- **[qmk-notifier](https://github.com/dabstractor/qmk-notifier)**: **Required** QMK firmware module that receives notifications, pattern-matches them, and switches layers / runs callbacks
 - **[qmk_notifier](https://github.com/dabstractor/qmk_notifier)**: Core library for Raw HID communication
 - **QMKonnect**: This application for cross-platform window detection
 

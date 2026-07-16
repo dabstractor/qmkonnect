@@ -6,7 +6,14 @@ permalink: /examples/
 
 # Real-World Examples
 
-Complete examples showing how to configure QMKonnect and QMK firmware for different use cases.
+Complete examples showing how to configure your **QMK firmware** for different use cases.
+
+> **These are firmware examples, not desktop-app configuration.** They assume
+> you've already integrated the
+> [qmk-notifier](https://github.com/dabstractor/qmk-notifier) module into your
+> firmware (see the [QMK Integration Guide]({{ site.baseurl }}/qmk-integration)).
+> QMKonnect only sends the active-window string; these `DEFINE_SERIAL_LAYERS` /
+> `DEFINE_SERIAL_COMMANDS` rules are what make your keyboard actually react.
 
 ## Example 1: Developer Setup
 
@@ -16,8 +23,7 @@ Complete examples showing how to configure QMKonnect and QMK firmware for differ
 
 ```c
 #include QMK_KEYBOARD_H
-#include "raw_hid.h"
-#include "./lib/qmk-notifier/notifier.h"
+#include "qmk-notifier/notifier.h"
 
 void raw_hid_receive(uint8_t *data, uint8_t length) {
     hid_notify(data, length);
@@ -83,9 +89,8 @@ const uint16_t PROGMEM keymaps[][MATRIX_ROWS][MATRIX_COLS] = {
 ### QMK Keymap Configuration
 
 ```c
-#include QMK_KEYBOARD_H  
-#include "raw_hid.h"
-#include "./lib/qmk-notifier/notifier.h"
+#include QMK_KEYBOARD_H
+#include "qmk-notifier/notifier.h"
 
 void raw_hid_receive(uint8_t *data, uint8_t length) {
     hid_notify(data, length);
@@ -162,8 +167,7 @@ const uint16_t PROGMEM keymaps[][MATRIX_ROWS][MATRIX_COLS] = {
 
 ```c
 #include QMK_KEYBOARD_H
-#include "raw_hid.h" 
-#include "./lib/qmk-notifier/notifier.h"
+#include "qmk-notifier/notifier.h"
 
 void raw_hid_receive(uint8_t *data, uint8_t length) {
     hid_notify(data, length);
@@ -260,7 +264,7 @@ const uint16_t PROGMEM keymaps[][MATRIX_ROWS][MATRIX_COLS] = {
 ## Testing Your Configuration
 
 1. **Compile and flash** your firmware
-2. **Configure QMKonnect** with your keyboard's vendor/product IDs
+2. **Install QMKonnect** — for a single standard keyboard it needs no IDs (auto-discovery); set vendor/product IDs only to disambiguate among multiple QMK keyboards
 3. **Test layer switching** by switching between applications
 4. **Check QMK console** output for debugging:
    ```bash

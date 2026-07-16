@@ -1,208 +1,1096 @@
-# QMKonnect - Complete Documentation
+# QMKonnect - Complete Documentation (for Agents / LLMs)
+
+This is a single-file concatenation of QMKonnect's documentation, generated from
+the source Markdown in this repository. It is the canonical reference for agents
+and LLMs.
+
+IMPORTANT REALITY CHECK
+-----------------------
+QMKonnect is only ONE HALF of a two-part system. It detects the active window
+and SENDS that information to your keyboard over Raw HID. Your keyboard cannot
+react to it unless the companion **qmk-notifier** module is built into your QMK
+firmware. That firmware setup is REQUIRED, not optional.
+
+When the docs say "no configuration" or "zero-config", they refer ONLY to the
+desktop app's vendor/product-ID selection (a single standard QMK keyboard is
+auto-discovered). The firmware configuration is mandatory.
+
+
+================================================================================
+ 1. README.md
+================================================================================
+
+# QMKonnect
+
+Detects window changes and tells your QMK keyboard what app you're using so it can switch layers automatically.
+
+*📖 [Complete documentation](docs/llms_full.txt) - All guides in one comprehensive file*
 
 ## Overview
 
-QMKonnect is a cross-platform window activity notifier for QMK keyboards that enables context-aware keyboard behavior. It monitors active window changes and communicates with your QMK keyboard via Raw HID, allowing your keyboard to automatically switch layers or execute commands based on what application you're using.
+QMKonnect watches which window is active and sends that info to your QMK keyboard. Your keyboard can then switch layers or run commands based on what app you're using.
 
-### Key Features
+This tool is part of a broader ecosystem:
+- **[qmk-notifier](https://github.com/dabstractor/qmk-notifier)**: QMK module that receives commands and handles layer/feature toggling on your keyboard
+- **[qmk_notifier](https://github.com/dabstractor/qmk_notifier)**: Desktop application that sends commands to your keyboard via Raw HID
+- **QMKonnect** (this tool): Application that detects window changes across platforms
 
-- **Cross-Platform Support**: Works on Windows, Linux, and macOS
-- **Real-time Detection**: Detects window focus changes instantly
-- **QMK Integration**: Communicates with QMK keyboards via Raw HID
-- **Low Resource Usage**: Runs efficiently in the background
-- **Easy Configuration**: Simple setup with vendor ID and product ID
+## Features
 
-### How It Works
+- **Cross-Platform Support**:
+  - Windows
+  - macOS
+  - Linux: Arch/Hyprland only
 
-1. **Window Monitoring**: Watches for active window changes across your system
-2. **Data Processing**: Extracts application class and window title information
-3. **QMK Communication**: Sends window data to your QMK keyboard via Raw HID
-4. **Layer Switching**: Your keyboard responds based on your firmware configuration
+- **Core Functionality**:
+  - Detects window changes in real-time
+  - Sends app name and window title to your QMK keyboard
+  - Low resource usage
+  - Debug logging when you need it
 
-### Ecosystem Components
+- **Configuration**:
+  - Easy to configure
+  - Reloads settings automatically
 
-QMKonnect works alongside other tools in the QMK notification ecosystem:
+## Installation
 
-- **qmk-notifier**: QMK firmware module for handling notifications
-- **qmk_notifier**: Core library for Raw HID communication  
-- **QMKonnect**: This application for cross-platform window detection
+### Windows
 
-## Installation Guide
+> **Requirements:** Windows **10/11, 64-bit**. Not supported on 32-bit Windows or
+> on Windows 8.1/8/7 and earlier. No Administrator rights or extra runtimes
+> needed. Full details: [installer guide](packaging/windows/inno/README.md#supported-platforms--requirements).
 
-QMKonnect has different installation methods for each supported platform.
+1. Download **`QMKonnect-Setup.exe`** from the
+   [latest release](https://github.com/dabstractor/qmkonnect/releases).
+2. Double-click it — no Administrator needed (per-user install). If Windows
+   shows "Unknown publisher," click **More info → Run anyway**.
+3. The installer launches QMKonnect and enables **Open at Login** by default.
 
-### Windows Installation
+To build the installer yourself instead, see
+[`packaging/windows/inno/README.md`](packaging/windows/inno/README.md).
 
-#### MSI Installer (Recommended)
+### Arch Linux
 
-1. Download the latest MSI installer from GitHub releases
-2. Run the installer as Administrator
-3. The application starts automatically and is added to Windows startup
+```bash
+git clone https://github.com/dabstractor/qmkonnect.git
+cd qmkonnect/packaging/linux/arch
+makepkg -si
+```
 
-The MSI installer automatically:
-- Installs to Program Files
-- Adds to Windows startup
-- Sets up system tray icon
-- Enables normal uninstallation
+### Other Linux Systems
+Download the release binary: [qmkonnect](https://github.com/dabstractor/qmkonnect/releases/download/v0.1.0/qmkonnect)
 
-#### Build from Source (Windows)
+If you want it to start automatically, install the service file and start the service:
+```
+curl https://raw.githubusercontent.com/dabstractor/qmkonnect/refs/heads/main/packaging/linux/systemd/qmkonnect.service.template | sudo tee /usr/lib/systemd/user/qmkonnect.service
+systemctl --user enable --now qmkonnect.service
+```
+If you want automatic permissions (and the service to start/stop with the
+keyboard), install the static udev rule and its helper. Once your firmware is
+configured (see [QMK Firmware Setup](#qmk-firmware-setup-required) — **required**),
+the desktop app needs **no vendor/product-ID configuration** for a single
+standard QMK keyboard: it auto-discovers it by the standard Raw HID usage page
+(0xFF60 / 0x61).
+```
+# From a source checkout (builds qmkonnect + the qmkonnect-hid-id helper):
+cargo build --release
+sudo install -m755 target/release/qmkonnect        /usr/local/bin/qmkonnect
+sudo install -m755 target/release/qmkonnect-hid-id /usr/lib/udev/qmkonnect-hid-id
+sudo install -m644 packaging/linux/udev/69-qmkonnect-rawhid.rules \
+                    /usr/lib/udev/rules.d/69-qmkonnect-rawhid.rules
+sudo udevadm control --reload && sudo udevadm trigger
+```
+Only set `vendor_id`/`product_id` (in `~/.config/qmk-notifier/config.toml`) to
+disambiguate among multiple QMK keyboards, then install the matching rule:
+```bash
+qmkonnect -c          # writes a commented-out default config (edit as needed)
+sudo qmkonnect -r     # root-aware: finds your config even under sudo
+```
 
+### macOS
+
+1. Download QMKonnect.app from the [releases page](https://github.com/dabstractor/qmkonnect/releases/download/v0.1.0/QMKonnect.dmg)
+2. Copy QMKonnect.app to your Applications folder
+3. Launch QMKonnect from Applications folder
+4. It starts automatically at login by default — toggle it from the menu-bar icon → **Launch at Login**.
+
+### From Source
+
+**Windows:**
 ```bash
 git clone https://github.com/dabstractor/qmkonnect.git
 cd qmkonnect/packaging/windows
 ./build-installer.ps1
 ```
 
-### Linux Installation (Hyprland Only)
+**macOS:**
+```bash
+git clone https://github.com/dabstractor/qmkonnect.git
+cd qmkonnect/packaging/macos
+./clean.sh && ./build.sh && ./install.sh
+```
 
-**Important**: QMKonnect currently only supports Hyprland window manager on Linux. Support for other window managers is not yet available.
+`build.sh` produces `QMKonnect.app` and `QMKonnect.dmg`; `clean.sh` resets stale copies/permissions and `install.sh` copies the app to `/Applications`. For the full process (and why `clean.sh` matters), see the **[macOS install guide](docs/installation.md#macos)**.
+
+**Linux:**
+```bash
+git clone https://github.com/dabstractor/qmkonnect.git
+cd qmkonnect
+cargo build --release
+```
+
+
+
+## QMK Firmware Setup (REQUIRED)
+
+**IMPORTANT**: QMKonnect will not work at all without proper QMK firmware configuration. You must add the qmk-notifier module to your keyboard's firmware first.
+
+### 1. Add the QMK Notifier Module
+
+In your QMK keymap directory:
+
+```bash
+git submodule add https://github.com/dabstractor/qmk-notifier.git qmk-notifier
+```
+
+### 2. Include the Module's Build Rules
+
+In your keymap's `rules.mk`, include the notifier's own `rules.mk` (path is
+relative to the `qmk_firmware` root). That single line pulls in both
+`RAW_ENABLE = yes` and `SRC += qmk-notifier/notifier.c` for you:
+
+```make
+include keyboards/handwired/<manufacturer>/<keyboard>/qmk-notifier/rules.mk
+```
+
+> Adjust the path to wherever your keyboard lives under `qmk_firmware/keyboards/`. The module's `rules.mk` (which you can read in the
+> [qmk-notifier](https://github.com/dabstractor/qmk-notifier) repo) is what
+> actually compiles `notifier.c` — without this `include`, the build will fail
+> to link `hid_notify`.
+
+### 3. Configure Your Keymap
+
+Add this to your `keymap.c`:
+
+```c
+#include QMK_KEYBOARD_H
+#include "./qmk-notifier/notifier.h"
+
+void raw_hid_receive(uint8_t *data, uint8_t length) {
+    hid_notify(data, length);
+}
+
+// Your keymap definitions here...
+```
+
+### 4. Set Up Layer Switching
+
+Create your layer definitions and serial commands. See the [Examples](https://dabstractor.github.io/qmkonnect/examples) for the correct implementation using `DEFINE_SERIAL_LAYERS` and `DEFINE_SERIAL_COMMANDS` macros.
+
+### 5. Flash Your Keyboard
+
+Build and flash your updated firmware to your keyboard. **QMKonnect cannot communicate with your keyboard until this firmware is installed.**
+
+## Configuration
+
+> **Prerequisite — firmware setup is required.** QMKonnect only *sends* window
+data to your keyboard over Raw HID. Your keyboard can't act on it unless the
+[**qmk-notifier**](https://github.com/dabstractor/qmk-notifier) module is built
+into your firmware. See [QMK Firmware Setup](#qmk-firmware-setup-required).
+> Everything below covers only the *desktop-side* configuration.
+
+Once your firmware is set up, the **desktop app needs no vendor/product-ID
+configuration** for a single standard QMK keyboard — QMKonnect auto-discovers it
+via the Raw HID usage page (0xFF60 / 0x61). You only set a Vendor/Product ID to
+disambiguate among multiple QMK keyboards.
+
+> **Config file locations** (historical naming is preserved so existing installs keep working):
+> - **Linux**: `~/.config/qmk-notifier/config.toml`
+> - **Windows**: `%APPDATA%\QMKonnect\config.toml`
+> - **macOS**: `~/Library/Application Support/QMKonnect/config.toml`
+
+Don't know your keyboard's IDs? Discover them with read-only enumeration:
+
+```bash
+qmkonnect --list-devices
+```
+
+### Windows & macOS
+
+1. Right-click the QMKonnect system tray icon
+2. Select "Settings"
+3. Enter your keyboard's Vendor ID (hex format, e.g., feed)
+4. Enter your keyboard's Product ID (hex format, e.g., 0000)
+5. Click OK to save
+
+### Linux
+
+Edit the configuration file at `~/.config/qmk-notifier/config.toml`.
+
+If no file exists, create it:
+
+```bash
+qmkonnect -c
+```
+
+Only set these to pin a specific keyboard (otherwise leave them commented out for auto-discovery):
+```
+# vendor_id = 0xfeed
+# product_id = 0x0000
+```
+
+Then reload (writes the matching udev rule and reloads udev — run as root):
+
+```bash
+sudo qmkonnect -r
+```
+
+If you aren't root, `qmkonnect -r` prints the exact udev rule and the commands to install it.
+
+## Usage
+
+### Windows
+
+The application starts automatically with Windows and runs in the background with a system tray icon.
+
+- **Start manually**: Run "QMKonnect" from Start Menu
+- **Exit**: Right-click the system tray icon and select "Quit"
+
+### macOS
+
+- **Start**: Launch QMKonnect from Applications folder
+- **Exit**: Right-click the menu bar icon and select "Quit"
+
+### Linux
+
+The application should start automatically when your keyboard is plugged in.
+If not, you can start it manually:
+```bash
+qmkonnect & disown
+```
+
+## Technical Requirements
+
+### Windows Implementation
+
+- **Tray app, not a service**: runs as a per-user interactive application with a
+  system-tray icon (built on `tray-icon`/`muda`). A Session-0 *service* build
+  exists via the WiX MSI in `packaging/windows/`, but a service can't show a tray
+  icon in your interactive session, so the **tray app is what's shipped**.
+- **Background Operation**: no console window (`windows_subsystem = "windows"`).
+- **Automatic Startup**: **Open at Login** via the HKCU `Run` key — default on,
+  toggleable from the tray (`src/autostart.rs`).
+- **Installer**: per-user Inno Setup installer — `QMKonnect-Setup.exe`, no admin
+  (`packaging/windows/inno/`). The executable statically links the C runtime, so
+  **no Visual C++ Redistributable** is required.
+- **Singleton Pattern**: a named-mutex single-instance lock prevents multiple
+  instances from running simultaneously.
+- **Window Monitoring**: detects foreground-window focus changes.
+
+### Core Functionality
+
+- **Window Detection**: Monitors active window changes across platforms
+- **QMK Integration**: Sends window information to QMK keyboards
+- **Configuration Management**: User-configurable settings
+- **Error Handling**: Graceful handling of errors and edge cases
+
+## Integration with QMK
+
+This tool works in conjunction with:
+- The [qmk-notifier](https://github.com/dabstractor/qmk-notifier) QMK module running on your keyboard
+- The [qmk_notifier](https://github.com/dabstractor/qmk_notifier) tool which handles the Raw HID communication
+
+When a window focus change is detected, this application formats the data as:
+`{application_class}{GS}{window_title}` where `{GS}` is the Group Separator character (0x1D).
+
+## Default Configuration
+
+This is the **desktop-side** config only (your firmware still needs qmk-notifier — see above). QMKonnect auto-discovers standard QMK keyboards, so the default config leaves these commented out (uncomment only to pin a specific keyboard):
+
+```toml
+# Your QMK keyboard's vendor ID (in hex)
+# vendor_id = 0xfeed
+
+# Your QMK keyboard's product ID (in hex)
+# product_id = 0x0000
+```
+
+## Example Use Cases
+
+- Automatically switch to a coding layer when your IDE is focused
+- Enable media controls when music or video applications are active
+- Activate application-specific macros based on the current window
+- Create context-aware keyboard layouts that adapt to your workflow
+
+## Contributing
+
+Contributions are welcome! Feel free to submit issues or pull requests on GitHub.
+
+## License
+
+[MIT License](LICENSE)
+
+================================================================================
+ 2. docs/index.md (Home)
+================================================================================
+
+
+# QMKonnect
+
+Cross-platform window activity notifier for QMK keyboards
+
+[Get Started]({{ site.baseurl }}/installation) | [View on GitHub](https://github.com/dabstractor/qmkonnect) | [Complete Documentation for Agents/LLMs](llms_full.txt)
+
+---
+
+## What is QMKonnect?
+
+QMKonnect watches which window is active and tells your QMK keyboard about it. Your keyboard can then switch layers or run commands based on what app you're using.
+
+> **⚠️ Firmware setup required.** QMKonnect only *sends* window data — your
+> keyboard needs the companion [**qmk-notifier**](https://github.com/dabstractor/qmk-notifier)
+> module built into its firmware to actually react. Without it, QMKonnect does
+> nothing useful. See the [QMK Integration Guide]({{ site.baseurl }}/qmk-integration).
+
+### For Users
+Simple desktop setup (no vendor/product IDs needed for a single keyboard) — but your firmware must be configured first.
+
+### For AI Agents and Developers
+Complete reference documentation available for automated tools at [llms_full.txt](llms_full.txt) - designed specifically for agents and LLMs that need comprehensive system understanding.
+
+## Key Features
+
+- **Cross-Platform Support**: Works on Windows, Linux (Hyprland), and macOS
+- **Real-time Detection**: Detects window focus changes
+- **QMK Integration**: Talks to QMK keyboards via Raw HID (firmware module required)
+- **Low Resource Usage**: Runs in the background
+- **Auto-Discovery**: Finds your keyboard by the QMK Raw HID signature — no IDs needed for a single board
+
+### How It Works
+
+1. **Window Monitoring**: Watches for active window changes
+2. **Data Processing**: Gets the app name and window title
+3. **QMK Communication**: Sends that info to your QMK keyboard
+4. **Layer Switching**: Your keyboard responds by switching layers or running macros
+
+
+
+---
+
+## Quick Start
+
+1. **Set up your QMK firmware** with the qmk-notifier module — **required** ([QMK Integration]({{ site.baseurl }}/qmk-integration))
+2. **Download** the latest QMKonnect release for your platform
+3. **Install** using the provided installer or package
+4. **Run** it — a single standard keyboard needs no configuration
+
+[Installation Guide →]({{ site.baseurl }}/installation)
+
+---
+
+## Part of the QMK Ecosystem
+
+QMKonnect works alongside other tools in the QMK notification ecosystem:
+
+- **[qmk-notifier](https://github.com/dabstractor/qmk-notifier)**: **Required** QMK firmware module that receives notifications, pattern-matches them, and switches layers / runs callbacks
+- **[qmk_notifier](https://github.com/dabstractor/qmk_notifier)**: Core library for Raw HID communication
+- **QMKonnect**: This application for cross-platform window detection
+
+---
+
+## Complete Documentation
+
+📖 **[llms_full.txt]({{ site.baseurl }}/llms_full.txt)** - Complete documentation in a single file for AI systems and comprehensive reference
+
+================================================================================
+ 3. docs/installation.md (Installation)
+================================================================================
+
+
+# Installation Guide
+
+> **Before you start:** QMKonnect only *sends* window data to your keyboard. Your
+> keyboard must be running the companion [**qmk-notifier**](https://github.com/dabstractor/qmk-notifier)
+> firmware module for anything to happen — that setup is **required**. Install
+> QMKonnect below, then follow the [QMK Integration Guide]({{ site.baseurl }}/qmk-integration).
+
+QMKonnect has different installation methods for each platform.
+
+## Windows
+
+### Installer (Recommended)
+
+1. Download **`QMKonnect-Setup.exe`** from the [latest release](https://github.com/dabstractor/qmkonnect/releases).
+2. Double-click it — **no Administrator needed** (per-user install to `%LOCALAPPDATA%`). If Windows shows "Unknown publisher," click **More info → Run anyway**.
+3. The installer launches QMKonnect and enables **Open at Login** by default.
+
+> **Requirements:** Windows **10/11, 64-bit**. 32-bit Windows and 8.1/8/7 and
+> earlier are **not supported**. No extra runtimes needed (the C runtime is
+> statically linked, so there's no Visual C++ Redistributable to install).
+
+The installer:
+- Installs to `%LOCALAPPDATA%\Programs\QMKonnect` (per-user, no admin)
+- Enables autostart via the HKCU `Run` key (toggle it in the tray: **Open at Login**)
+- Sets up the system-tray icon
+- Uninstalls cleanly via Add/Remove Programs
+
+### Build from Source
+
+```bash
+git clone https://github.com/dabstractor/qmkonnect.git
+cd qmkonnect
+cargo build --release
+powershell -NoProfile -ExecutionPolicy Bypass -File packaging/windows/inno/build.ps1
+```
+
+This creates `packaging/windows/inno/Output/QMKonnect-Setup.exe`. See
+[`packaging/windows/inno/README.md`](https://github.com/dabstractor/qmkonnect/blob/main/packaging/windows/inno/README.md)
+for the full release-build & installation procedure.
+
+---
+
+## Linux
+
+### Linux (Hyprland Only)
+
+**Note**: QMKonnect currently only supports Hyprland on Linux. Other window managers are not supported yet. Please contribute support for your window manager!
 
 #### Arch Linux
 
-Install from AUR or build the package:
+Build the package from the local `PKGBUILD` (there is no AUR package):
 
 ```bash
 git clone https://github.com/dabstractor/qmkonnect.git
 cd qmkonnect/packaging/linux/arch
 makepkg -si
-systemctl --user enable --now qmkonnect
+systemctl --user enable --now qmkonnect # if you want it to start on hotplug
 ```
 
 #### Other Linux Distributions
 
-1. Download the release binary from GitHub
+1. Download the release binary: [qmkonnect](https://github.com/dabstractor/qmkonnect/releases/download/v0.1.0/qmkonnect)
 2. Install the binary:
 
 ```bash
+# Make executable and copy to PATH
 chmod +x qmkonnect
 sudo cp qmkonnect /usr/local/bin/
 ```
 
-3. Set up systemd service:
+3. Set up systemd service (optional but recommended):
 
 ```bash
+# Install service file
 curl https://raw.githubusercontent.com/dabstractor/qmkonnect/refs/heads/main/packaging/linux/systemd/qmkonnect.service.template | sudo tee /usr/lib/systemd/user/qmkonnect.service
+
+# Enable and start the service
 systemctl --user enable --now qmkonnect.service
 ```
 
 4. Set up udev rules for automatic keyboard detection:
 
+   **Default QMK keyboards need no udev configuration.** Install the static
+   rule (and its helper) once and any device exposing the QMK Raw HID
+   signature (usage page 0xFF60 / usage 0x61) gets permissions automatically:
+
 ```bash
-curl https://raw.githubusercontent.com/dabstractor/qmkonnect/refs/heads/main/packaging/linux/udev/99-qmkonnect.rules.template | sudo tee /etc/udev/rules.d/99-qmkonnect.rules.template
-qmkonnect -c
-sudo qmkonnect -r
+# From a source checkout (builds qmkonnect + the qmkonnect-hid-id helper):
+cargo build --release
+sudo install -m755 target/release/qmkonnect        /usr/local/bin/qmkonnect
+sudo install -m755 target/release/qmkonnect-hid-id /usr/lib/udev/qmkonnect-hid-id
+sudo install -m644 packaging/linux/udev/69-qmkonnect-rawhid.rules \
+                    /usr/lib/udev/rules.d/69-qmkonnect-rawhid.rules
 sudo udevadm control --reload && sudo udevadm trigger
 ```
 
-### macOS Installation
+   Only set `vendor_id`/`product_id` to disambiguate among multiple QMK
+   keyboards; then generate the matching rule (root-aware, works under sudo):
 
-#### Application Bundle
+```bash
+qmkonnect -c          # writes a commented-out default config (edit as needed)
+sudo qmkonnect -r
+```
 
-1. Download QMKonnect.app from the GitHub releases page
-2. Copy QMKonnect.app to your Applications folder
-3. Launch QMKonnect from Applications folder
+---
 
-#### Build from Source (macOS)
+## macOS
+
+> **This is the source-of-truth guide for building, installing, and running QMKonnect on macOS.**
+> The README links here.
+
+### Install from a release (for end users)
+
+1. Download `QMKonnect.dmg` from the [releases page](https://github.com/dabstractor/qmkonnect/releases).
+2. Open the `.dmg` and drag **QMKonnect.app** into the **Applications** folder.
+3. Eject the disk image.
+4. Launch QMKonnect from Applications. The first time, macOS Gatekeeper will warn that the app *cannot be verified* (it is ad-hoc signed and not notarized). Right-click the app → **Open** → **Open** to proceed.
+5. Grant the **Screen Recording** prompt when it appears — this is required to read window titles (see [Troubleshooting → Screen Recording]({{ site.baseurl }}/troubleshooting/) if it keeps reappearing).
+
+### Launch at login
+
+QMKonnect starts automatically when you log in — **enabled by default** on first launch, so it just works out of the box.
+
+- Toggle it any time from the menu-bar icon → **Launch at Login**.
+- It's a real macOS login item: manage or disable it in **System Settings → General → Login Items** (under *Open at Login*); QMKonnect honors changes you make there.
+- It launches the app **bundle** (with its tray icon), not a background daemon, and **Quit** in the menu always quits — there is no auto-restart.
+
+This uses `SMAppService` (macOS 13 Ventura and later). On older macOS the menu item is inert — the app runs normally, it just won't auto-start. `packaging/macos/uninstall.sh` removes the entry on uninstall.
+
+### Build from source (for developers)
+
+Everything you need ships in `packaging/macos/` as a set of scripts that form one loop:
 
 ```bash
 git clone https://github.com/dabstractor/qmkonnect.git
 cd qmkonnect/packaging/macos
-./build.sh
+./clean.sh && ./build.sh && ./install.sh
+open /Applications/QMKonnect.app     # grant the one Screen-Recording prompt
 ```
 
-Copy the generated QMKonnect.app to your /Applications folder.
+| Script | What it does |
+| --- | --- |
+| `clean.sh` | Stops the app, ejects stale `.dmg` mounts, unregisters & deletes old `QMKonnect.app` copies from LaunchServices, and resets Screen-Recording permission. Run **before every reinstall**. |
+| `build.sh` | `cargo build --release`, assembles `QMKonnect.app`, ad-hoc code-signs it, and packages `QMKonnect.dmg` (the same image users install). |
+| `install.sh` | Mounts the `.dmg` and copies `QMKonnect.app` into `/Applications`. |
+| `uninstall.sh` | Fully removes the app, its **Launch at Login** entry, and per-user config. |
 
-### Installation Verification
+#### Prerequisites
 
-After installation, verify QMKonnect is working:
+- [Rust](https://rustup.rs/) **1.88 or later** (latest stable recommended; enforced by `rust-version` in `Cargo.toml`). Older toolchains fail with a cryptic transitive-dependency error.
+- Apple's Command Line Tools (install once): `xcode-select --install`.
 
-1. **Check if running**:
-   - Windows: Look for system tray icon
-   - Linux: `systemctl --user status qmkonnect`
-   - macOS: Check menu bar icon
+#### Why you must `clean` before reinstalling (read this once)
 
-2. **Test configuration**: Access settings through system tray/menu bar
+`build.sh` **always** compiles current source — your binary is correct. The "old version" problem happens at **launch**, not build time, because of two macOS behaviors:
 
-3. **Check logs**:
-   - Windows/macOS: System tray interface
-   - Linux: `journalctl --user -u qmkonnect`
+1. **LaunchServices remembers every copy.** macOS keeps a registry of every `QMKonnect.app` it has ever seen — old `/Applications` installs, trashed copies, and apps left inside a mounted `.dmg`. When you launch, macOS can hand you a **stale** copy instead of the one you just built.
+2. **Ad-hoc signing vs. Screen Recording.** Local builds are ad-hoc signed, so the app's signature (`cdhash`) changes on every rebuild. macOS keys the Screen-Recording grant to that signature, so it re-prompts every build — *even though System Settings still lists QMKonnect as already granted*.
 
-## QMK Integration Guide
+That is exactly what `clean.sh` undoes — clear the old copies and reset the permission, then build/install/launch. Skipping it is the #1 cause of "I rebuilt but nothing changed."
 
-Learn how to integrate QMKonnect with your QMK keyboard firmware to enable layer switching and context-aware features.
+#### Tips
 
-### Integration Overview
+- **Launch the bundle, not the binary.** Always start the app with `open /Applications/QMKonnect.app`. Do **not** test the menu bar by running `target/release/qmkonnect` directly — outside a real app bundle the menu-bar icon and template path don't work. The raw binary is fine for CLI subcommands (`--list-devices`, `-c`, `-r`).
+- **If a stale copy keeps winning** after `clean.sh`, unregister it explicitly and list what macOS still remembers:
+  ```bash
+  LSR=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
+  "$LSR" -u /Applications/QMKonnect.app          # unregister one path
+  "$LSR" -dump | grep -i 'path:.*QMKonnect\.app' # list every registered copy
+  ```
+- **Stop the Screen-Recording re-prompt loop for good** by signing with a stable identity: `CODESIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" ./build.sh`. A release DMG should be signed this way and notarized.
 
-QMKonnect communicates with QMK through Raw HID:
+---
 
-1. **QMKonnect** detects window changes
-2. **qmk_notifier library** handles Raw HID communication
-3. **qmk-notifier QMK module** receives and processes notifications
-4. **Your QMK keymap** responds to window change events
+## Build from Source (Linux Only)
 
-### Step 1: Add QMK Notifier Module
+For Linux users who want to build from source:
 
-In your QMK keymap directory:
+### Prerequisites
+
+- [Rust](https://rustup.rs/) (latest stable version)
+- Platform dependencies:
+  - **Ubuntu/Debian**: `sudo apt install libxdo-dev libudev-dev`
+  - **Fedora**: `sudo dnf install libxdo-devel systemd-devel`
+
+### Build Steps
 
 ```bash
-git submodule add https://github.com/dabstractor/qmk-notifier.git lib/qmk-notifier
+# Clone the repository
+git clone https://github.com/dabstractor/qmkonnect.git
+cd qmkonnect
+
+# Build the project
+cargo build --release
+
+# The binary will be available at target/release/qmkonnect
 ```
 
-### Step 2: Update rules.mk
+---
 
-Add to your keymap's `rules.mk`:
+## Verification
+
+After installation, verify QMKonnect is working (this only confirms the desktop
+app talks to the keyboard — your **firmware** must also have qmk-notifier set up,
+see [QMK Integration]({{ site.baseurl }}/qmk-integration)):
+
+1. **Check if running**:
+   - Windows: Look for the system tray icon
+   - Linux: `systemctl --user status qmkonnect`
+   - macOS: Check Activity Monitor
+
+2. **Test configuration**:
+   - Windows: Right-click system tray icon → Settings
+   - Linux: `qmkonnect -c` then `qmkonnect -v`
+   - macOS: Right-click menu bar icon → Settings
+
+3. **Check logs**:
+   - Windows: System tray interface
+   - Linux: `journalctl --user -u qmkonnect`
+   - macOS: System menu bar interface
+
+---
+
+## Next Steps
+
+After installation:
+
+1. [Set up your QMK firmware]({{ site.baseurl }}/qmk-integration)
+2. [Configure your keyboard settings]({{ site.baseurl }}/configuration)
+3. [Start using QMKonnect]({{ site.baseurl }}/usage)
+
+---
+
+📖 **[Complete Documentation]({{ site.baseurl }}/llms_full.txt)** - All guides in one comprehensive file
+
+================================================================================
+ 4. docs/qmk-integration.md (QMK Integration - REQUIRED firmware setup)
+================================================================================
+
+
+# QMK Integration Guide
+
+**This step is required.** QMKonnect only *sends* window information to your
+keyboard over Raw HID. Nothing will happen on the keyboard side until the
+[**qmk-notifier**](https://github.com/dabstractor/qmk-notifier) module is built
+into your firmware and you've defined how your keyboard should respond.
+
+> The instructions below mirror the upstream
+> [qmk-notifier README](https://github.com/dabstractor/qmk-notifier). That repo
+> is the source of truth for the firmware module; this page ties it to QMKonnect.
+
+## Overview
+
+QMKonnect works with the QMK ecosystem through Raw HID communication:
+
+1. **QMKonnect** (this application) detects the active window and sends
+   `{application_class}{GS}{window_title}` (where `{GS}` is the Group Separator,
+   `0x1D).
+2. **qmk-notifier** (a QMK module in your firmware) receives the message, checks
+   for its `0x81 0x9F` header, reassembles strings longer than the 32-byte HID
+   packet limit, and pattern-matches the result against your rules.
+3. Your **QMK keymap** switches layers and/or runs callbacks via the
+   `DEFINE_SERIAL_LAYERS` / `DEFINE_SERIAL_COMMANDS` macros the module provides.
+
+The QMKonnect desktop app and the qmk-notifier firmware module are **companion
+projects** — you need both.
+
+## Integration Steps
+
+### Step 1: Add qmk-notifier as a submodule to your keymap
+
+```bash
+cd /path/to/qmk_firmware/keyboards/your_keyboard
+git submodule add https://github.com/dabstractor/qmk-notifier.git
+```
+
+This clones the module into `qmk-notifier/` inside your keyboard directory.
+
+### Step 2: Include the module in your `rules.mk`
+
+Add the module's own `rules.mk` to your keymap's `rules.mk`. The path is relative
+to the `qmk_firmware` root:
 
 ```make
-# Enable Raw HID support
+include keyboards/handwired/[manufacturer]/[keyboard_name]/qmk-notifier/rules.mk
+```
+
+That single line is what actually wires the module up. The included
+[`rules.mk`](https://github.com/dabstractor/qmk-notifier/blob/main/rules.mk)
+contains:
+
+```make
 RAW_ENABLE = yes
-
-# Include the notifier module
-SRC += lib/qmk-notifier/qmk_notifier.c
+SRC += qmk-notifier/notifier.c
 ```
 
-### Step 3: Update config.h
+So it enables Raw HID **and** compiles `notifier.c` for you. Do **not** add
+`SRC += ... qmk_notifier.c` yourself — that source file does not exist, and
+duplicating `SRC += qmk-notifier/notifier.c` will cause a double-definition
+error.
 
-Add to your keymap's `config.h`:
-
-```c
-#define VENDOR_ID    0xFEED  // Your vendor ID
-#define PRODUCT_ID   0x0001  // Your product ID
-#define DEVICE_VER   0x0001  // Device version
-
-// Enable Raw HID
-#define RAW_USAGE_PAGE 0xFF60
-#define RAW_USAGE_ID   0x61
-```
-
-### Step 4: Basic keymap.c Setup
+### Step 3: Include the module in your `keymap.c`
 
 ```c
 #include QMK_KEYBOARD_H
-#include "raw_hid.h"
-#include "./qmk-notifier/notifier.h"
+#include "qmk-notifier/notifier.h"
 
-// Forward Raw HID data to the notifier
+// Forward Raw HID packets from the host (QMKonnect) into the notifier.
 void raw_hid_receive(uint8_t *data, uint8_t length) {
     hid_notify(data, length);
 }
-
-// Define your layers
-#define _QWERTY      0
-#define _BROWSER     1
-#define _TERMINAL    2
-#define _GAMING      3
-
-// Your keymap definitions here...
-const uint16_t PROGMEM keymaps[][MATRIX_ROWS][MATRIX_COLS] = {
-    // Your layer definitions
-};
 ```
 
-### Configuring Window-Based Behavior
+`QMK_KEYBOARD_H` already pulls in the QMK headers you need (including Raw HID), so
+there is no need to `#include "raw_hid.h"` separately.
+
+### Step 4: Define layer and command rules
+
+These two macros are the entire API. Define them anywhere in your keymap (a
+dedicated `.c` file `#include`-d from `keymap.c` is a common pattern):
+
+```c
+DEFINE_SERIAL_LAYERS({
+    { "*calculator",       _NUMPAD },
+    { WT("*chrome*", "*jitsi*"), _JITSI },
+    { WT("tty$", "^terminal$"),  _TERMINAL },
+    { "*iterm*",           _TERMINAL },
+    { "chrome*",           _BROWSER },
+    { WT("brave-browser", "*"),  _BROWSER },
+    { "steam_app*",        _GAMING },
+});
+
+DEFINE_SERIAL_COMMANDS({
+    { "neovide", &disable_vim },
+    { WT("steam_app*", "*"), &disable_vim },
+    { WT("*chrome*", "*claude*"), &vim_lazy_insert, &disable_vim },
+});
+```
+
+See the [Examples]({{ site.baseurl }}/examples) page for complete keymaps, and
+the upstream qmk-notifier docs for the full
+[pattern matching syntax](https://github.com/dabstractor/qmk-notifier#pattern-matching-syntax)
+(`*`, `^`, `$`, and `WT(class, title)`).
+
+### Step 5: Build and flash
+
+```bash
+qmk compile -kb your_keyboard -km your_keymap
+qmk flash   -kb your_keyboard -km your_keymap
+```
+
+**QMKonnect cannot communicate with your keyboard until this firmware is
+flashed.**
+
+## About `RAW_USAGE_PAGE` / `RAW_USAGE_ID`
+
+You do **not** normally need to set these. QMK's defaults are already
+`0xFF60` / `0x61`, which is exactly what both qmk-notifier and QMKonnect expect,
+and what QMKonnect auto-discovers. Only set `RAW_USAGE_PAGE` / `RAW_USAGE_ID` in
+your `config.h` if your firmware deliberately overrides them — and in that case
+you must tell the QMKonnect desktop app the matching values (see the
+[Configuration Guide]({{ site.baseurl }}/configuration#configuration-reference)).
+
+## Testing Your Integration
+
+### Basic verification
+
+1. **Compile and flash** your firmware with the integration above.
+2. **Install QMKonnect** — for a single standard QMK keyboard it needs no IDs
+   (auto-discovery); see the
+   [Configuration Guide]({{ site.baseurl }}/configuration).
+3. **Switch between applications** and confirm your layers change / callbacks
+   fire.
+
+### Debugging on the keyboard side
+
+The notifier has no built-in debug callback. To see what your keyboard receives,
+add your own `printf` inside a callback or temporarily inside `hid_notify`, with
+`CONSOLE_ENABLE = yes` in your `rules.mk`:
+
+```c
+#ifdef CONSOLE_ENABLE
+// Example: log every time the vim-disable callback fires
+void disable_vim(void) {
+    printf("qmk-notifier: disabling vim\n");
+    // ...your real logic...
+}
+#endif
+```
+
+Then watch the QMK console:
+
+```bash
+qmk console
+```
+
+On the host side, run QMKonnect with verbose/debug logging to confirm it is
+sending the expected `{app_class}{GS}{title}` payload (see the
+[Troubleshooting Guide]({{ site.baseurl }}/troubleshooting)).
+
+## Common Issues
+
+If your integration isn't working:
+
+1. **Won't compile / `hid_notify` undefined**: you're missing the
+   `include .../qmk-notifier/rules.mk` line in your `rules.mk` (Step 2). Do not
+   hand-write `SRC += lib/...` or point at a non-existent `qmk_notifier.c`.
+2. **No communication**: confirm QMKonnect detects the keyboard
+   (`qmkonnect -v` / `--list-devices`), and that Raw HID is enabled (it is, once
+   the module's `rules.mk` is included).
+3. **No layer switching**: verify your `DEFINE_SERIAL_LAYERS` patterns actually
+   match the `{app_class}{GS}{title}` string QMKonnect sends — check it with
+   `qmkonnect -v`.
+4. **Submodule not present after clone**: run `git submodule update --init`
+   in your keyboard directory.
+
+For detailed troubleshooting, see the
+[troubleshooting guide]({{ site.baseurl }}/troubleshooting).
+
+---
+
+## Next Steps
+
+- [Configure the QMKonnect desktop app]({{ site.baseurl }}/configuration)
+- [Learn how to use QMKonnect]({{ site.baseurl }}/usage)
+- [See real-world examples]({{ site.baseurl }}/examples)
+
+================================================================================
+ 5. docs/configuration.md (Desktop-side Configuration)
+================================================================================
+
+
+# Configuration Guide
+
+> **Firmware setup is a hard prerequisite.** QMKonnect only *sends* window
+data to your keyboard over Raw HID — your keyboard cannot react to it unless the
+[**qmk-notifier**](https://github.com/dabstractor/qmk-notifier) module is built
+into your firmware and you've defined layer/command rules there. See the
+[QMK Integration Guide]({{ site.baseurl }}/qmk-integration) for that setup. This
+page covers only the **desktop-side** configuration.
+
+This guide covers configuring the QMKonnect desktop app to communicate with your
+keyboard. Once your firmware is set up, **no vendor/product-ID configuration is
+needed for a single standard QMK keyboard** — QMKonnect auto-discovers any board
+using the default QMK Raw HID signature (usage page `0xFF60` / usage `0x61`).
+"Zero-config" refers *only* to these desktop IDs; you still must configure your
+firmware. You only set a vendor/product ID when you have *multiple* QMK keyboards
+connected and need to disambiguate which one QMKonnect targets.
+
+## Platform-Specific Configuration
+
+### Windows & macOS - GUI Settings
+
+Both Windows and macOS use a settings dialog through the system tray:
+
+1. **Find the system tray icon** (QMKonnect icon in your system tray/menu bar)
+2. **Right-click the icon** and select "Settings"
+3. **Enter your keyboard IDs** (both fields are optional — leave either blank for auto-discovery):
+   - **Vendor ID**: Your keyboard's vendor ID in hex format (e.g., `feed`)
+   - **Product ID**: Your keyboard's product ID in hex format (e.g., `0000`)
+4. **Click OK** to save
+
+Settings are saved automatically and work right away - no restart needed.
+
+### Linux - Configuration File
+
+Linux uses a TOML configuration file located at `~/.config/qmk-notifier/config.toml`.
+
+#### Creating the Configuration File
+
+```bash
+qmkonnect -c
+```
+
+This creates a default configuration file with every device-identifying field commented out, so QMKonnect auto-discovers any standard QMK keyboard out of the box:
+
+```toml
+# QMKonnect Configuration
+#
+# All fields are OPTIONAL. By default QMKonnect auto-discovers any QMK
+# keyboard using the standard Raw HID usage page (0xFF60 / 0x61). Set
+# vendor_id/product_id only to disambiguate among multiple QMK keyboards,
+# or usage_page/usage to target a board that overrode RAW_USAGE_PAGE /
+# RAW_USAGE_ID in its firmware.
+#
+# usage_page = 0xff60
+# usage      = 0x61
+#
+# Debounce window (ms) for coalescing rapid window-change bursts before
+# sending to the keyboard. 0 disables debouncing entirely. Default 50.
+# debounce_ms = 50
+#
+# (Hyprland only) periodic active-window poll interval (ms).
+# 0 disables. Default 0.
+# poll_interval_ms = 0
+
+# vendor_id  = 0xfeed   # unset: auto-discovery
+# product_id = 0x0000   # unset: auto-discovery
+```
+
+#### Editing the Configuration
+
+Edit the file with your preferred text editor:
+
+```bash
+# Using nano
+nano ~/.config/qmk-notifier/config.toml
+
+# Using vim
+vim ~/.config/qmk-notifier/config.toml
+```
+
+Update the values:
+```toml
+vendor_id = 0x1234  # Replace with your keyboard's vendor ID
+product_id = 0x5678  # Replace with your keyboard's product ID
+```
+
+#### Reloading Configuration (Linux Only)
+
+After editing the configuration file, reload it:
+
+```bash
+sudo qmkonnect -r
+```
+
+This rewrites the matching udev rule under `/etc/udev/rules.d` and reloads udev. Writing the rule requires root, so run it with `sudo`; without root, `qmkonnect -r` only prints the rule without installing it. This is only needed when you set an explicit vendor/product ID to disambiguate multiple keyboards — default keyboards need no rule and no reload.
+
+## Finding Your Keyboard IDs
+
+Finding your keyboard's IDs is **optional** — you only need them to disambiguate among multiple QMK keyboards. Skip this section unless auto-discovery picks the wrong board. (Run `qmkonnect --list-devices` to see the exact IDs of connected keyboards.)
+
+### Method 1: QMK Configuration
+
+If you have your QMK configuration, look for these values in your `config.h`:
+
+```c
+#define VENDOR_ID    0xFEED
+#define PRODUCT_ID   0x0000
+```
+
+### Method 2: System Tools
+
+#### Windows
+```powershell
+# Using PowerShell
+Get-WmiObject -Class Win32_USBHub | Where-Object {$_.Name -like "*keyboard*"}
+
+# Or use Device Manager:
+# 1. Open Device Manager
+# 2. Expand "Keyboards" or "Human Interface Devices"
+# 3. Right-click your keyboard → Properties → Details
+# 4. Select "Hardware Ids" from dropdown
+```
+
+#### Linux
+```bash
+# List USB devices
+lsusb
+
+# More detailed info
+lsusb -v | grep -A 5 -B 5 "keyboard\|Keyboard"
+
+# Check hidraw devices
+ls -la /dev/hidraw*
+cat /sys/class/hidraw/hidraw*/device/uevent
+```
+
+#### macOS
+```bash
+# System Information
+system_profiler SPUSBDataType | grep -A 10 -B 10 "keyboard\|Keyboard"
+
+# Or use ioreg
+ioreg -p IOUSB | grep -A 10 -B 10 "keyboard\|Keyboard"
+```
+
+## Reloading Configuration
+
+After modifying the configuration file, reload it without restarting:
+
+```bash
+sudo qmkonnect -r
+```
+
+This rewrites the udev rule (requires root) and reloads it. Only needed when you set an explicit vendor/product ID — see the note above.
+
+### Linux Additional Steps
+
+On Linux, if you modified udev rules or systemd services, also run:
+
+```bash
+# Reload udev rules
+sudo udevadm control --reload && sudo udevadm trigger
+
+# Restart systemd service
+systemctl --user restart qmkonnect
+```
+
+## Configuration Examples
+
+### Zero desktop config (Linux)
+
+This is the **desktop-side** default — no IDs are set, so QMKonnect
+auto-discovers any single QMK keyboard. (Your firmware still needs qmk-notifier
+built in — see [QMK Integration]({{ site.baseurl }}/qmk-integration).)
+```toml
+# vendor_id  = 0xfeed   # unset: auto-discovery
+# product_id = 0x0000   # unset: auto-discovery
+```
+
+### Disambiguate multiple keyboards (Linux)
+```toml
+# Pin a specific board when more than one QMK keyboard is connected
+vendor_id  = 0x1234
+product_id = 0x5678
+```
+
+### Tuning (Linux, Hyprland)
+```toml
+# Coalesce rapid window-switch bursts (default 50 ms); poll for the active
+# window every 200 ms on Hyprland (default 0 = rely on IPC events).
+debounce_ms      = 50
+poll_interval_ms = 200
+```
+
+## Configuration Reference
+
+All keys are optional. With your firmware already running qmk-notifier, QMKonnect auto-discovers any standard QMK keyboard by the QMK Raw HID signature, so a single-keyboard desktop install needs no IDs set. (The firmware itself is *not* optional — see the [QMK Integration Guide]({{ site.baseurl }}/qmk-integration).)
+
+| Key | Default | Description |
+| --- | --- | --- |
+| `vendor_id` | unset (any) | USB vendor ID (hex). Set only to disambiguate among multiple QMK keyboards. |
+| `product_id` | unset (any) | USB product ID (hex). Set only to disambiguate among multiple QMK keyboards. |
+| `usage_page` | `0xff60` | HID usage page. Set only if your firmware overrode `RAW_USAGE_PAGE`. |
+| `usage` | `0x61` | HID usage. Set only if your firmware overrode `RAW_USAGE_ID`. |
+| `debounce_ms` | `50` | Window (ms) for coalescing rapid window-change bursts before sending to the keyboard. `0` disables debouncing. |
+| `poll_interval_ms` | `0` | (Hyprland only) periodic active-window poll interval (ms). `0` relies on IPC events instead of polling. |
+
+### CLI flags
+
+| Flag | Description |
+| --- | --- |
+| `-c`, `--config` | Create a default (commented-out) configuration file. |
+| `-r`, `--reload` | Re-read the config and write the matching udev rule (Linux; requires root). |
+| `-l`, `--list` | List the platforms supported by this build. |
+| `--list-devices` | List connected HID devices (VID/PID discovery). |
+| `-v`, `--verbose` | Enable verbose logging. |
+| `-h`, `--help` | Show help. |
+
+## Validation
+
+After configuration, test that QMKonnect can detect your keyboard:
+
+### Windows & macOS
+Check the system tray/menu bar icon - it should show as connected.
+
+### Linux
+```bash
+# Test with verbose output to see if keyboard is detected
+qmkonnect -v
+```
+
+If you see "Keyboard detected" messages, you're ready to use QMKonnect.
+
+## Troubleshooting
+
+If your keyboard isn't detected:
+
+1. **Double-check your vendor/product IDs** - they must match exactly
+2. **Verify Raw HID is enabled** in your QMK firmware 
+3. **Check permissions** (Linux users may need to be in the `input` group; the udev rule also grants `uaccess`)
+
+For detailed troubleshooting steps, see the [troubleshooting guide]({{ site.baseurl }}/troubleshooting).
+
+---
+
+## QMK Firmware Configuration
+
+Once QMKonnect can detect your keyboard, configure your QMK firmware to respond to window changes.
 
 The qmk-notifier framework provides two main configuration macros:
 
-#### Layer Switching with DEFINE_SERIAL_LAYERS
+### Layer Switching with DEFINE_SERIAL_LAYERS
 
 Automatically switch layers based on active windows:
 
@@ -223,7 +1111,7 @@ DEFINE_SERIAL_LAYERS({
 });
 ```
 
-#### Custom Commands with DEFINE_SERIAL_COMMANDS
+### Custom Commands with DEFINE_SERIAL_COMMANDS
 
 Execute custom functions based on window changes:
 
@@ -242,16 +1130,16 @@ DEFINE_SERIAL_COMMANDS({
 });
 ```
 
-### Framework Elements
+## Framework Elements
 
-#### Available Macros
+### Available Macros
 
 - **`DEFINE_SERIAL_LAYERS`**: Maps window patterns to keyboard layers
-- **`DEFINE_SERIAL_COMMANDS`**: Maps window patterns to command functions
+- **`DEFINE_SERIAL_COMMANDS`**: Maps window patterns to command functions  
 - **`WT(class, title)`**: Helper macro to match both window class and title
 - **Wildcard matching**: Use `*` for pattern matching (e.g., `"*chrome*"`)
 
-#### Understanding Window Matching
+### Understanding Window Matching
 
 QMKonnect sends window information in this format:
 ```
@@ -264,7 +1152,7 @@ Examples:
 - Firefox: `firefox{GS}GitHub - Mozilla Firefox`
 - Terminal: `terminal{GS}~/projects/qmkonnect`
 
-### Pattern Matching Examples
+## Pattern Matching Examples
 
 ```c
 // Match any calculator app
@@ -278,216 +1166,66 @@ Examples:
 
 // Match any Steam game
 { "steam_app*", _GAMING }
-
-// Match specific game by both class and title
-{ WT("cs2", "Counter-Strike 2"), _GAMING }
 ```
 
-### Compiling Your Firmware
+---
 
-After adding the qmk-notifier integration:
+## Next Steps
 
-```bash
-# In your QMK firmware directory
-qmk compile -kb your_keyboard -km your_keymap
+- [Learn how to use QMKonnect]({{ site.baseurl }}/usage)
+- [See real-world examples]({{ site.baseurl }}/examples)
 
-# Flash to keyboard
-qmk flash -kb your_keyboard -km your_keymap
-```
+================================================================================
+ 6. docs/usage.md (Usage)
+================================================================================
 
-### Testing Your Integration
 
-#### Basic Verification
+# Usage Guide
 
-1. **Compile and flash** your firmware with the integration
-2. **Install and configure** QMKonnect with your keyboard's vendor/product IDs
-3. **Test communication** by switching between different applications
-
-#### Debug Output
-
-Add console output to your keymap for debugging:
-
-```c
-#ifdef CONSOLE_ENABLE
-void qmk_notifier_notify(const char* app_class, const char* window_title) {
-    printf("App: %s, Title: %s\n", app_class, window_title);
-    // Your layer switching logic here
-}
-#endif
-```
-
-Then monitor QMK console output:
-```bash
-qmk console
-```
-
-## Configuration Guide
-
-This guide covers configuring QMKonnect to communicate with your keyboard. You only need to provide two values: your keyboard's vendor ID and product ID.
-
-### Windows & macOS Configuration
-
-Both Windows and macOS use a settings dialog through the system tray:
-
-1. **Find the system tray icon** (QMKonnect icon in your system tray/menu bar)
-2. **Right-click the icon** and select "Settings"
-3. **Enter your keyboard IDs**:
-   - **Vendor ID**: Your keyboard's vendor ID in hex format (e.g., `feed`)
-   - **Product ID**: Your keyboard's product ID in hex format (e.g., `0000`)
-4. **Click OK** to save
-
-Settings are saved automatically and work immediately - no restart needed.
-
-### Linux Configuration
-
-Linux uses a TOML configuration file located at `~/.config/qmk-notifier/config.toml`.
-
-#### Creating the Configuration File
-
-```bash
-qmkonnect -c
-```
-
-This creates a default configuration file:
-
-```toml
-# QMKonnect Configuration
-
-# Your QMK keyboard's vendor ID (in hex)
-vendor_id = 0xfeed
-
-# Your QMK keyboard's product ID (in hex)
-product_id = 0x0000
-
-# Add any other configuration options here
-```
-
-#### Editing the Configuration
-
-```bash
-# Using your preferred editor
-nano ~/.config/qmk-notifier/config.toml
-```
-
-Update the values:
-```toml
-vendor_id = 0x1234  # Replace with your keyboard's vendor ID
-product_id = 0x5678  # Replace with your keyboard's product ID
-```
-
-#### Reloading Configuration (Linux Only)
-
-After editing the configuration file:
-
-```bash
-qmkonnect -r
-```
-
-This updates system configuration (udev rules) and reloads settings.
-
-### Finding Your Keyboard IDs
-
-#### Method 1: QMK Configuration
-
-Check your QMK `config.h`:
-
-```c
-#define VENDOR_ID    0xFEED
-#define PRODUCT_ID   0x0000
-```
-
-#### Method 2: System Tools
-
-**Windows (PowerShell):**
-```powershell
-Get-WmiObject -Class Win32_USBHub | Where-Object {$_.Name -like "*keyboard*"}
-```
-
-**Linux:**
-```bash
-lsusb
-lsusb -v | grep -A 5 -B 5 "keyboard\|Keyboard"
-cat /sys/class/hidraw/hidraw*/device/uevent
-```
-
-**macOS:**
-```bash
-system_profiler SPUSBDataType | grep -A 10 -B 10 "keyboard\|Keyboard"
-ioreg -p IOUSB | grep -A 10 -B 10 "keyboard\|Keyboard"
-```
-
-### Configuration Examples
-
-#### Basic Configuration (Linux)
-```toml
-# Minimal configuration - just keyboard IDs
-vendor_id = 0xfeed
-product_id = 0x0000
-```
-
-#### Custom Keyboard IDs (Linux)
-```toml
-# Example with different keyboard IDs
-vendor_id = 0x1234
-product_id = 0x5678
-```
-
-### Validation
-
-After configuration, test that QMKonnect can detect your keyboard:
-
-#### Windows & macOS
-Check the system tray/menu bar icon - it should show as connected.
-
-#### Linux
-```bash
-# Test with verbose output to see if keyboard is detected
-qmkonnect -v
-```
-
-If you see "Keyboard detected" messages, you're ready to use QMKonnect.
-
-## Usage Guide
+> **Prerequisite:** This assumes you've already integrated the
+> [qmk-notifier](https://github.com/dabstractor/qmk-notifier) module into your
+> firmware (see [QMK Integration]({{ site.baseurl }}/qmk-integration)). QMKonnect
+> only sends window data — without the firmware module, nothing will switch.
 
 QMKonnect runs in the background, automatically detecting window changes and communicating with your QMK keyboard. Here's how to start, stop, and manage the application.
 
-### Starting QMKonnect
+## Starting QMKonnect
 
-#### Windows
+### Windows
 - **Automatic startup**: If installed via MSI, starts automatically with Windows
-- **Manual start**: Find "QMKonnect" in Start Menu or double-click desktop shortcut
+- **Manual start**: Find "QMKonnect" in Start Menu or double-click the desktop shortcut
 - **System tray**: Look for the QMKonnect icon in your system tray when running
 
-#### Linux
+### Linux  
 - **Automatic startup**: `systemctl --user enable qmkonnect` (runs on login)
 - **Manual start**: `qmkonnect` or `systemctl --user start qmkonnect`
 - **Check status**: `systemctl --user status qmkonnect`
 
-#### macOS
+### macOS
 - **Manual start**: Launch QMKonnect.app from Applications folder
 - **Menu bar**: Look for the QMKonnect icon in your menu bar when running
 
-### Stopping QMKonnect
+## Stopping QMKonnect
 
-#### Windows
+### Windows
 Right-click the system tray icon and select "Quit"
 
-#### Linux
+### Linux
 ```bash
 systemctl --user stop qmkonnect
 ```
 
-#### macOS
+### macOS  
 Quit from the menu bar icon or application menu
 
-### Auto-Start on Boot
+## Auto-Start on Boot
 
-#### Windows
-Auto-start is automatically configured when using the MSI installer. To disable:
-1. Open Task Manager → Startup tab
-2. Find "QMKonnect" and disable it
+### Windows
+**Open at Login** is enabled by default. Toggle it from the system-tray icon → **Open at Login**.
+It's backed by the HKCU `Run` key (you can also disable it in Task Manager →
+Startup, but the tray toggle is the intended way).
 
-#### Linux
+### Linux
 ```bash
 # Enable auto-start on login
 systemctl --user enable qmkonnect
@@ -496,79 +1234,99 @@ systemctl --user enable qmkonnect
 systemctl --user disable qmkonnect
 ```
 
-#### macOS
+### macOS
 1. System Preferences → Users & Groups → Login Items
 2. Add QMKonnect.app to start automatically
 
-### How It Works
+## How It Works
 
 Once running, QMKonnect automatically:
 
 1. **Monitors window changes** - detects when you switch between applications
-2. **Extracts window information** - gets the application name and window title
+2. **Extracts window information** - gets the application name and window title  
 3. **Sends data to your keyboard** - your QMK firmware receives this information
 4. **Triggers layer changes** - your keyboard responds based on your configuration
 
 The magic happens in your QMK firmware configuration - QMKonnect just provides the window information your keyboard needs to make intelligent decisions.
 
-### System Integration
+## System Integration
 
-#### Windows
+### Windows
 - **System tray integration**: Right-click the tray icon for settings and status
 - **Runs in background**: Minimal resource usage
 - **Auto-updates**: Receives automatic updates when available
 
-#### Linux
+### Linux  
 - **Systemd service**: Integrates with your system's service management
 - **Hyprland support**: Currently supports Hyprland window manager only
 - **Lightweight**: Designed for minimal system impact
 
-#### macOS
+### macOS
 - **Menu bar integration**: Access settings and status from the menu bar
 - **Accessibility permissions**: Requires one-time setup for window monitoring
 - **Native app bundle**: Standard macOS application behavior
 
-### What QMKonnect Enables
+## What QMKonnect Enables
 
 With QMKonnect running, your keyboard becomes context-aware:
 
 - **Development environments**: Automatically switch to coding-focused layouts when opening IDEs
-- **Gaming**: Enter gaming mode when launching games
+- **Gaming**: Enter gaming mode when launching games  
 - **Browser work**: Activate browser-specific shortcuts and layers
 - **Terminal usage**: Switch to terminal-optimized layouts
 - **Media control**: Enable media keys when using music/video applications
 
 The behavior is entirely customized in your QMK firmware - QMKonnect just provides the window information your keyboard needs.
 
-### Status and Monitoring
+## Status and Monitoring
 
-#### Check if QMKonnect is Running
+### Check if QMKonnect is Running
 
 - **Windows**: Look for the QMKonnect icon in your system tray
 - **Linux**: `systemctl --user status qmkonnect`
 - **macOS**: Look for the QMKonnect icon in your menu bar
 
-#### Verify Keyboard Connection
+### Verify Keyboard Connection
 
 If your layers aren't switching as expected:
 1. Check that QMKonnect shows as "connected" in the system tray/menu bar
 2. Verify your QMK firmware is properly configured with the qmk-notifier module
 3. Test by switching between different applications
 
-## Real-World Examples
+For detailed troubleshooting, see the [troubleshooting guide]({{ site.baseurl }}/troubleshooting).
 
-Complete examples showing how to configure QMKonnect and QMK firmware for different use cases.
+---
 
-### Example 1: Developer Setup
+## Next Steps
+
+- [See real-world examples]({{ site.baseurl }}/examples)
+- [Learn about troubleshooting]({{ site.baseurl }}/troubleshooting)
+
+================================================================================
+ 7. docs/examples.md (Firmware examples)
+================================================================================
+
+
+# Real-World Examples
+
+Complete examples showing how to configure your **QMK firmware** for different use cases.
+
+> **These are firmware examples, not desktop-app configuration.** They assume
+> you've already integrated the
+> [qmk-notifier](https://github.com/dabstractor/qmk-notifier) module into your
+> firmware (see the [QMK Integration Guide]({{ site.baseurl }}/qmk-integration)).
+> QMKonnect only sends the active-window string; these `DEFINE_SERIAL_LAYERS` /
+> `DEFINE_SERIAL_COMMANDS` rules are what make your keyboard actually react.
+
+## Example 1: Developer Setup
 
 **Scenario**: A developer who uses VS Code, Terminal, and browsers, wanting different layouts for each context.
 
-#### QMK Keymap Configuration
+### QMK Keymap Configuration
 
 ```c
 #include QMK_KEYBOARD_H
-#include "raw_hid.h"
-#include "./lib/qmk-notifier/notifier.h"
+#include "qmk-notifier/notifier.h"
 
 void raw_hid_receive(uint8_t *data, uint8_t length) {
     hid_notify(data, length);
@@ -627,16 +1385,15 @@ const uint16_t PROGMEM keymaps[][MATRIX_ROWS][MATRIX_COLS] = {
 
 **Result**: Your keyboard automatically switches to the appropriate layer when you switch between VS Code (coding layer), Terminal (terminal layer), and your browser (browser layer).
 
-### Example 2: Gaming & Productivity
+## Example 2: Gaming & Productivity
 
 **Scenario**: A user who games and does office work, wanting to disable certain keys during games.
 
-#### QMK Keymap Configuration
+### QMK Keymap Configuration
 
 ```c
-#include QMK_KEYBOARD_H  
-#include "raw_hid.h"
-#include "./lib/qmk-notifier/notifier.h"
+#include QMK_KEYBOARD_H
+#include "qmk-notifier/notifier.h"
 
 void raw_hid_receive(uint8_t *data, uint8_t length) {
     hid_notify(data, length);
@@ -705,16 +1462,15 @@ const uint16_t PROGMEM keymaps[][MATRIX_ROWS][MATRIX_COLS] = {
 
 **Result**: When you launch any Steam game, your keyboard switches to gaming mode and disables problematic keys. When you switch to office applications, it switches to a productivity-focused layout.
 
-### Example 3: Content Creation Setup
+## Example 3: Content Creation Setup
 
 **Scenario**: A content creator using different applications for video editing, streaming, and social media.
 
-#### QMK Keymap Configuration
+### QMK Keymap Configuration
 
 ```c
 #include QMK_KEYBOARD_H
-#include "raw_hid.h" 
-#include "./lib/qmk-notifier/notifier.h"
+#include "qmk-notifier/notifier.h"
 
 void raw_hid_receive(uint8_t *data, uint8_t length) {
     hid_notify(data, length);
@@ -775,9 +1531,9 @@ const uint16_t PROGMEM keymaps[][MATRIX_ROWS][MATRIX_COLS] = {
 
 **Result**: Your keyboard adapts to your workflow - switching to video editing shortcuts in Premiere Pro, streaming controls in OBS, and social media optimizations in Discord or when managing YouTube.
 
-### Pattern Matching Tips
+## Pattern Matching Tips
 
-#### Understanding Window Matching
+### Understanding Window Matching
 
 - **Wildcards**: Use `*` to match partial strings
   - `"*chrome*"` matches Google Chrome, Chromium, Chrome Canary
@@ -787,7 +1543,7 @@ const uint16_t PROGMEM keymaps[][MATRIX_ROWS][MATRIX_COLS] = {
   - `WT("*chrome*", "*youtube*")` - YouTube in Chrome
   - `WT("*code*", "*.rs")` - Rust files in VS Code
 
-#### Common Patterns
+### Common Patterns
 
 ```c
 // Match any calculator app
@@ -808,25 +1564,37 @@ const uint16_t PROGMEM keymaps[][MATRIX_ROWS][MATRIX_COLS] = {
 { WT("cs2", "Counter-Strike 2"), _GAMING }
 ```
 
-### Testing Your Configuration
+## Testing Your Configuration
 
 1. **Compile and flash** your firmware
-2. **Configure QMKonnect** with your keyboard's vendor/product IDs
+2. **Install QMKonnect** — for a single standard keyboard it needs no IDs (auto-discovery); set vendor/product IDs only to disambiguate among multiple QMK keyboards
 3. **Test layer switching** by switching between applications
 4. **Check QMK console** output for debugging:
    ```bash
    qmk console
    ```
 
-## Troubleshooting Guide
+---
+
+## Next Steps
+
+- [Learn about troubleshooting]({{ site.baseurl }}/troubleshooting)
+- [Contribute examples](https://github.com/dabstractor/qmkonnect)
+
+================================================================================
+ 8. docs/troubleshooting.md (Troubleshooting)
+================================================================================
+
+
+# Troubleshooting Guide
 
 Common issues and solutions for QMKonnect across different platforms.
 
-### Debugging Tools
+## Debugging Tools
 
 Before diving into specific issues, familiarize yourself with these debugging tools:
 
-#### Linux Command Line Options
+### Linux Command Line Options
 
 ```bash
 qmkonnect [OPTIONS]
@@ -841,7 +1609,7 @@ Options:
     -V, --version       Show version information
 ```
 
-#### Verbose Logging
+### Verbose Logging
 
 Run with verbose logging to see all activity:
 
@@ -857,7 +1625,7 @@ qmkonnect -v
 # - Error messages
 ```
 
-#### Debug Mode (Linux)
+### Debug Mode (Linux)
 
 For detailed troubleshooting:
 
@@ -871,7 +1639,7 @@ qmkonnect --debug
 # - Timing information
 ```
 
-#### View Logs
+### View Logs
 
 **Linux (systemd):**
 ```bash
@@ -884,11 +1652,11 @@ systemctl --user status qmkonnect
 
 **Windows & macOS:** Access logs through the system tray/menu bar interface.
 
-### General Issues
+## General Issues
 
-#### QMKonnect Won't Start
+### QMKonnect Won't Start
 
-**Symptoms**: App doesn't start or exits immediately
+**Symptoms**: App doesn't start or exits right away
 
 **Solutions**:
 
@@ -898,7 +1666,9 @@ systemctl --user status qmkonnect
    qmkonnect -v  # Run with verbose output
    ```
 
-2. **Check dependencies**: Make sure required libraries are installed
+2. **Check dependencies**:
+   - Make sure required libraries are installed
+   - Check system compatibility
 
 3. **Run with debug output**:
    ```bash
@@ -908,9 +1678,9 @@ systemctl --user status qmkonnect
 4. **Check permissions**:
    - Linux: User in `input` and `plugdev` groups
    - macOS: Accessibility permissions granted
-   - Windows: Run as Administrator if needed
+   - Windows: grant the screen-recording permission when prompted (for window titles); HID access needs no special permissions
 
-#### Keyboard Not Detected
+### Keyboard Not Detected
 
 **Symptoms**: QMKonnect runs but doesn't communicate with keyboard, layers don't switch
 
@@ -943,27 +1713,32 @@ system_profiler SPUSBDataType | grep -A 10 -B 10 -i keyboard
    - Ensure Raw HID is enabled in QMK firmware
    - Confirm qmk-notifier module is included
 
-2. **Check QMK firmware**:
-   ```c
-   // In rules.mk
-   RAW_ENABLE = yes
-   
-   // In config.h
-   #define RAW_USAGE_PAGE 0xFF60
-   #define RAW_USAGE_ID   0x61
+2. **Check QMK firmware** — qmk-notifier must be integrated (it is **required**, not optional):
+   ```make
+   # In your keymap's rules.mk — this enables Raw HID AND compiles notifier.c:
+   include keyboards/handwired/[manufacturer]/[keyboard]/qmk-notifier/rules.mk
    ```
+   You do **not** need to set `RAW_USAGE_PAGE` / `RAW_USAGE_ID` — QMK's defaults
+   (`0xFF60` / `0x61`) are exactly what qmk-notifier expects. See the
+   [QMK Integration Guide]({{ site.baseurl }}/qmk-integration).
 
 3. **Permission issues (Linux)**:
+   Default QMK keyboards need no manual permissions setup — the shipped static
+   rule grants access to any device exposing the QMK Raw HID signature. If you
+   installed from source (not the Arch package), make sure the rule and helper
+   are installed:
    ```bash
-   # Add user to groups
-   sudo usermod -a -G input,plugdev $USER
-   
-   # Install udev rules
-   sudo cp packaging/linux/udev/99-qmkonnect.rules.template /etc/udev/rules.d/99-qmkonnect.rules
+   sudo install -m755 target/release/qmkonnect-hid-id /usr/lib/udev/qmkonnect-hid-id
+   sudo install -m644 packaging/linux/udev/69-qmkonnect-rawhid.rules \
+                       /usr/lib/udev/rules.d/69-qmkonnect-rawhid.rules
    sudo udevadm control --reload && sudo udevadm trigger
+   # Still no access? Ensure your user is in the `input` group:
+   sudo usermod -aG input $USER   # then log out and back in
    ```
+   If you set a custom `vendor_id`/`product_id`, also generate the matching
+   rule: `sudo qmkonnect -r`.
 
-#### Window Detection Not Working
+### Window Detection Not Working
 
 **Symptoms**: QMKonnect runs but doesn't detect window changes, keyboard doesn't switch layers when changing applications
 
@@ -990,13 +1765,13 @@ system_profiler SPUSBDataType | grep -A 10 -B 10 -i keyboard
 
 **Platform-specific solutions**:
 
-**Windows**
+#### Windows
 ```bash
 # Check if window hooks are working
 qmkonnect -v  # Look for "Window changed" messages
 ```
 
-**Linux (Hyprland Only)**
+#### Linux (Hyprland Only)
 ```bash
 # Check Hyprland integration
 echo $HYPRLAND_INSTANCE_SIGNATURE
@@ -1009,7 +1784,7 @@ socat -u UNIX-CONNECT:/tmp/hypr/$HYPRLAND_INSTANCE_SIGNATURE/.socket2.sock - | h
 
 **Note**: Only Hyprland is supported on Linux. Other window managers are not supported yet.
 
-**macOS**
+#### macOS
 1. **Grant Accessibility permissions** (required for window monitoring):
    - System Preferences → Security & Privacy → Privacy  
    - Select "Accessibility" from left panel
@@ -1021,9 +1796,294 @@ socat -u UNIX-CONNECT:/tmp/hypr/$HYPRLAND_INSTANCE_SIGNATURE/.socket2.sock - | h
    ./QMKonnect.app/Contents/MacOS/qmkonnect -v
    ```
 
-### Communication Issues
+## Platform-Specific Issues
 
-#### Data Not Reaching Keyboard
+### Windows Issues
+
+#### System Tray Icon Missing
+
+**Solutions**:
+1. Check if running as tray app:
+   ```bash
+   qmkonnect --tray-app
+   ```
+
+2. Restart Windows Explorer:
+   ```powershell
+   taskkill /f /im explorer.exe
+   start explorer.exe
+   ```
+
+3. Check system tray settings:
+   - Settings → Personalization → Taskbar
+   - Select which icons appear on taskbar
+
+#### Multiple Instances Running
+
+**Symptoms**: Multiple QMKonnect processes in Task Manager
+
+**Solutions**:
+1. Kill all instances:
+   ```powershell
+   taskkill /f /im qmkonnect.exe
+   ```
+
+2. Start single instance:
+   ```bash
+   qmkonnect --tray-app
+   ```
+
+3. Check the autostart entry (HKCU `Run` key):
+   - `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\QMKonnect`
+
+#### Installation or Launch Blocked
+
+**Solutions**:
+1. SmartScreen "Unknown publisher" → click **More info → Run anyway** (the app is unsigned)
+2. Check Windows Defender exclusions / verify antivirus isn't quarantining it
+3. The app needs **no Administrator** rights — it's a per-user install
+
+### Linux Issues
+
+#### Broken udev rule corrupts device permissions (VMs / containers fail)
+
+> **Symptoms:** libvirt/QEMU VMs fail to start with errors like
+> `Failed to open /dev/null for OFD lock probing: Permission denied` or
+> `Could not access KVM kernel module`; `ls -l /dev/null /dev/kvm /dev/fuse`
+> shows them as `root:input` mode `0660` instead of `root:root 0666`.
+
+An older QMKonnect build wrote `/etc/udev/rules.d/99-qmkonnect.rules` in a
+multi-line form with **no backslash line-continuations**. Because udev treats
+every newline as the end of a rule (a trailing comma does **not** continue a
+line), the bare-assignment lines matched **every device on the host** and
+re-permissioned them to `root:input 0660`. The current build both renders a
+correct single-line rule **and** auto-repairs a dangerous legacy rule on
+`qmkonnect --reload` / `-r`, so the supported fix is simply:
+
+```bash
+sudo qmkonnect -r          # overwrites/purges the bad rule, then reloads udev
+```
+
+If `qmkonnect -r` is unavailable, or to recover manually:
+
+```bash
+sudo rm /etc/udev/rules.d/99-qmkonnect.rules   # remove the bad rule
+sudo udevadm control --reload-rules
+sudo udevadm trigger                           # re-apply correct device defaults
+# /dev/null, /dev/kvm, /dev/fuse, ... revert to their proper owner/mode.
+# Reboot if any node still looks wrong.
+```
+
+Then reinstall QMKonnect via the supported path — the static
+`packaging/linux/udev/69-qmkonnect-rawhid.rules` (correct: single line, guarded
+by `ENV{ID_QMKONNECT}=="1"`) — so default keyboards need no config-driven rule
+at all. See `installation.md`.
+
+#### Systemd Service Fails
+
+**Check service status**:
+```bash
+systemctl --user status qmkonnect
+journalctl --user -u qmkonnect -f
+```
+
+**Common fixes**:
+1. **Service file issues**:
+   ```bash
+   # Reinstall service file
+   curl https://raw.githubusercontent.com/dabstractor/qmkonnect/main/packaging/linux/systemd/qmkonnect.service.template | tee ~/.config/systemd/user/qmkonnect.service
+   
+   systemctl --user daemon-reload
+   systemctl --user enable --now qmkonnect
+   ```
+
+2. **Binary path issues**:
+   ```bash
+   # Verify binary location
+   which qmkonnect
+   
+   # Update service file if needed
+   systemctl --user edit qmkonnect
+   ```
+
+#### Hyprland Integration Issues
+
+**Check Hyprland socket**:
+```bash
+# Verify socket exists
+ls -la /tmp/hypr/$HYPRLAND_INSTANCE_SIGNATURE/
+
+# Test socket communication
+socat -u UNIX-CONNECT:/tmp/hypr/$HYPRLAND_INSTANCE_SIGNATURE/.socket2.sock - | head -10
+```
+
+**Solutions**:
+1. **Socket permission issues**:
+   ```bash
+   # Check socket permissions
+   ls -la /tmp/hypr/$HYPRLAND_INSTANCE_SIGNATURE/.socket2.sock
+   
+   # Restart Hyprland if needed
+   ```
+
+**Note**: Only Hyprland is supported on Linux. Other window managers are not supported yet. Please contribute support for your window manager!
+
+### macOS Issues
+
+#### Window titles not updating (app name only)
+
+QMKonnect reads window **titles** with `CGWindowListCopyWindowInfo`, which requires **Screen Recording** permission (not Accessibility). Without it, the app still runs and sends the frontmost **app name**, but titles come back empty.
+
+**Grant Screen Recording:**
+1. System Settings → Privacy & Security → Screen Recording
+2. Enable QMKonnect
+3. **Quit & reopen** QMKonnect so the change takes effect
+
+**Why it keeps re-prompting after every rebuild:** local builds are ad-hoc signed, so the app's signature (`cdhash`) changes on each build. macOS keys the Screen-Recording grant to that signature and re-prompts every rebuild — *even though System Settings still shows QMKonnect as granted*. Reset the stale grant to get one clean prompt:
+
+```bash
+tccutil reset ScreenCapture io.mulletware.qmkonnect
+```
+
+To stop the loop for good, build with a stable identity:
+
+```bash
+CODESIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" ./build.sh
+```
+
+#### Launching an OLD version after rebuilding
+
+**Symptoms:** you run `build.sh`, but the app that opens is missing your changes or is clearly an older build.
+
+**Cause:** this is a *launch* problem, not a build problem — `build.sh` always compiles current source. macOS LaunchServices remembers every copy of `QMKonnect.app` it has ever seen (old `/Applications` installs, trashed copies, apps left inside a mounted `.dmg`) and can launch one of those **stale** copies instead of your fresh build.
+
+**Fix — clean the old copies before rebuilding:**
+
+```bash
+pkill -f "QMKonnect.app"
+ls /Volumes | grep -i qmkonnect | while read -r v; do hdiutil detach "/Volumes/$v"; done
+rm -rf /Applications/QMKonnect.app ~/.Trash/QMKonnect.app
+tccutil reset ScreenCapture io.mulletware.qmkonnect
+```
+
+Then rebuild, install, and launch:
+
+```bash
+cd packaging/macos && ./build.sh && cp -R QMKonnect.app /Applications/ && cd ../..
+open /Applications/QMKonnect.app
+```
+
+To see what macOS still has registered (when stale copies linger):
+
+```bash
+LSR=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
+"$LSR" -dump | grep -i 'path:.*QMKonnect\.app'   # list every registered copy
+"$LSR" -u /path/to/stale/QMKonnect.app           # unregister one stale copy
+```
+
+See the [installation guide]({{ site.baseurl }}/installation/#macos) for the full build → install → launch sequence.
+
+## Configuration Issues
+
+### Invalid Configuration File
+
+**Symptoms**: Configuration errors on startup
+
+**Solutions**:
+1. **Validate TOML syntax**:
+   ```bash
+   # Use online TOML validator or
+   python3 -c "import toml; toml.load('config.toml')"
+   ```
+
+2. **Reset to defaults**:
+   ```bash
+   # Backup current config
+   cp ~/.config/qmk-notifier/config.toml ~/.config/qmk-notifier/config.toml.bak
+   
+   # Create new default config
+   qmkonnect -c
+   ```
+
+3. **Check file permissions**:
+   ```bash
+   ls -la ~/.config/qmk-notifier/config.toml
+   chmod 644 ~/.config/qmk-notifier/config.toml
+   ```
+
+### Wrong Keyboard IDs
+
+**Find correct IDs**:
+
+#### Using QMK Configuration
+```c
+// Check your QMK config.h
+#define VENDOR_ID    0xFEED
+#define PRODUCT_ID   0x0000
+```
+
+#### Using System Tools
+```bash
+# Linux
+lsusb | grep -i keyboard
+cat /sys/class/hidraw/hidraw*/device/uevent | grep -E "HID_ID|HID_NAME"
+
+# macOS
+system_profiler SPUSBDataType | grep -A 10 -B 10 -i keyboard
+
+# Windows PowerShell
+Get-WmiObject -Class Win32_USBHub | Where-Object {$_.Name -like "*keyboard*"}
+```
+
+## Performance Issues
+
+### High CPU Usage
+
+**Diagnosis**:
+```bash
+# Monitor CPU usage
+top -p $(pgrep qmkonnect)
+
+# Check polling interval
+qmkonnect -v  # Look for timing information
+```
+
+**Solutions**:
+1. **Increase polling interval**:
+   ```toml
+   [window_detection]
+   poll_interval = 200  # Increase from default 100ms
+   ```
+
+2. **Use application filtering**:
+   ```toml
+   [window_detection]
+   include_apps = ["code", "firefox", "terminal"]  # Only monitor specific apps
+   ```
+
+3. **Check for infinite loops**:
+   ```bash
+   qmkonnect --debug  # Look for repeated events
+   ```
+
+### Memory Leaks
+
+**Monitor memory usage**:
+```bash
+# Linux
+ps aux | grep qmkonnect
+valgrind --leak-check=full qmkonnect
+
+# macOS
+leaks qmkonnect
+
+# Windows
+# Use Task Manager or Process Explorer
+```
+
+## Communication Issues
+
+### Data Not Reaching Keyboard
 
 **Symptoms**: Window detection works, but keyboard layers don't change
 
@@ -1038,14 +2098,21 @@ socat -u UNIX-CONNECT:/tmp/hypr/$HYPRLAND_INSTANCE_SIGNATURE/.socket2.sock - | h
    qmkonnect --test-connection
    ```
 
-2. **Check QMK firmware side**:
+2. **Check QMK firmware side** — make sure qmk-notifier is actually integrated:
+   - Your `rules.mk` includes `.../qmk-notifier/rules.mk` (this compiles
+     `notifier.c` and enables Raw HID).
+   - Your `keymap.c` includes `"qmk-notifier/notifier.h"` and forwards
+     `raw_hid_receive()` to `hid_notify()`.
+   - See the [QMK Integration Guide]({{ site.baseurl }}/qmk-integration).
    
-   Add debug output to your QMK keymap:
+   To watch what the keyboard receives, add your own `printf` inside a callback
+   (there is no built-in `qmk_notifier_notify` callback — the firmware API is the
+   `DEFINE_SERIAL_LAYERS` / `DEFINE_SERIAL_COMMANDS` macros):
    ```c
    #ifdef CONSOLE_ENABLE
-   void qmk_notifier_notify(const char* app_class, const char* window_title) {
-       printf("Received: app='%s', title='%s'\n", app_class, window_title);
-       // Your layer switching logic here
+   void disable_vim(void) {
+       printf("qmk-notifier: disable_vim fired\n");
+       // ...your real logic...
    }
    #endif
    ```
@@ -1055,110 +2122,84 @@ socat -u UNIX-CONNECT:/tmp/hypr/$HYPRLAND_INSTANCE_SIGNATURE/.socket2.sock - | h
    qmk console
    ```
 
-3. **Verify Raw HID setup**:
-   
-   Ensure your QMK firmware has:
+3. **Verify Raw HID setup** — the qmk-notifier module's `rules.mk` enables this
+   for you (`RAW_ENABLE = yes`), so just make sure that module is included:
    ```make
-   # In rules.mk
-   RAW_ENABLE = yes
+   include keyboards/handwired/[manufacturer]/[keyboard]/qmk-notifier/rules.mk
    ```
+   (`RAW_USAGE_PAGE` / `RAW_USAGE_ID` are QMK defaults of `0xFF60` / `0x61` — no
+   need to set them unless your firmware deliberately overrides them.)
+
+### Raw HID Issues
+
+**Verify Raw HID setup**:
+1. **QMK firmware** — make sure qmk-notifier is integrated (its `rules.mk` sets `RAW_ENABLE = yes` for you):
+   ```make
+   include keyboards/handwired/[manufacturer]/[keyboard]/qmk-notifier/rules.mk
+   ```
+
+2. **Test Raw HID**:
+   ```bash
+   # Linux - test hidraw device
+   echo "test" > /dev/hidraw0
    
-   ```c
-   // In config.h  
-   #define RAW_USAGE_PAGE 0xFF60
-   #define RAW_USAGE_ID   0x61
+   # Check if device accepts data
+   qmkonnect --test-connection
    ```
 
-### Platform-Specific Issues
+## Getting Help
 
-#### Windows Issues
-
-**System Tray Icon Missing**
-
-Solutions:
-1. Check if running as tray app
-2. Restart Windows Explorer
-3. Check system tray settings in Windows settings
-
-**Multiple Instances Running**
-
-Solutions:
-1. Kill all instances: `taskkill /f /im qmkonnect.exe`
-2. Start single instance
-3. Check startup folder for duplicates
-
-#### Linux Issues
-
-**Systemd Service Fails**
-
-Check service status:
-```bash
-systemctl --user status qmkonnect
-journalctl --user -u qmkonnect -f
-```
-
-Common fixes:
-1. Reinstall service file
-2. Update binary path in service file
-3. Check dependencies
-
-**Hyprland Integration Issues**
-
-Check Hyprland socket:
-```bash
-# Verify socket exists
-ls -la /tmp/hypr/$HYPRLAND_INSTANCE_SIGNATURE/
-
-# Test socket communication
-socat -u UNIX-CONNECT:/tmp/hypr/$HYPRLAND_INSTANCE_SIGNATURE/.socket2.sock - | head -10
-```
-
-#### macOS Issues
-
-**Accessibility Permissions**
-
-Grant permissions:
-1. System Preferences → Security & Privacy → Privacy
-2. Select "Accessibility" from left panel
-3. Add QMKonnect to allowed applications
-
-**Application Bundle Issues**
-
-Solutions:
-1. Rebuild application bundle
-2. Check code signing
-3. Reset application permissions
-
-### Performance Issues
-
-#### High CPU Usage
-
-Monitor CPU usage and check for:
-1. Increased polling interval
-2. Application filtering
-3. Infinite loops in logs
-
-#### Memory Leaks
-
-Monitor memory usage and check for memory leaks using system tools.
-
-### Getting Debug Information
+### Collecting Debug Information
 
 When reporting issues, include:
 
-1. **System information**: OS version, architecture
-2. **QMKonnect version**: `qmkonnect --version`
-3. **Debug output**: `qmkonnect --debug > debug.log 2>&1`
-4. **Configuration file**: Content (remove sensitive data)
-5. **Steps to reproduce**: Clear reproduction steps
-6. **Expected vs actual behavior**: What should happen vs what happens
+1. **System information**:
+   ```bash
+   # Linux
+   uname -a
+   lsb_release -a
+   
+   # macOS
+   sw_vers
+   
+   # Windows
+   systeminfo | findstr /B /C:"OS Name" /C:"OS Version"
+   ```
+
+2. **QMKonnect version**:
+   ```bash
+   qmkonnect --version
+   ```
+
+3. **Debug output**:
+   ```bash
+   qmkonnect --debug > debug.log 2>&1
+   ```
+
+4. **Configuration file**:
+   ```bash
+   cat ~/.config/qmk-notifier/config.toml
+   ```
 
 ### Where to Get Help
 
-- **GitHub Issues**: https://github.com/dabstractor/qmkonnect/issues
+- **GitHub Issues**: [https://github.com/dabstractor/qmkonnect/issues](https://github.com/dabstractor/qmkonnect/issues)
 - **QMK Discord**: #help channel
-- **Documentation**: This guide and README files
+- **Documentation**: This site and README files
+
+### Creating Bug Reports
+
+Include:
+- Operating system and version
+- QMKonnect version
+- Steps to reproduce
+- Expected vs actual behavior
+- Debug logs
+- Configuration file (remove sensitive data)
 
 ---
 
-This comprehensive guide covers all aspects of QMKonnect from installation through advanced troubleshooting. For the most up-to-date information, always refer to the official documentation and GitHub repository.
+## Next Steps
+
+- [Check example setups]({{ site.baseurl }}/examples)
+- [Contribute to the project](https://github.com/dabstractor/qmkonnect)

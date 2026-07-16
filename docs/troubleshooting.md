@@ -96,7 +96,7 @@ systemctl --user status qmkonnect
 4. **Check permissions**:
    - Linux: User in `input` and `plugdev` groups
    - macOS: Accessibility permissions granted
-   - Windows: Run as Administrator if needed
+   - Windows: grant the screen-recording permission when prompted (for window titles); HID access needs no special permissions
 
 ### Keyboard Not Detected
 
@@ -131,25 +131,30 @@ system_profiler SPUSBDataType | grep -A 10 -B 10 -i keyboard
    - Ensure Raw HID is enabled in QMK firmware
    - Confirm qmk-notifier module is included
 
-2. **Check QMK firmware**:
-   ```c
-   // In rules.mk
-   RAW_ENABLE = yes
-   
-   // In config.h
-   #define RAW_USAGE_PAGE 0xFF60
-   #define RAW_USAGE_ID   0x61
+2. **Check QMK firmware** — qmk-notifier must be integrated (it is **required**, not optional):
+   ```make
+   # In your keymap's rules.mk — this enables Raw HID AND compiles notifier.c:
+   include keyboards/handwired/[manufacturer]/[keyboard]/qmk-notifier/rules.mk
    ```
+   You do **not** need to set `RAW_USAGE_PAGE` / `RAW_USAGE_ID` — QMK's defaults
+   (`0xFF60` / `0x61`) are exactly what qmk-notifier expects. See the
+   [QMK Integration Guide]({{ site.baseurl }}/qmk-integration).
 
 3. **Permission issues (Linux)**:
+   Default QMK keyboards need no manual permissions setup — the shipped static
+   rule grants access to any device exposing the QMK Raw HID signature. If you
+   installed from source (not the Arch package), make sure the rule and helper
+   are installed:
    ```bash
-   # Add user to groups
-   sudo usermod -a -G input,plugdev $USER
-   
-   # Install udev rules
-   sudo cp packaging/linux/udev/99-qmkonnect.rules.template /etc/udev/rules.d/99-qmkonnect.rules
+   sudo install -m755 target/release/qmkonnect-hid-id /usr/lib/udev/qmkonnect-hid-id
+   sudo install -m644 packaging/linux/udev/69-qmkonnect-rawhid.rules \
+                       /usr/lib/udev/rules.d/69-qmkonnect-rawhid.rules
    sudo udevadm control --reload && sudo udevadm trigger
+   # Still no access? Ensure your user is in the `input` group:
+   sudo usermod -aG input $USER   # then log out and back in
    ```
+   If you set a custom `vendor_id`/`product_id`, also generate the matching
+   rule: `sudo qmkonnect -r`.
 
 ### Window Detection Not Working
 
@@ -246,17 +251,51 @@ socat -u UNIX-CONNECT:/tmp/hypr/$HYPRLAND_INSTANCE_SIGNATURE/.socket2.sock - | h
    qmkonnect --tray-app
    ```
 
-3. Check startup folder for duplicates:
-   - `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup`
+3. Check the autostart entry (HKCU `Run` key):
+   - `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\QMKonnect`
 
-#### Permission Errors
+#### Installation or Launch Blocked
 
 **Solutions**:
-1. Run as Administrator
-2. Check Windows Defender exclusions
-3. Verify antivirus isn't blocking the application
+1. SmartScreen "Unknown publisher" → click **More info → Run anyway** (the app is unsigned)
+2. Check Windows Defender exclusions / verify antivirus isn't quarantining it
+3. The app needs **no Administrator** rights — it's a per-user install
 
 ### Linux Issues
+
+#### Broken udev rule corrupts device permissions (VMs / containers fail)
+
+> **Symptoms:** libvirt/QEMU VMs fail to start with errors like
+> `Failed to open /dev/null for OFD lock probing: Permission denied` or
+> `Could not access KVM kernel module`; `ls -l /dev/null /dev/kvm /dev/fuse`
+> shows them as `root:input` mode `0660` instead of `root:root 0666`.
+
+An older QMKonnect build wrote `/etc/udev/rules.d/99-qmkonnect.rules` in a
+multi-line form with **no backslash line-continuations**. Because udev treats
+every newline as the end of a rule (a trailing comma does **not** continue a
+line), the bare-assignment lines matched **every device on the host** and
+re-permissioned them to `root:input 0660`. The current build both renders a
+correct single-line rule **and** auto-repairs a dangerous legacy rule on
+`qmkonnect --reload` / `-r`, so the supported fix is simply:
+
+```bash
+sudo qmkonnect -r          # overwrites/purges the bad rule, then reloads udev
+```
+
+If `qmkonnect -r` is unavailable, or to recover manually:
+
+```bash
+sudo rm /etc/udev/rules.d/99-qmkonnect.rules   # remove the bad rule
+sudo udevadm control --reload-rules
+sudo udevadm trigger                           # re-apply correct device defaults
+# /dev/null, /dev/kvm, /dev/fuse, ... revert to their proper owner/mode.
+# Reboot if any node still looks wrong.
+```
+
+Then reinstall QMKonnect via the supported path — the static
+`packaging/linux/udev/69-qmkonnect-rawhid.rules` (correct: single line, guarded
+by `ENV{ID_QMKONNECT}=="1"`) — so default keyboards need no config-driven rule
+at all. See `installation.md`.
 
 #### Systemd Service Fails
 
@@ -309,38 +348,58 @@ socat -u UNIX-CONNECT:/tmp/hypr/$HYPRLAND_INSTANCE_SIGNATURE/.socket2.sock - | h
 
 ### macOS Issues
 
-#### Accessibility Permissions
+#### Window titles not updating (app name only)
 
-**Grant permissions**:
-1. System Preferences → Security & Privacy → Privacy
-2. Select "Accessibility" from left panel
-3. Click lock to make changes
-4. Add QMKonnect to allowed applications
+QMKonnect reads window **titles** with `CGWindowListCopyWindowInfo`, which requires **Screen Recording** permission (not Accessibility). Without it, the app still runs and sends the frontmost **app name**, but titles come back empty.
 
-**Verify permissions**:
+**Grant Screen Recording:**
+1. System Settings → Privacy & Security → Screen Recording
+2. Enable QMKonnect
+3. **Quit & reopen** QMKonnect so the change takes effect
+
+**Why it keeps re-prompting after every rebuild:** local builds are ad-hoc signed, so the app's signature (`cdhash`) changes on each build. macOS keys the Screen-Recording grant to that signature and re-prompts every rebuild — *even though System Settings still shows QMKonnect as granted*. Reset the stale grant to get one clean prompt:
+
 ```bash
-# Check current permissions
-sqlite3 /Library/Application\ Support/com.apple.TCC/TCC.db "SELECT * FROM access WHERE service='kTCCServiceAccessibility';"
+tccutil reset ScreenCapture io.mulletware.qmkonnect
 ```
 
-#### Application Bundle Issues
+To stop the loop for good, build with a stable identity:
 
-**Solutions**:
-1. **Rebuild application bundle**:
-   ```bash
-   cd packaging/macos
-   ./build.sh
-   ```
+```bash
+CODESIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" ./build.sh
+```
 
-2. **Check code signing**:
-   ```bash
-   codesign -v QMKonnect.app
-   ```
+#### Launching an OLD version after rebuilding
 
-3. **Reset application permissions**:
-   ```bash
-   tccutil reset Accessibility com.yourcompany.qmkonnect
-   ```
+**Symptoms:** you run `build.sh`, but the app that opens is missing your changes or is clearly an older build.
+
+**Cause:** this is a *launch* problem, not a build problem — `build.sh` always compiles current source. macOS LaunchServices remembers every copy of `QMKonnect.app` it has ever seen (old `/Applications` installs, trashed copies, apps left inside a mounted `.dmg`) and can launch one of those **stale** copies instead of your fresh build.
+
+**Fix — clean the old copies before rebuilding:**
+
+```bash
+pkill -f "QMKonnect.app"
+ls /Volumes | grep -i qmkonnect | while read -r v; do hdiutil detach "/Volumes/$v"; done
+rm -rf /Applications/QMKonnect.app ~/.Trash/QMKonnect.app
+tccutil reset ScreenCapture io.mulletware.qmkonnect
+```
+
+Then rebuild, install, and launch:
+
+```bash
+cd packaging/macos && ./build.sh && cp -R QMKonnect.app /Applications/ && cd ../..
+open /Applications/QMKonnect.app
+```
+
+To see what macOS still has registered (when stale copies linger):
+
+```bash
+LSR=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
+"$LSR" -dump | grep -i 'path:.*QMKonnect\.app'   # list every registered copy
+"$LSR" -u /path/to/stale/QMKonnect.app           # unregister one stale copy
+```
+
+See the [installation guide]({{ site.baseurl }}/installation/#macos) for the full build → install → launch sequence.
 
 ## Configuration Issues
 
@@ -457,14 +516,21 @@ leaks qmkonnect
    qmkonnect --test-connection
    ```
 
-2. **Check QMK firmware side**:
+2. **Check QMK firmware side** — make sure qmk-notifier is actually integrated:
+   - Your `rules.mk` includes `.../qmk-notifier/rules.mk` (this compiles
+     `notifier.c` and enables Raw HID).
+   - Your `keymap.c` includes `"qmk-notifier/notifier.h"` and forwards
+     `raw_hid_receive()` to `hid_notify()`.
+   - See the [QMK Integration Guide]({{ site.baseurl }}/qmk-integration).
    
-   Add debug output to your QMK keymap:
+   To watch what the keyboard receives, add your own `printf` inside a callback
+   (there is no built-in `qmk_notifier_notify` callback — the firmware API is the
+   `DEFINE_SERIAL_LAYERS` / `DEFINE_SERIAL_COMMANDS` macros):
    ```c
    #ifdef CONSOLE_ENABLE
-   void qmk_notifier_notify(const char* app_class, const char* window_title) {
-       printf("Received: app='%s', title='%s'\n", app_class, window_title);
-       // Your layer switching logic here
+   void disable_vim(void) {
+       printf("qmk-notifier: disable_vim fired\n");
+       // ...your real logic...
    }
    #endif
    ```
@@ -474,27 +540,20 @@ leaks qmkonnect
    qmk console
    ```
 
-3. **Verify Raw HID setup**:
-   
-   Ensure your QMK firmware has:
+3. **Verify Raw HID setup** — the qmk-notifier module's `rules.mk` enables this
+   for you (`RAW_ENABLE = yes`), so just make sure that module is included:
    ```make
-   # In rules.mk
-   RAW_ENABLE = yes
+   include keyboards/handwired/[manufacturer]/[keyboard]/qmk-notifier/rules.mk
    ```
-   
-   ```c
-   // In config.h  
-   #define RAW_USAGE_PAGE 0xFF60
-   #define RAW_USAGE_ID   0x61
-   ```
+   (`RAW_USAGE_PAGE` / `RAW_USAGE_ID` are QMK defaults of `0xFF60` / `0x61` — no
+   need to set them unless your firmware deliberately overrides them.)
 
 ### Raw HID Issues
 
 **Verify Raw HID setup**:
-1. **QMK firmware**:
+1. **QMK firmware** — make sure qmk-notifier is integrated (its `rules.mk` sets `RAW_ENABLE = yes` for you):
    ```make
-   # In rules.mk
-   RAW_ENABLE = yes
+   include keyboards/handwired/[manufacturer]/[keyboard]/qmk-notifier/rules.mk
    ```
 
 2. **Test Raw HID**:
