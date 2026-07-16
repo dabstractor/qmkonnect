@@ -1,0 +1,10 @@
+# QMKonnect — static rule. Grants permissions to any device exposing the QMK
+# Raw HID interface (usage page 0xFF60, usage 0x61). This rule is IDENTICAL for
+# every keyboard and is NEVER regenerated from config, so no `--reload`/sudo is
+# needed for default QMK keyboards. Custom-usage/page users fall back to the
+# config-driven 99-qmkonnect.rules (see `qmkonnect --reload`).
+#
+# Numbered 69 so it runs before the optional config-driven 99-qmkonnect.rules
+# and matches the lowest-standard-priority convention for import-based tagging.
+SUBSYSTEM=="hidraw", IMPORT{program}="/usr/lib/udev/qmkonnect-hid-id %S%p"
+ENV{ID_QMKONNECT}=="1", GROUP="input", MODE="0660", TAG+="uaccess", SYMLINK+="qmkonnect_device", TAG+="systemd", ENV{SYSTEMD_USER_WANTS}+="qmkonnect.service"

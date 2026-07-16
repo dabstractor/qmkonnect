@@ -1,90 +1,82 @@
 post_install() {
   echo "Configuring QMKonnect..."
 
-  echo "Creating configuration file..."
-  sudo -u "${SUDO_USER:-$(logname)}" qmkonnect -c
+  # Instantiate the systemd user service from its template. (The old
+  # VID/PID substitution is gone: the rule is now static and config is optional.)
+  if [ -f /usr/lib/systemd/user/qmkonnect.service.template ]; then
+    install -m644 \
+      /usr/lib/systemd/user/qmkonnect.service.template \
+      /usr/lib/systemd/user/qmkonnect.service
+  fi
 
-  # Default values
-  default_vendor_id="feed"
-  default_product_id="0000"
-
-  # Prompt for vendor ID and product ID
-  echo -n "Enter your QMK keyboard vendor ID [default: $default_vendor_id]: "
-  read vendor_id
-  vendor_id=${vendor_id:-$default_vendor_id}
-
-  echo -n "Enter your QMK keyboard product ID [default: $default_product_id]: "
-  read product_id
-  product_id=${product_id:-$default_product_id}
-
-  # Get current user information
-  current_user=$(logname || whoami)
-  user_id=$(id -u "$current_user")
-
-  # Create udev rules with the correct IDs
-  sed -e "s/{vendor_id}/$vendor_id/g" \
-    -e "s/{product_id}/$product_id/g" \
-      -e "s/{username}/$current_user/g" \
-      -e "s/{user_id}/$user_id/g" \
-      /etc/udev/rules.d/99-qmkonnect.rules.template > /etc/udev/rules.d/99-qmkonnect.rules
-
-  # Create systemd service with the correct IDs
-  sed -e "s/{vendor_id}/$vendor_id/g" \
-      -e "s/{product_id}/$product_id/g" \
-      /usr/lib/systemd/user/qmkonnect.service.template > /usr/lib/systemd/user/qmkonnect.service
-
-  # Remove template files
-  rm -f /etc/udev/rules.d/99-qmkonnect.rules.template
-  rm -f /usr/lib/systemd/user/qmkonnect.service.template
-
-  # Set proper permissions
-  chmod 0644 /etc/udev/rules.d/99-qmkonnect.rules
-  chmod 0644 /usr/lib/systemd/user/qmkonnect.service
-
-  # Reload udev rules
+  # Load the static usage-page udev rule so default QMK keyboards Just Work.
   udevadm control --reload-rules
   udevadm trigger
 
-  systemctl --global enable qmkonnect.service
+  # Enable the user service globally (it starts at login once a device appears).
+  systemctl --global enable qmkonnect.service 2>/dev/null || true
 
-  echo "QMKonnect has been configured with:"
-  echo "  Vendor ID: $vendor_id"
-  echo "  Product ID: $product_id"
-  echo "  User: $current_user (ID: $user_id)"
-  echo ""
+  cat <<'EOF'
+
+QMKonnect installed. Default QMK keyboards need NO configuration: QMKonnect
+auto-discovers them by the standard Raw HID usage page (0xFF60 / 0x61), and the
+shipped static udev rule already grants permissions (no --reload, no sudo).
+
+Only if you need to disambiguate among multiple QMK keyboards, or target a
+board that overrode RAW_USAGE_PAGE/RAW_USAGE_ID in firmware:
+  1. Create / edit  ~/.config/qmk-notifier/config.toml  and set
+     vendor_id / product_id (and optionally usage_page / usage):
+       qmkonnect -c            # writes a commented-out default config
+  2. Generate + install the matching on-demand udev rule:
+       sudo qmkonnect -r
+
+The per-user service starts automatically at login once a matching device is
+present. To start it right now:
+       systemctl --user start qmkonnect.service
+
+EOF
 }
 
 post_upgrade() {
-  echo "Reloading QMKonnect configuration..."
-  qmkonnect --reload
-
+  echo "Reloading QMKonnect udev rules..."
+  # Re-instantiate the service template (in case it shipped changes) and reload
+  # udev. We deliberately do NOT call `qmkonnect --reload` here: it needs root
+  # plus a config that may not exist yet on a fresh upgrade, and default users
+  # don't need it anyway (the static rule covers them).
+  if [ -f /usr/lib/systemd/user/qmkonnect.service.template ]; then
+    install -m644 \
+      /usr/lib/systemd/user/qmkonnect.service.template \
+      /usr/lib/systemd/user/qmkonnect.service
+  fi
+  udevadm control --reload-rules
+  udevadm trigger
   echo "QMKonnect has been upgraded."
 }
 
 post_remove() {
   echo "Removing QMKonnect..."
 
-  systemctl --global disable qmkonnect.service
+  systemctl --global disable qmkonnect.service 2>/dev/null || true
 
-  # Stop and disable the service for all users
+  # Stop and disable the service for each user with a home directory.
   for user_home in /home/*; do
+    [ -d "$user_home" ] || continue
     username=$(basename "$user_home")
-    user_id=$(id -u "$username" 2>/dev/null)
+    user_id=$(id -u "$username" 2>/dev/null) || continue
 
-    if [ -n "$user_id" ]; then
-      if systemctl --user -M "$username@" status qmkonnect.service &>/dev/null; then
-        echo "Stopping service for $username..."
-        su "$username" -c "XDG_RUNTIME_DIR=/run/user/$user_id systemctl --user stop qmkonnect.service"
-        su "$username" -c "XDG_RUNTIME_DIR=/run/user/$user_id systemctl --user disable qmkonnect.service"
-      fi
+    if systemctl --user -M "$username@" status qmkonnect.service &>/dev/null; then
+      echo "Stopping service for $username..."
+      su "$username" -c "XDG_RUNTIME_DIR=/run/user/$user_id systemctl --user stop qmkonnect.service"
+      su "$username" -c "XDG_RUNTIME_DIR=/run/user/$user_id systemctl --user disable qmkonnect.service"
     fi
   done
 
-  # Remove configuration files
-  [ -f /etc/udev/rules.d/99-qmkonnect.rules ] && rm -f /etc/udev/rules.d/99-qmkonnect.rules
-  [ -f /usr/lib/systemd/user/qmkonnect.service ] && rm -f /usr/lib/systemd/user/qmkonnect.service
+  # Remove generated/user-created files (package-owned files like the static
+  # rule and helper are removed automatically by pacman).
+  rm -f /etc/udev/rules.d/99-qmkonnect.rules
+  rm -f /usr/lib/systemd/user/qmkonnect.service
 
-  # Reload udev rules
+  # Reload udev rules.
   udevadm control --reload-rules
   udevadm trigger
 
