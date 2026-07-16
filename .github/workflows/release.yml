@@ -85,11 +85,13 @@ jobs:
           if-no-files-found: error
 
   # ─────────────────────────────────────────────────────────────────────────
-  # Windows — MSI via the existing build-installer.ps1 + WiX v3.
-  # Most likely job to need a first-run adjustment (WiX install / candle args).
+  # Windows — end-user tray-app installer via Inno Setup (QMKonnect-Setup.exe).
+  # This is the per-user, no-admin installer described in packaging/windows/.
+  # The WiX MSI (../installer.wxs) is a separate Session-0 *service* product and
+  # is intentionally NOT part of the release.
   # ─────────────────────────────────────────────────────────────────────────
   windows:
-    name: Windows (.msi)
+    name: Windows (.exe)
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -99,18 +101,9 @@ jobs:
       - name: cargo build (release)
         run: cargo build --release
 
-      - name: Install WiX Toolset v3
+      - name: Install Inno Setup 6
         shell: pwsh
-        run: choco install wixtoolset -y --no-progress --ignore-checksums
-
-      - name: Add WiX to PATH
-        shell: pwsh
-        run: |
-          $bin = Get-ChildItem 'C:\Program Files (x86)\WiX Toolset v*\bin' -Directory |
-                 Select-Object -First 1 -ExpandProperty FullName
-          if (-not $bin) { throw "WiX bin directory not found" }
-          Add-Content -Path $env:GITHUB_PATH -Value $bin
-          Write-Host "Added $bin to PATH"
+        run: choco install innosetup -y --no-progress
 
       - name: Determine version
         id: ver
@@ -121,22 +114,22 @@ jobs:
                Select-Object -ExpandProperty version
           "version=$v" | Add-Content -Path $env:GITHUB_OUTPUT
 
-      # -SkipBuild: we already ran cargo build above. The script still computes
-      # the version from Cargo.toml and invokes candle/light with -d Version=.
-      - name: Build MSI
-        working-directory: packaging/windows
+      # build.ps1 reads the version from Cargo.toml, locates ISCC.exe, and
+      # compiles QMKonnect.iss -> Output/QMKonnect-Setup.exe.
+      - name: Build installer (Inno Setup)
+        working-directory: packaging/windows/inno
         shell: pwsh
-        run: ./build-installer.ps1 -SkipBuild
+        run: ./build.ps1
 
-      - name: Rename MSI with version
-        working-directory: packaging/windows
+      - name: Rename installer with version
+        working-directory: packaging/windows/inno
         shell: pwsh
-        run: Move-Item qmkonnect-Setup.msi "QMKonnect-${{ steps.ver.outputs.version }}-windows-x64.msi"
+        run: Move-Item Output/QMKonnect-Setup.exe "Output/QMKonnect-${{ steps.ver.outputs.version }}-windows-x64.exe"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: windows-msi
-          path: packaging/windows/QMKonnect-*-windows-x64.msi
+          name: windows-exe
+          path: packaging/windows/inno/Output/QMKonnect-*-windows-x64.exe
           if-no-files-found: error
 
   # ─────────────────────────────────────────────────────────────────────────
@@ -260,6 +253,6 @@ jobs:
           prerelease: ${{ contains(github.ref_name, '-') }}
           files: |
             artifacts/macos-dmg/*
-            artifacts/windows-msi/*
+            artifacts/windows-exe/*
             artifacts/linux-binary/*
             artifacts/arch-pkg/*
