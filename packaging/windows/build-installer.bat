@@ -24,6 +24,17 @@ if %errorlevel% neq 0 (
 
 echo WiX Toolset found
 
+REM Determine the version from Cargo.toml (single source of truth; MSI Product
+REM version mirrors it). Match the line that begins with `version `.
+for /f "tokens=2 delims==" %%a in ('findstr /b /c:"version " ..\..\Cargo.toml') do set "_VERRAW=%%a"
+if not defined _VERRAW (
+    echo ERROR: Could not find a line starting with 'version ' in ..\..\Cargo.toml
+    exit /b 1
+)
+set "VERSION=%_VERRAW:"=%"
+set "VERSION=%VERSION: =%"
+echo Version: %VERSION%
+
 REM Build Rust application
 echo Building Rust application...
 pushd ..\..
@@ -53,7 +64,7 @@ REM Build installer
 echo Building Windows installer...
 
 echo Compiling WiX source...
-candle.exe installer.wxs -ext WixUtilExtension
+candle.exe installer.wxs -d Version=%VERSION% -ext WixUtilExtension
 if %errorlevel% neq 0 (
     echo ERROR: WiX compilation failed
     exit /b 1

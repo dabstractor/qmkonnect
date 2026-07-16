@@ -1,5 +1,12 @@
 # Windows Service Installer for QMKonnect
 
+> **Looking for the end-user tray-app installer?** It's in **[`./inno/`](inno/)** (Inno Setup
+> → `QMKonnect-Setup.exe`, per-user, no admin, double-click to install). The WiX
+> installer below is a **different** product: it installs a Session-0 *service*
+> that cannot show a tray icon in your interactive session (see
+> [`../../AGENTS.md`](../../AGENTS.md)). Use `inno/` for the tray app; use this
+> (WiX) only if you specifically want the headless service.
+
 This directory contains the Windows installer configuration using WiX Toolset. The installer creates a proper Windows service that runs silently in the background without any console windows.
 
 ## Prerequisites

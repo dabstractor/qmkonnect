@@ -70,6 +70,19 @@ if (-not (Test-WixInstalled)) {
 
 Write-Success "WiX Toolset found"
 
+# Determine the version from Cargo.toml so the MSI Product version matches the
+# binary's --version. Cargo.toml is the single source of truth (kept in sync by
+# cargo-release). cargo metadata resolves from anywhere under the qmkonnect tree.
+Write-Info "Determining version..."
+$Version = (cargo metadata --no-deps --format-version 1 | ConvertFrom-Json).packages |
+           Where-Object { $_.name -eq 'qmkonnect' } |
+           Select-Object -ExpandProperty version
+if (-not $Version) {
+    Write-Error "Could not determine version via 'cargo metadata'. Is cargo on PATH and run from within the qmkonnect checkout?"
+    exit 1
+}
+Write-Info "Version: $Version"
+
 # Build Rust application if not skipped
 if (-not $SkipBuild) {
     Write-Info "Building Rust application..."
@@ -125,7 +138,7 @@ Write-Info "Building Windows installer..."
 try {
     # Compile WiX source
     Write-Info "Compiling WiX source..."
-    & candle.exe installer.wxs -ext WixUtilExtension
+    & candle.exe installer.wxs -d Version=$Version -ext WixUtilExtension
     
     if ($LASTEXITCODE -ne 0) {
         throw "WiX compilation failed"
