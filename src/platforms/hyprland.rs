@@ -12,7 +12,7 @@ use std::{
     env,
     error::Error,
     fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex},
     thread,
     time::{Duration, Instant, SystemTime},
@@ -25,6 +25,10 @@ const MAX_RECONNECT_MS: u64 = 10_000;
 /// A listener that stayed up at least this long is treated as a stable
 /// connection; on its loss the backoff is reset to the initial value (#7).
 const STABLE_CONNECTION_THRESHOLD: Duration = Duration::from_secs(5);
+/// How long [`hyprland_socket_is_live`] will block waiting for a single
+/// Hyprland IPC socket to accept a connection. See that function for why a
+/// bound is needed at all.
+const SOCKET_PROBE_TIMEOUT: Duration = Duration::from_millis(500);
 
 #[derive(PartialEq, Debug, Clone)]
 struct WindowState {
@@ -93,6 +97,26 @@ impl WindowMonitor for HyprlandMonitor {
         }
 
         loop {
+            // Re-resolve the live Hyprland instance on every reconnect attempt.
+            // A listener failure almost always means the socket we were using
+            // went away (compositor crashed/restarted), and the replacement
+            // gets a *new* signature — so dialing the stale one would never
+            // recover. `check_hyprland_environment` re-points
+            // $HYPRLAND_INSTANCE_SIGNATURE at a live socket, or returns Err if
+            // none is up yet (we then back off and retry).
+            if let Err(e) = check_hyprland_environment() {
+                if self.verbose {
+                    println!(
+                        "Reconnect: no live Hyprland socket yet ({}ms): {}",
+                        crate::core::now_ms(),
+                        e
+                    );
+                }
+                std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+                delay_ms = std::cmp::min(delay_ms * 3, MAX_RECONNECT_MS);
+                continue;
+            }
+
             // Create a new event listener for each attempt
             let mut listener = EventListener::new();
             let verbose = self.verbose;
@@ -231,42 +255,112 @@ fn wait_for_hyprland(verbose: bool) -> Result<(), Box<dyn Error>> {
     }
 }
 
-fn check_hyprland_environment() -> Result<(), Box<dyn Error>> {
-    // Preferred path: the session exports HYPRLAND_INSTANCE_SIGNATURE.
-    if let Ok(signature) = env::var("HYPRLAND_INSTANCE_SIGNATURE") {
-        if let Ok(runtime_dir) = env::var("XDG_RUNTIME_DIR") {
-            let socket_path = PathBuf::from(&runtime_dir)
-                .join("hypr")
-                .join(&signature)
-                .join(".socket.sock");
+/// Probe whether a Hyprland IPC socket has a live listener behind it.
+///
+/// Returns `true` only when a client can actually `connect(2)` to `path`. This
+/// is the distinction a mere file-existence check can't make: a Hyprland that
+/// crashed (or a second instance that died) leaves its `.socket.sock` on disk,
+/// so `path.exists()` treats a *dead* instance as reachable and silently pins
+/// qmkonnect to a socket nobody is listening on — every later IPC call then
+/// fails with `Connection refused` and the monitor never starts.
+///
+/// `connect(2)` on a local `AF_UNIX` socket is normally instantaneous (a dead
+/// listener returns `ECONNREFUSED` at once), but we run it on a short-lived
+/// thread with a hard [`SOCKET_PROBE_TIMEOUT`] so a pathological socket can
+/// never wedge the startup scan. [`UnixStream`] has no `connect_timeout` (unlike
+/// [`TcpStream`](std::net::TcpStream)), which is why this isn't a one-liner.
+///
+/// [`UnixStream`]: std::os::unix::net::UnixStream
+fn hyprland_socket_is_live(path: &Path) -> bool {
+    use std::os::unix::net::UnixStream;
+    use std::sync::mpsc;
 
-            if socket_path.exists() {
-                return Ok(());
-            }
+    let path = path.to_path_buf();
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        // `Ok` ⇒ a process accepted the connection ⇒ the instance is alive.
+        // Any error (refused, no entry, permission, …) ⇒ not reachable by us.
+        let reachable = UnixStream::connect(&path).is_ok();
+        let _ = tx.send(reachable);
+    });
+    rx.recv_timeout(SOCKET_PROBE_TIMEOUT).unwrap_or(false)
+}
+
+/// Resolve the Hyprland instance to talk to and guarantee
+/// `$HYPRLAND_INSTANCE_SIGNATURE` points at a *live* one.
+///
+/// Candidate signatures are gathered in priority order:
+///   1. `$HYPRLAND_INSTANCE_SIGNATURE` — the instance the session declares.
+///      Preferred because, when it's live, it names the user's own seat rather
+///      than some other instance on a multi-seat box.
+///   2. every `<sig>` directory under `$XDG_RUNTIME_DIR/hypr/` — the recovery
+///      path used when the env var is unset *or* points at a dead instance
+///      (e.g. a systemd user service that inherited the signature of a
+///      now-dead Hyprland).
+///
+/// The first candidate whose `.socket.sock` actually accepts a connection wins.
+/// If that candidate isn't the current `$HYPRLAND_INSTANCE_SIGNATURE`, the env
+/// var is republished so the `hyprland` crate (which selects its instance from
+/// it) targets the live socket — this is the self-heal. We no longer shell out
+/// to `ps` (#15); a connectivity check against the socket is authoritative.
+///
+/// Returns `Err` only when no live socket is reachable anywhere; the caller
+/// ([`wait_for_hyprland`]) then backs off and retries until Hyprland comes up.
+fn check_hyprland_environment() -> Result<(), Box<dyn Error>> {
+    let runtime_dir = env::var("XDG_RUNTIME_DIR")
+        .map_err(|_| "XDG_RUNTIME_DIR is not set; cannot locate Hyprland socket".to_string())?;
+    let hypr_dir = PathBuf::from(&runtime_dir).join("hypr");
+
+    // Candidate signatures, deduped, session-declared instance first.
+    let mut candidates: Vec<String> = Vec::new();
+    if let Ok(sig) = env::var("HYPRLAND_INSTANCE_SIGNATURE") {
+        if !sig.is_empty() {
+            candidates.push(sig);
         }
     }
-
-    // Fallback: discover an instance under $XDG_RUNTIME_DIR/hypr/<sig>/.socket.sock.
-    // Covers systemd-launched services that don't inherit the session env. We no
-    // longer shell out to `ps` (#15) — the socket scan is authoritative.
-    if let Ok(runtime_dir) = env::var("XDG_RUNTIME_DIR") {
-        let hypr_dir = PathBuf::from(&runtime_dir).join("hypr");
-        if let Ok(entries) = fs::read_dir(&hypr_dir) {
-            for entry in entries.flatten() {
-                let socket_path = entry.path().join(".socket.sock");
-                if socket_path.exists() {
-                    // The hyprland crate selects its instance via this env var,
-                    // so publish the discovered signature. This runs once, on the
-                    // main thread, before any listener is spawned.
-                    // NOTE: wrap in `unsafe {}` if/when bumping to edition 2024.
-                    env::set_var("HYPRLAND_INSTANCE_SIGNATURE", entry.file_name());
-                    return Ok(());
+    if let Ok(entries) = fs::read_dir(&hypr_dir) {
+        for entry in entries.flatten() {
+            if let Some(name) = entry.file_name().to_str() {
+                if !candidates.iter().any(|c| c == name) {
+                    candidates.push(name.to_string());
                 }
             }
         }
     }
 
-    Err("Hyprland socket not found under $XDG_RUNTIME_DIR/hypr/<signature>/.socket.sock. Is Hyprland running?".into())
+    // First candidate with a live IPC socket wins. `socket.exists()` is only a
+    // cheap fast-path to skip socket-less directories without spawning a probe
+    // thread; the real decision is the connectivity check, which is what tells
+    // a live instance apart from the stale socket file a crashed one leaves.
+    for sig in &candidates {
+        let socket_path = hypr_dir.join(sig).join(".socket.sock");
+        if !socket_path.exists() {
+            continue;
+        }
+        if hyprland_socket_is_live(&socket_path) {
+            // The hyprland crate selects its instance via this env var, so
+            // republish it whenever it differs from the live one we found
+            // (stale / dead-value recovery). Runs once, on the main thread,
+            // before any listener is spawned.
+            // NOTE: wrap in `unsafe {}` if/when bumping to edition 2024.
+            if env::var("HYPRLAND_INSTANCE_SIGNATURE").ok().as_deref() != Some(sig.as_str()) {
+                env::set_var("HYPRLAND_INSTANCE_SIGNATURE", sig);
+            }
+            return Ok(());
+        }
+    }
+
+    let hint = if candidates.is_empty() {
+        "no Hyprland instance directories found under $XDG_RUNTIME_DIR/hypr/".to_string()
+    } else {
+        format!(
+            "found {} instance dir(s) but none have a live IPC socket \
+             (a crashed Hyprland can leave stale socket files behind): [{}]",
+            candidates.len(),
+            candidates.join(", ")
+        )
+    };
+    Err(format!("No reachable Hyprland socket. {hint}. Is Hyprland running?").into())
 }
 
 /// A short, bounded poll burst spawned after layer (scratchpad) events to catch
@@ -498,5 +592,38 @@ mod tests {
 
     // Note: Most functionality in HyprlandMonitor heavily depends on
     // the actual Hyprland environment, so we can only unit test the
-    // basic parts without specialized mocks.
+    // basic parts without specialized mocks. The socket-liveness probe
+    // below is the exception: it's hermetic (real local sockets in a
+    // TempDir, no running Hyprland required).
+
+    #[test]
+    fn hyprland_socket_is_live_accepts_a_listening_socket() {
+        use std::os::unix::net::UnixListener;
+        let dir = tempfile::TempDir::new().unwrap();
+        let socket = dir.path().join(".socket.sock");
+        // A bound, still-open listener ⇒ connect() succeeds ⇒ reported live.
+        let _listener = UnixListener::bind(&socket).unwrap();
+        assert!(hyprland_socket_is_live(&socket));
+        // `_listener` and `dir` (TempDir) clean up on drop.
+    }
+
+    #[test]
+    fn hyprland_socket_is_live_rejects_a_dead_leftover_socket() {
+        use std::os::unix::net::UnixListener;
+        let dir = tempfile::TempDir::new().unwrap();
+        let socket = dir.path().join(".socket.sock");
+        // Bind then drop: std does NOT unlink the path on drop, so the socket
+        // file is left behind with no listener — the exact stale state a
+        // crashed Hyprland leaves. connect() must now refuse.
+        let listener = UnixListener::bind(&socket).unwrap();
+        drop(listener);
+        assert!(!hyprland_socket_is_live(&socket));
+    }
+
+    #[test]
+    fn hyprland_socket_is_live_false_for_a_missing_path() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let missing = dir.path().join("does-not-exist.sock");
+        assert!(!hyprland_socket_is_live(&missing));
+    }
 }
