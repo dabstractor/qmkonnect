@@ -2,18 +2,14 @@
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi"
      xmlns:util="http://schemas.microsoft.com/wix/UtilExtension">
 
-  <!-- Product version is injected at build time. candle.exe is invoked with
-       -d Version=<x.y.z> (see build-installer.ps1/.bat and release.yml), and
-       mirrors Cargo.toml's version (the single source of truth). Defaults to
-       0.0.0 when built without the flag so manual local runs still succeed. -->
-  <?ifndef Version?>
-    <?define Version = "0.0.0" ?>
-  <?endif?>
-
+  <!-- Product version is injected by build-installer.ps1/.bat, which replace
+       the __VERSION__ sentinel below with the version from Cargo.toml (the
+       single source of truth). Sentinel replacement sidesteps WiX's
+       preprocessor-variable path, whose -d arg PowerShell mangled. -->
   <Product Id="*" 
            Name="QMKonnect" 
            Language="1033" 
-           Version="$(var.Version)" 
+           Version="__VERSION__" 
            Manufacturer="Mulletware" 
            UpgradeCode="A1B2C3D4-E5F6-7890-ABCD-123456789012">
     

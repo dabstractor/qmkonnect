@@ -64,7 +64,9 @@ REM Build installer
 echo Building Windows installer...
 
 echo Compiling WiX source...
-candle.exe installer.wxs -dVersion=%VERSION% -ext WixUtilExtension
+REM Inject the Cargo version into the .wxs via sentinel replacement.
+powershell -NoProfile -Command "(Get-Content installer.wxs) -replace '__VERSION__', '%VERSION%' | Set-Content installer.wxs"
+candle.exe installer.wxs -ext WixUtilExtension
 if %errorlevel% neq 0 (
     echo ERROR: WiX compilation failed
     exit /b 1

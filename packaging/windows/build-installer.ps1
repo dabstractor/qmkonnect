@@ -138,7 +138,10 @@ Write-Info "Building Windows installer..."
 try {
     # Compile WiX source
     Write-Info "Compiling WiX source..."
-    & candle.exe installer.wxs -dVersion=$Version -ext WixUtilExtension
+    # Inject the Cargo version into the .wxs via sentinel replacement (robust
+    # against WiX preprocessor-variable / PowerShell arg-passing quirks).
+    (Get-Content installer.wxs) -replace '__VERSION__', $Version | Set-Content installer.wxs
+    & candle.exe installer.wxs -ext WixUtilExtension
     
     if ($LASTEXITCODE -ne 0) {
         throw "WiX compilation failed"
