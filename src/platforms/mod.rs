@@ -7,28 +7,17 @@ mod windows;
 #[cfg(all(target_os = "linux", not(feature = "hyprland")))]
 mod x11;
 
-// Define WindowMonitor trait
-#[cfg(not(all(target_os = "linux", feature = "hyprland")))]
+// Define the WindowMonitor trait. A single `Send` trait serves every platform:
+// Hyprland's `start()` blocks on its IPC listener, so it no longer needs to keep
+// the listener around in `self` (which was the only reason a non-`Send` variant
+// existed).
 pub trait WindowMonitor: Send {
     fn platform_name(&self) -> &str;
     fn start(&mut self) -> Result<(), Box<dyn std::error::Error>>;
 
-    // Add attribute to suppress dead code warning
     #[allow(dead_code)]
     fn stop(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        // Default implementation
-        Ok(())
-    }
-}
-#[cfg(all(target_os = "linux", feature = "hyprland"))]
-pub trait WindowMonitor {
-    fn platform_name(&self) -> &str;
-    fn start(&mut self) -> Result<(), Box<dyn std::error::Error>>;
-
-    // Add attribute to suppress dead code warning
-    #[allow(dead_code)]
-    fn stop(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        // Default implementation
+        // Default no-op; platform impls override where a real stop exists.
         Ok(())
     }
 }
@@ -45,32 +34,28 @@ pub fn create_monitor(verbose: bool) -> Result<Box<dyn WindowMonitor>, Box<dyn E
     #[cfg(all(target_os = "linux", feature = "hyprland"))]
     {
         use hyprland::HyprlandMonitor;
-        return Ok(Box::new(HyprlandMonitor::new(verbose)));
+        Ok(Box::new(HyprlandMonitor::new(verbose)))
     }
 
     #[cfg(all(target_os = "linux", not(feature = "hyprland")))]
     {
         use x11::X11Monitor;
-        return Ok(Box::new(X11Monitor::new(verbose)));
+        Ok(Box::new(X11Monitor::new(verbose)))
     }
 
     #[cfg(target_os = "macos")]
     {
         use macos::MacOSMonitor;
-        return Ok(Box::new(MacOSMonitor::new(verbose)));
+        Ok(Box::new(MacOSMonitor::new(verbose)))
     }
 
     #[cfg(target_os = "windows")]
     {
         use windows::WindowsMonitor;
-        return Ok(Box::new(WindowsMonitor::new(verbose)));
+        Ok(Box::new(WindowsMonitor::new(verbose)))
     }
 
-    #[cfg(not(any(
-        target_os = "linux",
-        target_os = "macos",
-        target_os = "windows"
-    )))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
     Err("No suitable monitor for this platform".into())
 }
 
@@ -87,6 +72,28 @@ pub fn get_config_paths() -> Vec<std::path::PathBuf> {
 
     #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
     return Vec::new(); // Default for other platforms
+}
+
+// List currently-running foreground windows as `(class, title)` pairs.
+// Implemented for the tray-bearing platforms (macOS / Windows) and for the
+// Linux/Hyprland build (so the SNI tray's "Show Window Information" item has
+// data to surface); returns an empty list everywhere else.
+pub fn list_foreground_windows() -> Vec<(String, String)> {
+    #[cfg(target_os = "macos")]
+    return macos::list_foreground_windows();
+
+    #[cfg(target_os = "windows")]
+    return windows::list_foreground_windows();
+
+    #[cfg(all(target_os = "linux", feature = "hyprland"))]
+    return hyprland::list_foreground_windows();
+
+    #[cfg(not(any(
+        target_os = "macos",
+        target_os = "windows",
+        all(target_os = "linux", feature = "hyprland")
+    )))]
+    return Vec::new();
 }
 
 // Create configuration directory based on current platform

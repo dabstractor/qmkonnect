@@ -3,6 +3,7 @@ use crate::core::notifier;
 use crate::core::types::WindowInfo;
 use crate::platforms::WindowMonitor;
 use std::error::Error;
+use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
@@ -21,26 +22,65 @@ impl X11Monitor {
         }
     }
 
+    /// Read the focused window via `xprop`. Returns `Ok(None)` when no window is
+    /// focused (empty desktop). This is a real implementation (not the former
+    /// "X11Application/Active Window" stub) — see issue #14.
     fn get_active_window_info(&self) -> Result<Option<WindowInfo>, Box<dyn Error>> {
-        // For now, create a basic implementation that provides a working foundation
-        // This can be enhanced later with proper X11 window detection using xprop or other tools
-        
-        // Try to get window information using system commands as a fallback
-        if let Ok(output) = std::process::Command::new("xprop")
+        // 1. Resolve the active window id from the root window.
+        let root_out = Command::new("xprop")
             .args(["-root", "_NET_ACTIVE_WINDOW"])
-            .output()
-        {
-            let output_str = String::from_utf8_lossy(&output.stdout);
-            if output_str.contains("window id") {
-                // We have an active window, create a basic window info
-                Ok(Some(WindowInfo::new("X11Application".to_string(), "Active Window".to_string())))
-            } else {
-                Ok(Some(WindowInfo::new("Linux".to_string(), "Desktop".to_string())))
-            }
-        } else {
-            // Fallback: create a generic window info that indicates Linux is running
-            Ok(Some(WindowInfo::new("Linux".to_string(), "Desktop".to_string())))
+            .output()?;
+
+        if !root_out.status.success() {
+            return Err(String::from_utf8_lossy(&root_out.stderr).into());
         }
+
+        let root_stdout = String::from_utf8_lossy(&root_out.stdout);
+        // Line looks like: _NET_ACTIVE_WINDOW(WINDOW): window id # 0x4a00006
+        let wid = root_stdout
+            .lines()
+            .find(|l| l.contains("_NET_ACTIVE_WINDOW"))
+            .and_then(|l| l.split_whitespace().last())
+            .ok_or("_NET_ACTIVE_WINDOW not present")?;
+
+        // 0x0 / 0 means "no focused window" (empty desktop).
+        if wid == "0x0" || wid == "0" {
+            return Ok(None);
+        }
+
+        // 2. Fetch WM_CLASS and _NET_WM_NAME for that window.
+        let prop_out = Command::new("xprop")
+            .args(["-id", wid, "WM_CLASS", "_NET_WM_NAME"])
+            .output()?;
+
+        if !prop_out.status.success() {
+            return Err(String::from_utf8_lossy(&prop_out.stderr).into());
+        }
+
+        let prop_stdout = String::from_utf8_lossy(&prop_out.stdout);
+        let mut app_class = String::new();
+        let mut title = String::new();
+
+        for line in prop_stdout.lines() {
+            if line.starts_with("WM_CLASS") {
+                if let Some(rest) = line.split_once('=').map(|(_, r)| r) {
+                    // WM_CLASS(STRING) = "instance", "Class"
+                    let quoted: Vec<&str> = rest.split('"').filter(|s| !s.is_empty()).collect();
+                    // Prefer the class (second element), fall back to instance.
+                    app_class = quoted
+                        .get(1)
+                        .or_else(|| quoted.first())
+                        .map(|s| s.to_string())
+                        .unwrap_or_default();
+                }
+            } else if line.starts_with("_NET_WM_NAME") {
+                if let Some(rest) = line.split_once('=').map(|(_, r)| r) {
+                    title = rest.trim().trim_matches('"').to_string();
+                }
+            }
+        }
+
+        Ok(Some(WindowInfo::new(app_class, title)))
     }
 }
 
@@ -54,42 +94,74 @@ impl WindowMonitor for X11Monitor {
             println!("Starting Linux X11 window monitor");
         }
 
+        // Fail loudly (instead of pretending to work) if xprop is unavailable.
+        // #14: never emit placeholder strings.
+        let xprop_ok = Command::new("xprop")
+            .arg("-version")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !xprop_ok {
+            return Err(
+                "X11 monitor requires `xprop` (xorg-xprop), which was not found on PATH. \
+                 Install it, or build with the `hyprland` feature for Hyprland support."
+                    .into(),
+            );
+        }
+
         self.running.store(true, Ordering::SeqCst);
 
         let running = Arc::clone(&self.running);
         let verbose = self.verbose;
-        
-        // Start polling thread to check for window changes
+
+        // Poll for focus changes. xprop is invoked twice per cycle, so use a
+        // modest interval (X11 focus changes are user-driven; latency is fine
+        // for a fallback platform).
         thread::spawn(move || {
-            let mut last_window_info: Option<(String, String)> = None;
-            
+            let poll_interval = Duration::from_millis(500);
+            let mut last_window: Option<(String, String)> = None;
+
             while running.load(Ordering::SeqCst) {
-                // Create a temporary monitor instance for getting window info
-                let temp_monitor = X11Monitor::new(verbose);
-                
-                if let Ok(Some(window_info)) = temp_monitor.get_active_window_info() {
-                    let current_window = (window_info.app_class.clone(), window_info.title.clone());
-                    
-                    // Check if window changed
-                    if last_window_info.as_ref() != Some(&current_window) {
+                // A throwaway monitor owns the read helper.
+                let probe = X11Monitor::new(verbose);
+                match probe.get_active_window_info() {
+                    Ok(Some(window_info)) => {
+                        let current = (window_info.app_class.clone(), window_info.title.clone());
+                        if last_window.as_ref() != Some(&current) {
+                            if verbose {
+                                println!(
+                                    "Window changed - Class: '{}', Title: '{}'",
+                                    window_info.app_class, window_info.title
+                                );
+                            }
+                            if let Err(e) = notifier::notify_qmk(&window_info, verbose) {
+                                eprintln!("Failed to notify QMK: {}", e);
+                            }
+                            last_window = Some(current);
+                        }
+                    }
+                    Ok(None) => {
+                        // Empty workspace — clear so the next focus notifies.
+                        if last_window.is_some() {
+                            let window_info = WindowInfo::new(String::new(), String::new());
+                            if let Err(e) = notifier::notify_qmk(&window_info, verbose) {
+                                eprintln!("Failed to notify QMK: {}", e);
+                            }
+                            last_window = None;
+                        }
+                    }
+                    Err(e) => {
                         if verbose {
-                            println!("Window changed - Class: '{}', Title: '{}'", 
-                                window_info.app_class, window_info.title);
+                            eprintln!("xprop query failed: {}", e);
                         }
-                        
-                        // Notify QMK
-                        if let Err(e) = notifier::notify_qmk(&window_info, verbose) {
-                            eprintln!("Failed to notify QMK: {}", e);
-                        }
-                        
-                        last_window_info = Some(current_window);
                     }
                 }
-                
-                // Poll every 100ms
-                thread::sleep(Duration::from_millis(100));
+
+                thread::sleep(poll_interval);
             }
-            
+
             if verbose {
                 println!("Linux X11 monitor thread stopped");
             }
@@ -106,7 +178,6 @@ impl WindowMonitor for X11Monitor {
         if self.verbose {
             println!("Stopping Linux X11 window monitor");
         }
-        
         self.running.store(false, Ordering::SeqCst);
         Ok(())
     }

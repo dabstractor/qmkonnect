@@ -1,9 +1,6 @@
-#![cfg(target_os = "linux")]
-
 use crate::platforms;
 use crate::runners::PlatformRunner;
 use std::error::Error;
-use std::panic::{self, AssertUnwindSafe};
 use std::process;
 
 pub struct LinuxRunner {
@@ -26,94 +23,76 @@ impl PlatformRunner for LinuxRunner {
             println!("Using platform: {}", monitor.platform_name());
         }
 
-        // Set up signal handling for immediate exit
+        // Read-only startup probe so a typo'd VID/PID is obvious immediately (#16).
+        crate::core::notifier::startup_device_probe(self.verbose);
+
+        // Exit promptly on Ctrl+C / SIGTERM. We rely on systemd Restart=always
+        // (and `panic = "abort"` in release) for crash recovery instead of the
+        // former `catch_unwind` scaffolding, which is a no-op under panic=abort.
         ctrlc::set_handler(move || {
-            println!("\nReceived Ctrl+C, shutting down...");
-            // Force immediate exit - no waiting or additional complexity
+            println!("\nReceived interrupt, shutting down...");
             process::exit(0);
         })?;
 
-        // For Hyprland, start the monitor on the main thread with panic recovery
+        // Hyprland: the monitor's start() blocks the calling thread on the IPC
+        // event listener. There is no GUI loop to run alongside it.
         #[cfg(all(target_os = "linux", feature = "hyprland"))]
         {
-            // Use panic recovery to prevent crashes from taking down the entire application
-            let result = panic::catch_unwind(AssertUnwindSafe(|| {
-                monitor.start()
-            }));
-            
-            match result {
-                Ok(Ok(())) => {
-                    // Monitor completed normally (e.g., Ctrl+C)
-                    if self.verbose {
-                        println!("Hyprland monitor completed normally");
-                    }
-                }
-                Ok(Err(e)) => {
-                    // Monitor encountered an error - return it to trigger systemd restart
-                    eprintln!("Hyprland monitor error: {}", e);
-                    return Err(e);
-                }
-                Err(panic_info) => {
-                    // Monitor panicked - log it and trigger systemd restart
-                    eprintln!("Hyprland monitor panicked: {:?}", panic_info);
-                    return Err("Monitor thread panicked".into());
-                }
-            }
+            // Register the StatusNotifierItem tray (if enabled) before blocking
+            // on the IPC listener. ksni owns its D-Bus thread; we only need to
+            // keep the handle alive for the process lifetime. Failure (e.g. no
+            // session bus) is logged, not fatal.
+            #[cfg(feature = "linux-tray")]
+            let _tray_handle = crate::linux_tray::spawn();
+
+            monitor.start()?;
         }
 
-        // For non-Hyprland Linux, start the monitor in a supervised thread
+        // Non-Hyprland Linux (X11): run the monitor in a background thread and
+        // either drive the system-tray event loop on this (main) thread, or —
+        // when the SNI tray is in use — block here since ksni already runs on
+        // its own D-Bus thread.
         #[cfg(all(target_os = "linux", not(feature = "hyprland")))]
         {
-            use std::thread;
-            let verbose = self.verbose;
-            
-            // Supervised thread with panic recovery
-            let monitor_thread = thread::spawn(move || {
-                // Use panic recovery to prevent crashes from taking down the entire application
-                let result = panic::catch_unwind(AssertUnwindSafe(|| {
-                    if let Err(e) = monitor.start() {
-                        eprintln!("Monitor error: {}", e);
-                        return Err(e);
-                    }
-                    Ok(())
-                }));
-                
-                match result {
-                    Ok(Ok(())) => {
-                        // Monitor completed normally
-                        if verbose {
-                            println!("Monitor thread completed normally");
-                        }
-                    }
-                    Ok(Err(e)) => {
-                        // Monitor encountered an error - log it but don't crash the app
-                        eprintln!("Monitor thread failed: {}", e);
-                    }
-                    Err(panic_info) => {
-                        // Monitor panicked - log it but don't crash the app
-                        eprintln!("Monitor thread panicked: {:?}", panic_info);
-                    }
+            // The SNI tray (if enabled) runs on its own thread; keep the handle
+            // alive for the process lifetime.
+            #[cfg(feature = "linux-tray")]
+            let _tray_handle = crate::linux_tray::spawn();
+
+            let monitor_handle = std::thread::spawn(move || {
+                if let Err(e) = monitor.start() {
+                    eprintln!("Monitor error: {}", e);
                 }
-                Ok(())
             });
 
-            // Setup tray icon for non-Hyprland Linux
-            crate::tray::setup_tray();
-
-            if self.verbose {
-                println!("System tray icon initialized");
+            #[cfg(not(feature = "linux-tray"))]
+            {
+                crate::tray::setup_tray();
+                if self.verbose {
+                    println!("System tray icon initialized");
+                }
             }
 
-            // Join the monitor thread - don't return errors to avoid restart loops
-            if let Err(e) = monitor_thread.join() {
-                eprintln!("Error joining Monitor thread: {:?}", e);
-                // Don't return error - let the application continue running
+            // When the SNI tray is enabled there is no blocking GUI loop to
+            // drive, so park the main thread; Ctrl+C / SIGTERM still exits the
+            // process via the handler above. The loop guards against spurious
+            // unparks.
+            #[cfg(feature = "linux-tray")]
+            {
+                if self.verbose {
+                    println!("StatusNotifierItem tray active; blocking on main thread");
+                }
+                loop {
+                    std::thread::park();
+                }
             }
+
+            // The tray exited (user quit); let the monitor wind down with the process.
+            // We deliberately don't join: the monitor thread is torn down on exit.
+            drop(monitor_handle);
         }
 
-        // If we reach here, the monitor stopped on its own
         println!("Monitor stopped, exiting.");
-
         Ok(())
     }
 }

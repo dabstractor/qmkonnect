@@ -1,0 +1,7 @@
+# Statically link the C runtime (UCRT + vcruntime) into the Windows MSVC binary
+# so the shipped exe has NO external VC++-Redistributable dependency
+# (VCRUNTIME140.dll). The Inno installer then produces a genuinely drop-in
+# QMKonnect-Setup.exe that runs on any clean Windows 10/11 x64 machine.
+# Cost: ~135 KB larger exe. Gated to windows-msvc so other targets are untouched.
+[target.'cfg(all(target_os = "windows", target_env = "msvc"))']
+rustflags = ["-C", "target-feature=+crt-static"]

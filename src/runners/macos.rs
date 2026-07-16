@@ -1,5 +1,3 @@
-#![cfg(target_os = "macos")]
-
 use crate::platforms;
 use crate::runners::PlatformRunner;
 use std::error::Error;
@@ -24,6 +22,9 @@ impl PlatformRunner for MacOSRunner {
             println!("Verbose logging enabled");
             println!("Using platform: {}", monitor.platform_name());
         }
+
+        // Read-only startup probe so a typo'd VID/PID is obvious immediately (#16).
+        crate::core::notifier::startup_device_probe(self.verbose);
 
         // Set up signal handling for immediate exit
         ctrlc::set_handler(move || {

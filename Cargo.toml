@@ -1,20 +1,24 @@
 [package]
 name = "qmkonnect"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
-authors = ["Your Name <your.email@example.com>"]
+authors = ["Mulletware"]
 description = "Cross-platform window activity notifier for QMK keyboards"
-readme = "README.md"
+readme = "Readme.md"
 license = "MIT"
+rust-version = "1.88"  # MSRV floor: image 0.25.x (see docs/installation.md)
 
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-qmk_notifier = { package = "qmk_notifier", git = "https://github.com/dabstractor/qmk_notifier" }
+# Pinned to a tagged release for reproducible CI/release builds. Bump the tag
+# when qmk_notifier cuts a newer release.
+qmk_notifier = { package = "qmk_notifier", git = "https://github.com/dabstractor/qmk_notifier", tag = "v0.2.1" }
+hidapi = "2.6"
 ctrlc = "3.4"
 once_cell = "1.21"
 dirs = "5.0"
-toml = "0.5"
+toml = "0.9"
 tao = "0.32.8"
 tray-icon = "0.20.0"
 image = { version = "0.25.5", default-features = false, features = ["png"] }
@@ -31,6 +35,22 @@ mockall = "0.11"
 [target.'cfg(target_os = "linux")'.dependencies]
 hyprland = { version = "0.4.0-beta.2", optional = true }
 libxdo = "0.6"
+tempfile = "3.0"
+# libc: only for geteuid() in the root-aware `qmkonnect --reload` config
+# resolution (WS3 / #26). No FFI beyond that single call.
+libc = "0.2"
+# StatusNotifierItem (SNI) over D-Bus — pure-Rust, no GTK main loop. Behind
+# the opt-in `linux-tray` feature so the minimal Hyprland service build is
+# unchanged (see HANDOFF_LINUX_TRAY_PARITY.md). Notifications and the settings
+# dialog shell out to `notify-send` / `zenity` (standard on Linux desktops)
+# instead of pulling extra D-Bus crates.
+ksni = { version = "0.3", optional = true, features = ["blocking"] }
+# Native GTK "Show Window Information" popup. zenity's floating `--forms` list is
+# height-capped (~4 rows) and its tall `--list` tiles — a native `GtkWindow` with
+# a dialog type-hint floats *and* grows. gtk-rs 0.18 is already compiled into the
+# binary (via libappindicator/tray-icon), so this reuses it. Runs on a dedicated
+# thread; ksni's IPC thread stays pure-IPC.
+gtk = { version = "0.18", optional = true }
 
 # macOS dependencies
 [target.'cfg(target_os = "macos")'.dependencies]
@@ -47,6 +67,8 @@ dispatch = { version = "0.2", optional = true }
 windows = { version = "0.52.0", features = [
     "Win32_Foundation",
     "Win32_System_Threading",
+    "Win32_System_DataExchange",
+    "Win32_System_Memory",
     "Win32_UI_WindowsAndMessaging",
     "Win32_UI_Accessibility",
     "Win32_System_LibraryLoader",
@@ -54,8 +76,10 @@ windows = { version = "0.52.0", features = [
     "Win32_UI_Controls",
     "Win32_Graphics_Gdi",
     "Win32_System_Console",
+    # Per-user "Open at Login" autostart via the HKCU `Run` key
+    # (src/autostart.rs; HANDOFF_WINDOWS_OPEN_AT_LOGIN.md).
+    "Win32_System_Registry",
 ] }
-windows-service = "0.7.0"
 log = "0.4"
 env_logger = "0.11"
 eventlog = "0.2.2"
@@ -64,13 +88,33 @@ single-instance = "0.3"
 
 
 [features]
-default = ["hyprland",  "macos"]
+# The tray is part of the default app on every platform that has one
+# (macOS/Windows via tray.rs, Linux via the SNI `linux-tray` module). On a
+# given OS the other platforms' features are inert no-ops (e.g. `macos` on
+# Linux, `linux-tray` on macOS) — the same pattern already used for `macos`.
+# This keeps plain `cargo build --release` producing the full app with a tray,
+# with no extra flags. Pass `--no-default-features` for a minimal service build.
+default = ["hyprland", "macos", "linux-tray"]
 hyprland = ["dep:hyprland"]
 macos = ["dep:objc", "dep:core-foundation", "dep:core-graphics", "dep:dispatch"]
+# StatusNotifierItem tray for the Linux/Wayland build. Default-on (see above);
+# can be disabled with `--no-default-features` for a trayless service build.
+# Registers the app on the session D-Bus; any SNI-hosting bar (Waybar, SwayNC,
+# KDE, GNOME +AppIndicator, …) renders the icon+menu. "Show Window Information"
+# uses `notify-send` and Settings uses `zenity` (standard on Linux desktops).
+linux-tray = ["dep:ksni", "dep:gtk"]
 
 [[bin]]
 name = "qmkonnect"
 path = "src/main.rs"
+
+# udev helper (Linux only in practice, but pure-std so it builds everywhere).
+# Parses a hidraw interface's report descriptor and prints ID_QMKONNECT=1 when
+# it carries the QMK Raw HID signature (usage page 0xFF60 / usage 0x61). The
+# static udev rule IMPORTs this; see packaging/linux/udev/69-qmkonnect-rawhid.rules.
+[[bin]]
+name = "qmkonnect-hid-id"
+path = "src/bin/hid_id.rs"
 
 # Optimize for size
 [profile.release]
@@ -79,5 +123,6 @@ lto = true          # Enable Link Time Optimization
 codegen-units = 1   # Reduce number of codegen units to increase optimizations
 panic = "abort"     # Abort on panic instead of unwinding
 strip = true        # Strip symbols from binary
+
 
 

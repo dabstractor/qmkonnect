@@ -1,26 +1,24 @@
 #![allow(unexpected_cfgs)]
 #![cfg(target_os = "macos")]
-use crate::core::{notifier, QMKError, QMKResult};
+use crate::core::notifier;
 use crate::core::types::WindowInfo;
 use crate::platforms::WindowMonitor;
 use std::error::Error;
 use std::ffi::c_void;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use core_foundation::{
     array::CFArray,
-    base::CFRange,
-    base::{CFRelease, TCFType},
-    dictionary::{CFDictionary, CFDictionaryRef},
-    runloop::{CFRunLoop, CFRunLoopRun},
+    base::{CFRange, CFRelease, TCFType},
+    dictionary::CFDictionaryRef,
+    runloop::CFRunLoopRun,
     string::CFString,
 };
 
 use core_graphics::window::{kCGWindowListOptionOnScreenOnly, CGWindowListCopyWindowInfo};
 
 use objc::{class, msg_send, runtime::Object, sel, sel_impl};
-
-use dispatch::Queue;
 
 // Existing extern block for various symbols
 extern "C" {
@@ -29,22 +27,21 @@ extern "C" {
     static kCGWindowName: *const c_void;
 }
 
-// New extern block for screen recording permissions:
+// Screen recording permissions (macOS 10.15+):
 extern "C" {
-    /// Returns true if the app already has screen recording permission (or if running on an older OS).
+    /// Returns true if the app already has screen recording permission.
     fn CGPreflightScreenCaptureAccess() -> bool;
     /// Requests screen recording permission by displaying the system modal prompt.
-    /// Note that this function returns immediately (it does not wait for the user's response).
+    /// Returns immediately (it does not wait for the user's response).
     fn CGRequestScreenCaptureAccess() -> bool;
 }
 
 // Define nil as a null pointer
 const NIL: *mut Object = std::ptr::null_mut();
 
-// Global verbose setting that can be accessed by callback
-static mut VERBOSE: bool = false;
-
-
+// Global verbose setting readable from the Objective-C notification callback.
+// Replacing the former `static mut VERBOSE` (data race / UB) with an atomic.
+static VERBOSE: AtomicBool = AtomicBool::new(false);
 
 pub struct MacOSMonitor {
     verbose: bool,
@@ -59,100 +56,91 @@ impl MacOSMonitor {
         }
     }
 
-    /// Call this function to check and request screen recording permission.
-    fn request_screen_recording_permission() -> bool {
+    /// Returns true when screen-recording permission is already granted.
+    /// When not granted, kicks off the async permission request but does NOT
+    /// block: window titles are redacted until the user grants access, while
+    /// the frontmost application name keeps working. We therefore keep running
+    /// (see issue #13) instead of hard-failing.
+    fn ensure_screen_recording_permission(verbose: bool) -> bool {
         unsafe {
             if CGPreflightScreenCaptureAccess() {
-                println!("Screen recording permission already granted.");
+                if verbose {
+                    println!("Screen recording permission already granted.");
+                }
                 return true;
             }
 
-            println!("Screen recording permission not yet granted. Requesting...");
+            if verbose {
+                println!(
+                    "Screen recording permission not yet granted — requesting. \
+                     Window titles will be unavailable until access is granted \
+                     in System Settings > Privacy & Security > Screen Recording."
+                );
+            }
+            // Pops the system dialog (returns immediately). Keep running either way.
             CGRequestScreenCaptureAccess();
-            println!(
-                "Please grant permission in the System Settings dialog and restart the terminal."
-            );
             false
         }
     }
 
-    unsafe fn setup_observers(&mut self) -> QMKResult<()> {
-        // Set global verbose flag for callbacks
-        VERBOSE = self.verbose;
-        let workspace: *mut Object = msg_send![class!(NSWorkspace), sharedWorkspace];
-        let notification_center: *mut Object = msg_send![workspace, notificationCenter];
+    fn setup_observers(&mut self) -> Result<(), Box<dyn Error>> {
+        // Publish the verbose flag for the Objective-C callback.
+        VERBOSE.store(self.verbose, Ordering::SeqCst);
 
+        let workspace: *mut Object = unsafe { msg_send![class!(NSWorkspace), sharedWorkspace] };
+        let notification_center: *mut Object = unsafe { msg_send![workspace, notificationCenter] };
 
-
-        // Register the method with the Objective-C runtime
+        // Register a custom observer class once. Recreating it on every start()
+        // would fail (class already registered), so skip declaration if present.
         use objc::declare::ClassDecl;
-        use objc::runtime::{Class, Object, Sel};
+        use objc::runtime::{Class, Sel};
 
-            // Create a custom class for our observer
-            let superclass = Class::get("NSObject").ok_or_else(|| {
-                QMKError::Platform(crate::core::errors::PlatformError::MacOSCoreFoundation { code: -1 })
-            })?;
-            let mut decl = ClassDecl::new("RustNotificationObserver", superclass).ok_or_else(|| {
-                QMKError::Platform(crate::core::errors::PlatformError::MacOSCoreFoundation { code: -2 })
-            })?;
+        if Class::get("RustNotificationObserver").is_none() {
+            let superclass = Class::get("NSObject")
+                .ok_or("NSObject class not found — Objective-C runtime unavailable")?;
+            let mut decl = ClassDecl::new("RustNotificationObserver", superclass)
+                .ok_or("Failed to declare RustNotificationObserver class")?;
 
-            // Add the notification handler method
             extern "C" fn notification_handler(_: &Object, _: Sel, _: *mut Object) {
-                let verbose = unsafe { VERBOSE };
-
+                let verbose = VERBOSE.load(Ordering::SeqCst);
                 if let Ok(Some(window_info)) = get_active_window_info() {
                     let _ = notifier::notify_qmk(&window_info, verbose);
                 }
             }
 
-            decl.add_method(
-                sel!(observeNotification:),
-                notification_handler as extern "C" fn(&Object, Sel, *mut Object),
-            );
+            unsafe {
+                decl.add_method(
+                    sel!(observeNotification:),
+                    notification_handler as extern "C" fn(&Object, Sel, *mut Object),
+                );
+            }
+            decl.register();
+        }
 
-            // Register the class
-            let _cls = decl.register();
+        // Create an instance of our custom class
+        let observer: *mut Object = unsafe {
+            msg_send![
+                Class::get("RustNotificationObserver")
+                    .ok_or("RustNotificationObserver class missing after registration")?,
+                new
+            ]
+        };
 
-            // Create an instance of our custom class
-            let observer: *mut Object =
-                msg_send![Class::get("RustNotificationObserver").ok_or_else(|| {
-                    QMKError::Platform(crate::core::errors::PlatformError::MacOSCoreFoundation { code: -3 })
-                })?, new];
+        // Add the observer to the notification center
+        let _: () = unsafe {
+            msg_send![notification_center,
+                addObserver: observer
+                selector: sel!(observeNotification:)
+                name: NSWorkspaceDidActivateApplicationNotification
+                object: NIL
+            ]
+        };
 
-            // Add the observer to the notification center
-            let _: () = msg_send![notification_center,
-                                addObserver:observer
-                                selector:sel!(observeNotification:)
-                                name:NSWorkspaceDidActivateApplicationNotification
-                                object:NIL];
-
-        // Don't release the observer, we need it to stay alive
+        // Don't release the observer; it must stay alive for the run loop.
         let _ = observer;
 
         self.running = true;
-
-        // Fix the unused Result warning
-        if let Ok(info) = get_active_window_info() {
-            if let Some(window_info) = info {
-                if let Err(e) = notifier::notify_qmk(&window_info, self.verbose) {
-                    eprintln!("Failed to notify QMK: {}", e);
-                }
-            }
-        }
-
-        // Set up the run loop
-        let main_queue = Queue::main();
-
-        // Use a proper Rust closure for exec_async
-        main_queue.exec_async(|| {
-            println!("Main queue async block running");
-            // This is a simple empty closure just to start the main queue
-            // The actual work will be handled by the notification observer
-        });
-
         Ok(())
-        // Replace all problematic Ok(()) with proper error handling mapping
-        .map_err(|_| QMKError::Platform(crate::core::errors::PlatformError::MacOSCoreFoundation { code: -6 }))
     }
 }
 
@@ -161,43 +149,42 @@ impl WindowMonitor for MacOSMonitor {
         "macOS"
     }
 
-    fn start(&mut self) -> QMKResult<()> {
+    fn start(&mut self) -> Result<(), Box<dyn Error>> {
         if self.verbose {
             println!("Starting macOS window monitor");
         }
 
-        unsafe {
-            // First, check and request screen recording permission.
-            if !MacOSMonitor::request_screen_recording_permission() {
-                return Err(QMKError::Platform(crate::core::errors::PlatformError::MacOSCoreFoundation { code: -4 }));
-            }
+        // Degrade gracefully (issue #13): a missing screen-recording permission
+        // only costs us window *titles*; the app name still works, so keep going.
+        let _permission_granted = Self::ensure_screen_recording_permission(self.verbose);
 
-            self.setup_observers().map_err(|e| QMKError::Platform(crate::core::errors::PlatformError::MacOSCoreFoundation { code: -5 }))?;
+        self.setup_observers()?;
 
-            // Capture the initial active application
-            let _ = get_active_window_info().map(|info| {
-                if let Some(window_info) = info {
-                    if let Err(e) = notifier::notify_qmk(&window_info, self.verbose) {
-                        eprintln!("Failed to notify QMK: {}", e);
-                    }
+        // Capture the initial active application.
+        let _ = get_active_window_info().map(|info| {
+            if let Some(window_info) = info {
+                if let Err(e) = notifier::notify_qmk(&window_info, self.verbose) {
+                    eprintln!("Failed to notify QMK: {}", e);
                 }
-            });
+            }
+        });
 
-            // Run the event loop
-            CFRunLoopRun();
-        }
+        // Pump the run loop on this thread. The notification observer fires on
+        // activation changes and pushes updates to QMK.
+        unsafe { CFRunLoopRun() };
 
         Ok(())
     }
 
     fn stop(&mut self) -> Result<(), Box<dyn Error>> {
         self.running = false;
-        CFRunLoop::get_current().stop();
+        // Stopping CFRunLoop from another thread is best-effort; the process
+        // exit path handles cleanup. Kept for API symmetry with the trait.
         Ok(())
     }
 }
 
-fn get_active_window_info() -> QMKResult<Option<WindowInfo>> {
+fn get_active_window_info() -> Result<Option<WindowInfo>, Box<dyn Error>> {
     unsafe {
         let workspace: *mut Object = msg_send![class!(NSWorkspace), sharedWorkspace];
         let app: *mut Object = msg_send![workspace, frontmostApplication];
@@ -209,13 +196,14 @@ fn get_active_window_info() -> QMKResult<Option<WindowInfo>> {
         let app_name: *mut Object = msg_send![app, localizedName];
         let app_name_str = nsstring_to_string(app_name);
 
-        // Get window title from the frontmost window
+        // Window titles come from CGWindowListCopyWindowInfo, which requires
+        // screen-recording permission. Without it the title is simply empty.
         let window_list = CGWindowListCopyWindowInfo(kCGWindowListOptionOnScreenOnly, 0);
-        let window_array: CFArray<CFDictionary> =
+        let window_array: CFArray<core_foundation::dictionary::CFDictionary> =
             CFArray::wrap_under_get_rule(window_list as *const _);
         let count = window_array.len();
 
-        let mut window_title = String::from("");
+        let mut window_title = String::new();
 
         for i in 0..count {
             let range = CFRange {
@@ -224,11 +212,6 @@ fn get_active_window_info() -> QMKResult<Option<WindowInfo>> {
             };
             let info = window_array.get_values(range)[0] as CFDictionaryRef;
 
-            // Use a raw dictionary without type parameters
-            let _: CFDictionary<*const c_void, *const c_void> =
-                CFDictionary::wrap_under_get_rule(info);
-
-            // Get the owner name
             let owner_name_ref = core_foundation::dictionary::CFDictionaryGetValue(
                 info as CFDictionaryRef,
                 kCGWindowOwnerName as *const _,
@@ -238,19 +221,16 @@ fn get_active_window_info() -> QMKResult<Option<WindowInfo>> {
                 continue;
             }
 
-            // Convert the value to a CFString
             let owner_name = CFString::wrap_under_get_rule(owner_name_ref as *const _);
             let owner_name_str = cfstring_to_string(&owner_name);
 
             if owner_name_str == app_name_str {
-                // Get the window name
                 let window_name_ref = core_foundation::dictionary::CFDictionaryGetValue(
                     info as CFDictionaryRef,
                     kCGWindowName as *const _,
                 );
 
                 if !window_name_ref.is_null() {
-                    // Convert the value to a CFString
                     let window_name = CFString::wrap_under_get_rule(window_name_ref as *const _);
                     window_title = cfstring_to_string(&window_name);
                 }
@@ -261,13 +241,136 @@ fn get_active_window_info() -> QMKResult<Option<WindowInfo>> {
 
         CFRelease(window_list as *const c_void);
 
-        Ok(Some(WindowInfo::new(app_name_str, window_title)).map_err(|_| QMKError::Platform(crate::core::errors::PlatformError::MacOSCoreFoundation { code: -8 }))
+        Ok(Some(WindowInfo::new(app_name_str, window_title)))
     }
+}
+
+/// Enumerate currently-running foreground applications.
+///
+/// Returns one entry per running app with a *regular* activation policy
+/// (the apps that appear in the Dock / app switcher). Each entry is
+/// `(class, title)` where:
+///   * `class` is the app's `localizedName` — exactly the value QMKonnect sends
+///     as `application_class` and that you match against in your QMK config.
+///   * `title` is the title of one of the app's on-screen windows, looked up via
+///     the Core Graphics window list (requires Screen Recording permission;
+///     empty when unavailable).
+///
+/// Results are sorted alphabetically by class for easy scanning.
+pub fn list_foreground_windows() -> Vec<(String, String)> {
+    let mut result: Vec<(String, String)> = Vec::new();
+    let title_map = build_owner_title_map();
+
+    unsafe {
+        let workspace: *mut Object = msg_send![class!(NSWorkspace), sharedWorkspace];
+        if workspace.is_null() {
+            return result;
+        }
+
+        let apps: *mut Object = msg_send![workspace, runningApplications];
+        if apps.is_null() {
+            return result;
+        }
+        let count: usize = msg_send![apps, count];
+
+        for i in 0..count {
+            let app: *mut Object = msg_send![apps, objectAtIndex: i as isize];
+            if app.is_null() {
+                continue;
+            }
+
+            // NSApplicationActivationPolicyRegular == 0 (apps shown to the user).
+            let policy: isize = msg_send![app, activationPolicy];
+            if policy != 0 {
+                continue;
+            }
+
+            let is_finished: bool = msg_send![app, isFinishedLaunching];
+            if !is_finished {
+                continue;
+            }
+
+            let name_ns: *mut Object = msg_send![app, localizedName];
+            let name = nsstring_to_string(name_ns);
+            if name.is_empty() {
+                continue;
+            }
+
+            let title = title_map.get(&name).cloned().unwrap_or_default();
+            result.push((name, title));
+        }
+    }
+
+    result.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
+    result
+}
+
+/// Build a map of `owner name -> first non-empty window title` from the
+/// on-screen Core Graphics window list. Requires Screen Recording permission;
+/// returns an empty map (and thus empty titles) when unavailable.
+fn build_owner_title_map() -> std::collections::HashMap<String, String> {
+    let mut map = std::collections::HashMap::new();
+
+    unsafe {
+        let window_list = CGWindowListCopyWindowInfo(kCGWindowListOptionOnScreenOnly, 0);
+        if window_list.is_null() {
+            return map;
+        }
+        let window_array: CFArray<core_foundation::dictionary::CFDictionary> =
+            CFArray::wrap_under_get_rule(window_list as *const _);
+        let count = window_array.len();
+
+        for i in 0..count {
+            let range = CFRange {
+                location: i as isize,
+                length: 1,
+            };
+            let info = window_array.get_values(range)[0] as CFDictionaryRef;
+
+            let owner_ref = core_foundation::dictionary::CFDictionaryGetValue(
+                info as CFDictionaryRef,
+                kCGWindowOwnerName as *const _,
+            );
+            if owner_ref.is_null() {
+                continue;
+            }
+            let owner = CFString::wrap_under_get_rule(owner_ref as *const _).to_string();
+
+            let title_ref = core_foundation::dictionary::CFDictionaryGetValue(
+                info as CFDictionaryRef,
+                kCGWindowName as *const _,
+            );
+            let title = if !title_ref.is_null() {
+                CFString::wrap_under_get_rule(title_ref as *const _).to_string()
+            } else {
+                String::new()
+            };
+
+            // Keep the first non-empty title per owner.
+            let needs_update = match map.get(&owner) {
+                None => true,
+                Some(existing) => existing.is_empty() && !title.is_empty(),
+            };
+            if needs_update {
+                map.insert(owner, title);
+            }
+        }
+
+        CFRelease(window_list as *const c_void);
+    }
+
+    map
 }
 
 fn nsstring_to_string(nsstring: *mut Object) -> String {
     unsafe {
+        if nsstring.is_null() {
+            return String::new();
+        }
         let utf8: *const i8 = msg_send![nsstring, UTF8String];
+        if utf8.is_null() {
+            return String::new();
+        }
         let len = libc::strlen(utf8);
         let bytes = std::slice::from_raw_parts(utf8 as *const u8, len);
         String::from_utf8_lossy(bytes).into_owned()
@@ -320,6 +423,6 @@ pub fn create_config_dir() -> Result<PathBuf, Box<dyn Error>> {
 
     // Create directory if it doesn't exist
     std::fs::create_dir_all(&config_dir)?;
-    
+
     Ok(config_dir)
 }

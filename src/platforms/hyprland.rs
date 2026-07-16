@@ -3,7 +3,7 @@ use crate::core::notifier;
 use crate::core::types::WindowInfo;
 use crate::platforms::WindowMonitor;
 use hyprland::{
-    data::Client,
+    data::{Client, Clients},
     event_listener::{EventListener, WorkspaceEventData},
     shared::HyprData,
     shared::HyprDataActiveOptional,
@@ -15,8 +15,16 @@ use std::{
     path::PathBuf,
     sync::{Arc, Mutex},
     thread,
-    time::{Duration, SystemTime},
+    time::{Duration, Instant, SystemTime},
 };
+
+/// Initial delay (ms) before the first reconnect attempt.
+const INITIAL_RECONNECT_MS: u64 = 100;
+/// Maximum reconnect backoff (ms).
+const MAX_RECONNECT_MS: u64 = 10_000;
+/// A listener that stayed up at least this long is treated as a stable
+/// connection; on its loss the backoff is reset to the initial value (#7).
+const STABLE_CONNECTION_THRESHOLD: Duration = Duration::from_secs(5);
 
 #[derive(PartialEq, Debug, Clone)]
 struct WindowState {
@@ -25,18 +33,14 @@ struct WindowState {
 }
 
 pub struct HyprlandMonitor {
-    event_listener: Option<EventListener>,
     last_window_state: Arc<Mutex<Option<WindowState>>>,
-    polling_active: Arc<Mutex<bool>>,
     verbose: bool,
 }
 
 impl HyprlandMonitor {
     pub fn new(verbose: bool) -> Self {
         Self {
-            event_listener: None,
             last_window_state: Arc::new(Mutex::new(None)),
-            polling_active: Arc::new(Mutex::new(false)),
             verbose,
         }
     }
@@ -55,124 +59,126 @@ impl WindowMonitor for HyprlandMonitor {
             println!("Starting Hyprland window monitor");
         }
 
-        {
-            // Set polling to active
-            {
-                let mut active = self.polling_active.lock().unwrap();
-                *active = true;
-            }
+        let fn_start = Instant::now();
+        let mut delay_ms = INITIAL_RECONNECT_MS;
 
-            // Start polling thread for scratchpad detection
-            let polling_active = Arc::clone(&self.polling_active);
-            let last_window_state = Arc::clone(&self.last_window_state);
+        // Optional periodic active-window poll. The IPC event stream can miss
+        // (or be late on) focus changes — notably when a scratchpad is
+        // dismissed via `movetoworkspacesilent`, where Hyprland refocuses the
+        // underlying window implicitly and the `activewindow` event lags or
+        // never fires. Polling the live active-window state on a short cadence
+        // corrects any such drift. `poll_window_state` dedups against
+        // `last_window_state`, so steady-state polls are no-ops (one cheap IPC
+        // call each). Disabled when `poll_interval_ms == 0` (the default).
+        let (_, poll_interval_ms) = crate::core::configured_timing();
+        if poll_interval_ms > 0 {
+            let lws = Arc::clone(&self.last_window_state);
             let verbose = self.verbose;
-
             thread::spawn(move || {
-                let poll_interval = Duration::from_millis(100);
-                while *polling_active.lock().unwrap() {
-                    // Poll for window state
-                    if let Err(err) = poll_window_state(&last_window_state, verbose) {
-                        eprintln!("Error polling window state: {}", err);
-                    }
-                    thread::sleep(poll_interval);
-                }
+                let interval = Duration::from_millis(poll_interval_ms);
                 if verbose {
-                    println!("Window state polling thread stopped");
+                    println!(
+                        "[{}ms] periodic active-window poll every {}ms",
+                        crate::core::now_ms(),
+                        poll_interval_ms
+                    );
+                }
+                loop {
+                    thread::sleep(interval);
+                    if let Err(err) = poll_window_state(&lws, verbose) {
+                        eprintln!("Error in periodic poll: {}", err);
+                    }
+                }
+            });
+        }
+
+        loop {
+            // Create a new event listener for each attempt
+            let mut listener = EventListener::new();
+            let verbose = self.verbose;
+            let last_window_state = Arc::clone(&self.last_window_state);
+
+            // Set up the window change handler
+            let lwc = Arc::clone(&last_window_state);
+            listener.add_active_window_changed_handler(move |_| {
+                if let Err(err) = handle_window_state_change(&lwc, verbose) {
+                    eprintln!("Error handling window change: {}", err);
                 }
             });
 
-            let start: SystemTime = SystemTime::now();
-            let mut delay_ms = 101;
+            // Add workspace change handler
+            let lws = Arc::clone(&last_window_state);
+            listener.add_workspace_changed_handler(move |workspace_event| {
+                if let Err(err) = handle_workspace_change(workspace_event, &lws, verbose) {
+                    eprintln!("Error handling workspace change: {}", err);
+                }
+            });
 
-            loop {
-                // Create a new event listener for each attempt
-                let mut listener = EventListener::new();
-                let verbose = self.verbose;
-                let last_window_state = Arc::clone(&self.last_window_state);
+            // Add window closed handler
+            let lwc = Arc::clone(&last_window_state);
+            listener.add_window_closed_handler(move |_| {
+                if let Err(err) = handle_window_state_change(&lwc, verbose) {
+                    eprintln!("Error handling window close: {}", err);
+                }
+            });
 
-                // Set up the window change handler
-                let lwc = Arc::clone(&last_window_state);
-                listener.add_active_window_changed_handler(move |_| {
-                    if let Err(err) = handle_window_state_change(&lwc, verbose) {
-                        eprintln!("Error handling window change: {}", err);
-                    }
-                });
+            // Layer surface (e.g. scratchpad) handlers. We rely on events rather
+            // than a permanent 100ms poller (#8): each layer event queries the
+            // active window immediately, then fires a short bounded poll burst to
+            // absorb the timing gap where focus hasn't settled yet at event time.
+            let lws = Arc::clone(&last_window_state);
+            listener.add_layer_opened_handler(move |_| {
+                if let Err(err) = handle_window_state_change(&lws, verbose) {
+                    eprintln!("Error handling layer open: {}", err);
+                }
+                spawn_poll_burst(Arc::clone(&lws), verbose);
+            });
 
-                // Add workspace change handler
-                let lws = Arc::clone(&last_window_state);
-                listener.add_workspace_changed_handler(move |workspace_event| {
-                    if let Err(err) = handle_workspace_change(workspace_event, &lws, verbose) {
-                        eprintln!("Error handling workspace change: {}", err);
-                    }
-                });
+            let lws = Arc::clone(&last_window_state);
+            listener.add_layer_closed_handler(move |_| {
+                if let Err(err) = handle_window_state_change(&lws, verbose) {
+                    eprintln!("Error handling layer close: {}", err);
+                }
+                spawn_poll_burst(Arc::clone(&lws), verbose);
+            });
 
-                // Add window closed handler
-                let lwc = Arc::clone(&last_window_state);
-                listener.add_window_closed_handler(move |_| {
-                    if let Err(err) = handle_window_state_change(&lwc, verbose) {
-                        eprintln!("Error handling window close: {}", err);
+            let attempt_start = Instant::now();
+            match listener.start_listener() {
+                Ok(_) => {
+                    // start_listener() blocks until the listener stops; this arm
+                    // only runs on a clean shutdown.
+                    return Ok(());
+                }
+                Err(e) => {
+                    // Hard-fail if the very first attempt dies within 2s of
+                    // startup (Hyprland genuinely unavailable).
+                    if fn_start.elapsed() < Duration::from_millis(2000) {
+                        return Err(format!(
+                            "Failed to start event listener: {}\nAre you sure Hyprland is running?",
+                            e
+                        )
+                        .into());
                     }
-                });
 
-                // Add layer surface (like scratchpads) handlers - note the correct method names
-                let lws = Arc::clone(&last_window_state);
-                listener.add_layer_opened_handler(move |_| {
-                    if let Err(err) = handle_window_state_change(&lws, verbose) {
-                        eprintln!("Error handling layer open: {}", err);
+                    // A connection that stayed up a while was stable: reset the
+                    // backoff so long-uptime sessions don't get stuck at the 10s
+                    // cap on every reconnect (#7).
+                    if attempt_start.elapsed() >= STABLE_CONNECTION_THRESHOLD {
+                        delay_ms = INITIAL_RECONNECT_MS;
                     }
-                });
 
-                let lws = Arc::clone(&last_window_state);
-                listener.add_layer_closed_handler(move |_| {
-                    if let Err(err) = handle_window_state_change(&lws, verbose) {
-                        eprintln!("Error handling layer close: {}", err);
+                    if self.verbose {
+                        println!(
+                            "Lost connection to Hyprland, retrying in {}ms: {}",
+                            delay_ms, e
+                        );
                     }
-                });
-
-                // Try to start the listener
-                match listener.start_listener() {
-                    Ok(_) => {
-                        // This branch never executes because start_listener blocks
-                        // until an error occurs. Including it for API correctness.
-                        self.event_listener = Some(listener);
-                        return Ok(());
-                    }
-                    Err(e) => {
-                        if start.elapsed().unwrap().as_millis() < 2001 {
-                            // Stop polling thread
-                            {
-                                let mut active = self.polling_active.lock().unwrap();
-                                *active = false;
-                            }
-                            return Err(format!("Failed to start event listener: {}\nAre you sure Hyprland is running?", e).into());
-                        }
-                        // Otherwise, retry with exponential backoff
-                        if self.verbose {
-                            println!(
-                                "Lost connection to Hyprland, retrying in {}ms: {}",
-                                delay_ms, e
-                            );
-                        }
-                        // Sleep with exponential backoff
-                        std::thread::sleep(std::time::Duration::from_millis(delay_ms));
-                        // Exponential backoff with a cap
-                        delay_ms = std::cmp::min(delay_ms * 3, 10000); // Cap at 10 seconds
-                    }
+                    // Sleep with exponential backoff
+                    std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+                    delay_ms = std::cmp::min(delay_ms * 3, MAX_RECONNECT_MS);
                 }
             }
         }
-    }
-
-    fn stop(&mut self) -> Result<(), Box<dyn Error>> {
-        {
-            // Stop the polling thread
-            {
-                let mut active = self.polling_active.lock().unwrap();
-                *active = false;
-            }
-            self.event_listener = None;
-        }
-        Ok(())
     }
 }
 
@@ -191,19 +197,16 @@ fn wait_for_hyprland(verbose: bool) -> Result<(), Box<dyn Error>> {
         let elapsed = start.elapsed().unwrap_or(Duration::from_secs(0));
 
         // Check if Hyprland environment is available (socket exists)
-        match check_hyprland_environment() {
-            Err(e) => {
-                if elapsed.as_secs() >= MAX_WAIT_SECS {
-                    return Err(format!("Timed out waiting for Hyprland: {}", e).into());
-                }
-                if verbose {
-                    println!("Waiting for Hyprland environment ({}ms): {}", delay_ms, e);
-                }
-                thread::sleep(Duration::from_millis(delay_ms));
-                delay_ms = std::cmp::min(delay_ms * 2, 2000); // Cap at 2 seconds
-                continue;
+        if let Err(e) = check_hyprland_environment() {
+            if elapsed.as_secs() >= MAX_WAIT_SECS {
+                return Err(format!("Timed out waiting for Hyprland: {}", e).into());
             }
-            Ok(_) => {}
+            if verbose {
+                println!("Waiting for Hyprland environment ({}ms): {}", delay_ms, e);
+            }
+            thread::sleep(Duration::from_millis(delay_ms));
+            delay_ms = std::cmp::min(delay_ms * 2, 2000); // Cap at 2 seconds
+            continue;
         }
 
         // Environment exists, now verify IPC connection works
@@ -229,12 +232,12 @@ fn wait_for_hyprland(verbose: bool) -> Result<(), Box<dyn Error>> {
 }
 
 fn check_hyprland_environment() -> Result<(), Box<dyn Error>> {
-    // First try environment variable approach
+    // Preferred path: the session exports HYPRLAND_INSTANCE_SIGNATURE.
     if let Ok(signature) = env::var("HYPRLAND_INSTANCE_SIGNATURE") {
         if let Ok(runtime_dir) = env::var("XDG_RUNTIME_DIR") {
             let socket_path = PathBuf::from(&runtime_dir)
                 .join("hypr")
-                .join(signature)
+                .join(&signature)
                 .join(".socket.sock");
 
             if socket_path.exists() {
@@ -243,40 +246,41 @@ fn check_hyprland_environment() -> Result<(), Box<dyn Error>> {
         }
     }
 
-    // If environment variables aren't set, try to find the socket directly
+    // Fallback: discover an instance under $XDG_RUNTIME_DIR/hypr/<sig>/.socket.sock.
+    // Covers systemd-launched services that don't inherit the session env. We no
+    // longer shell out to `ps` (#15) — the socket scan is authoritative.
     if let Ok(runtime_dir) = env::var("XDG_RUNTIME_DIR") {
         let hypr_dir = PathBuf::from(&runtime_dir).join("hypr");
-        if hypr_dir.exists() {
-            // Look for any instance directories
-            if let Ok(entries) = fs::read_dir(&hypr_dir) {
-                for entry in entries.flatten() {
-                    let socket_path = entry.path().join(".socket.sock");
-                    if socket_path.exists() {
-                        // Found a socket! Set the environment variable
-                        let instance_sig = entry.file_name();
-                        env::set_var(
-                            "HYPRLAND_INSTANCE_SIGNATURE",
-                            instance_sig.to_string_lossy().as_ref(),
-                        );
-                        return Ok(());
-                    }
+        if let Ok(entries) = fs::read_dir(&hypr_dir) {
+            for entry in entries.flatten() {
+                let socket_path = entry.path().join(".socket.sock");
+                if socket_path.exists() {
+                    // The hyprland crate selects its instance via this env var,
+                    // so publish the discovered signature. This runs once, on the
+                    // main thread, before any listener is spawned.
+                    // NOTE: wrap in `unsafe {}` if/when bumping to edition 2024.
+                    env::set_var("HYPRLAND_INSTANCE_SIGNATURE", entry.file_name());
+                    return Ok(());
                 }
             }
         }
     }
 
-    // If we get here, we need to check if Hyprland is actually running
-    let ps_output = std::process::Command::new("ps")
-        .args(["-e", "-o", "comm="])
-        .output()?;
+    Err("Hyprland socket not found under $XDG_RUNTIME_DIR/hypr/<signature>/.socket.sock. Is Hyprland running?".into())
+}
 
-    let processes = String::from_utf8_lossy(&ps_output.stdout);
-    if processes.lines().any(|line| line.contains("Hyprland")) {
-        // Hyprland is running but we can't find the socket
-        Err("Hyprland is running but socket not found. Ensure XDG_RUNTIME_DIR is set and accessible.".into())
-    } else {
-        Err("Hyprland is not running".into())
-    }
+/// A short, bounded poll burst spawned after layer (scratchpad) events to catch
+/// focus changes that settle just after the event fires. Replaces the former
+/// permanent 100ms poller (#8).
+fn spawn_poll_burst(last_window_state: Arc<Mutex<Option<WindowState>>>, verbose: bool) {
+    thread::spawn(move || {
+        for _ in 0..5 {
+            thread::sleep(Duration::from_millis(100));
+            if let Err(err) = poll_window_state(&last_window_state, verbose) {
+                eprintln!("Error polling window state: {}", err);
+            }
+        }
+    });
 }
 
 fn poll_window_state(
@@ -322,7 +326,19 @@ fn poll_window_state(
     // If window changed, update state and notify
     if window_changed {
         if verbose {
-            println!("Poll detected window state change");
+            if let Some(ws) = &current_window_state {
+                println!(
+                    "[{}ms] poll detected window state change: {} | {}",
+                    crate::core::now_ms(),
+                    ws.app_class,
+                    ws.title
+                );
+            } else {
+                println!(
+                    "[{}ms] poll detected window state change (empty)",
+                    crate::core::now_ms()
+                );
+            }
         }
         if let Some(window_state) = &current_window_state {
             let window_info =
@@ -343,6 +359,14 @@ fn handle_window_state_change(
 ) -> Result<(), Box<dyn Error>> {
     match Client::get_active() {
         Ok(Some(active_window)) => {
+            if verbose {
+                println!(
+                    "[{}ms] activewindow event: {} | {}",
+                    crate::core::now_ms(),
+                    active_window.initial_class,
+                    active_window.title
+                );
+            }
             let window_info = WindowInfo::new(
                 active_window.initial_class.clone(),
                 active_window.title.clone(),
@@ -388,6 +412,46 @@ fn handle_window_state_change(
         }
     }
     Ok(())
+}
+
+/// List currently-mapped clients as `(class, title)` pairs (§7a).
+///
+/// Used by the Linux SNI tray's "Show Window Information" item so the same
+/// data shape macOS/Windows return is available on Hyprland. Only mapped
+/// (on-screen) windows are included; transient focus shifts (scratchpads,
+/// layer surfaces) are irrelevant for a user-facing list. The active window is
+/// surfaced first when present so the notification path (which takes `.next()`)
+/// reports the focused window.
+///
+/// `#[allow(dead_code)]`: only reached when a tray (the SNI `linux-tray`
+/// build) actually calls the platform dispatcher; dead in the trayless default
+/// build, exactly like `core::notifier::is_device_connected`.
+#[allow(dead_code)]
+pub fn list_foreground_windows() -> Vec<(String, String)> {
+    let clients = match Clients::get() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("Failed to enumerate Hyprland clients: {}", e);
+            return Vec::new();
+        }
+    };
+
+    let mut rows: Vec<(String, String)> = clients
+        .iter()
+        .filter(|c| c.mapped)
+        .map(|c| (c.class.clone(), c.title.clone()))
+        .collect();
+
+    // Move the active window to the front so callers taking `.next()` report
+    // the focused window (parity with the macOS/Windows "active window" notion).
+    if let Ok(Some(active)) = Client::get_active() {
+        let key = (active.class.clone(), active.title.clone());
+        if let Some(pos) = rows.iter().position(|r| *r == key) {
+            rows.swap(0, pos);
+        }
+    }
+
+    rows
 }
 
 fn handle_workspace_change(
