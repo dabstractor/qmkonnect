@@ -48,6 +48,14 @@ jobs:
         run: bundle exec jekyll build --baseurl "${{ steps.pages.outputs.base_path }}"
         env:
           JEKYLL_ENV: production
+          # Authenticate jekyll-github-metadata's live GET /repos/<owner>/<repo>
+          # call so it isn't subject to the 60/hr unauthenticated limit (shared
+          # runner IPs) or flaky 503s from the public API. GITHUB_TOKEN is
+          # auto-provided by Actions; workflow permissions above are read-only.
+          # Note: the Gemfile's faraday-retry is also only honored when building
+          # via Actions (the native Pages builder ignores the Gemfile), so this
+          # also lets transient API errors retry instead of failing the build.
+          JEKYLL_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
