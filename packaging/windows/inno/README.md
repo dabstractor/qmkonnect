@@ -5,13 +5,11 @@ Builds **`QMKonnect-Setup.exe`**: the per-user, **no-admin** installer for the
 installer to ship to end users** — they double-click it and get the standard
 Next → Next → Finish wizard.
 
-> **Why a separate installer?** The parent directory's WiX `installer.wxs` /
-> `build-installer.ps1` builds an MSI that installs a **Session-0 Windows
-> Service**. A service runs in Session 0, which *cannot show a tray icon* in the
-> user's interactive session (see [`../../AGENTS.md`](../../AGENTS.md)), so it is
-> the wrong vehicle for the tray app. This Inno installer is the per-user,
-> interactive-app path. (`install.ps1` is kept as the headless/silent variant of
-> the same thing.)
+> **Why per-user / no-admin?** A tray app must run in your interactive session.
+Installing per-user (to `%LOCALAPPDATA%`, no UAC prompt) keeps it there without
+requiring Administrator rights. The executable also statically links the C
+runtime, so there's no Visual C++ Redistributable to install. See
+[`AGENTS.md`](../../AGENTS.md) for why a Session-0 service can't fill this role.
 
 ## What it does
 

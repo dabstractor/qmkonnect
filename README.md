@@ -97,9 +97,13 @@ sudo qmkonnect -r     # root-aware: finds your config even under sudo
 **Windows:**
 ```bash
 git clone https://github.com/dabstractor/qmkonnect.git
-cd qmkonnect/packaging/windows
-./build-installer.ps1
+cd qmkonnect
+cargo build --release
+powershell -NoProfile -ExecutionPolicy Bypass -File packaging/windows/inno/build.ps1
+#    -> packaging/windows/inno/Output/QMKonnect-Setup.exe
 ```
+
+The tray-app installer is in [`packaging/windows/inno/`](packaging/windows/inno/) (Inno Setup → `QMKonnect-Setup.exe`, per-user, no admin).
 
 **macOS:**
 ```bash
@@ -252,9 +256,8 @@ qmkonnect & disown
 ### Windows Implementation
 
 - **Tray app, not a service**: runs as a per-user interactive application with a
-  system-tray icon (built on `tray-icon`/`muda`). A Session-0 *service* build
-  exists via the WiX MSI in `packaging/windows/`, but a service can't show a tray
-  icon in your interactive session, so the **tray app is what's shipped**.
+  system-tray icon (built on `tray-icon`/`muda`). It is **not** a Windows service
+  — a Session-0 service can't show a tray icon in your interactive session.
 - **Background Operation**: no console window (`windows_subsystem = "windows"`).
 - **Automatic Startup**: **Open at Login** via the HKCU `Run` key — default on,
   toggleable from the tray (`src/autostart.rs`).

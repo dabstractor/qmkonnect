@@ -31,5 +31,6 @@ tag-message = "Release {{version}}"
 
 pre-release-commit-message = "chore: release {{version}}"
 
-# installer.wxs / PKGBUILD versions are INJECTED from Cargo.toml at build time
-# (see .github/workflows/release.yml), so no pre-release-replacements needed.
+# The Inno installer (packaging/windows/inno) and PKGBUILD read their versions
+# from Cargo.toml at build time (see .github/workflows/release.yml), so no
+# pre-release-replacements are needed.

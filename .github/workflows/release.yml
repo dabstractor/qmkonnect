@@ -6,7 +6,7 @@ name: Release
 #   * push of a `v*` tag  -> builds everything AND publishes the release
 #   * workflow_dispatch   -> builds everything WITHOUT publishing, so you can
 #                            dry-run the whole pipeline (and download the real
-#                            .dmg / .msi / .pkg.tar.zst from the run) before you
+#                            .dmg / .exe / .pkg.tar.zst from the run) before you
 #                            ever cut a tag. Use this to get Windows/macOS working.
 #
 # qmk_notifier is a pinned git dependency in Cargo.toml (tag = "vX.Y.Z"), so a
@@ -86,9 +86,7 @@ jobs:
 
   # ─────────────────────────────────────────────────────────────────────────
   # Windows — end-user tray-app installer via Inno Setup (QMKonnect-Setup.exe).
-  # This is the per-user, no-admin installer described in packaging/windows/.
-  # The WiX MSI (../installer.wxs) is a separate Session-0 *service* product and
-  # is intentionally NOT part of the release.
+  # Per-user, no-admin. See packaging/windows/inno/README.md.
   # ─────────────────────────────────────────────────────────────────────────
   windows:
     name: Windows (.exe)
