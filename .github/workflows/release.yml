@@ -1,0 +1,265 @@
+name: Release
+
+# Builds the per-platform installers/binaries and publishes a GitHub Release.
+#
+# Two triggers:
+#   * push of a `v*` tag  -> builds everything AND publishes the release
+#   * workflow_dispatch   -> builds everything WITHOUT publishing, so you can
+#                            dry-run the whole pipeline (and download the real
+#                            .dmg / .msi / .pkg.tar.zst from the run) before you
+#                            ever cut a tag. Use this to get Windows/macOS working.
+#
+# qmk_notifier is a pinned git dependency in Cargo.toml (tag = "vX.Y.Z"), so a
+# plain `actions/checkout` of this repo is sufficient — no sibling checkout.
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+permissions:
+  contents: read
+
+jobs:
+  # ─────────────────────────────────────────────────────────────────────────
+  # macOS — QMKonnect.app + DMG, ad-hoc signed by default.
+  # Set repo var ENABLE_MACOS_NOTARIZE=true + the APPLE_* secrets to switch to
+  # Developer ID signing + notarization (no workflow changes needed beyond that).
+  # ─────────────────────────────────────────────────────────────────────────
+  macos:
+    name: macOS (.dmg)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Determine version
+        id: ver
+        run: |
+          v=$(cargo metadata --no-deps --format-version 1 \
+              | jq -r '.packages[] | select(.name=="qmkonnect") | .version')
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+      - name: Import Developer ID certificate
+        if: ${{ vars.ENABLE_MACOS_NOTARIZE == 'true' }}
+        uses: apple-actions/import-codesign-certs@v3
+        with:
+          p12-file-base64: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+          p12-password: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+
+      - name: Build QMKonnect.app + DMG
+        working-directory: packaging/macos
+        env:
+          # Ad-hoc ('-') unless notarization is enabled and an identity secret
+          # is present.
+          CODESIGN_IDENTITY: ${{ (vars.ENABLE_MACOS_NOTARIZE == 'true' && secrets.APPLE_SIGNING_IDENTITY) || '-' }}
+        run: ./build.sh
+
+      - name: Notarize + staple DMG
+        if: ${{ vars.ENABLE_MACOS_NOTARIZE == 'true' }}
+        working-directory: packaging/macos
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          xcrun notarytool submit QMKonnect.dmg \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" --wait
+          xcrun stapler staple QMKonnect.dmg
+
+      - name: Rename DMG with version
+        working-directory: packaging/macos
+        run: mv QMKonnect.dmg "QMKonnect-${{ steps.ver.outputs.version }}-macos.dmg"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-dmg
+          path: packaging/macos/QMKonnect-*-macos.dmg
+          if-no-files-found: error
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Windows — MSI via the existing build-installer.ps1 + WiX v3.
+  # Most likely job to need a first-run adjustment (WiX install / candle args).
+  # ─────────────────────────────────────────────────────────────────────────
+  windows:
+    name: Windows (.msi)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cargo build (release)
+        run: cargo build --release
+
+      - name: Install WiX Toolset v3
+        shell: pwsh
+        run: choco install wixtoolset -y --no-progress --ignore-checksums
+
+      - name: Add WiX to PATH
+        shell: pwsh
+        run: |
+          $bin = Get-ChildItem 'C:\Program Files (x86)\WiX Toolset v*\bin' -Directory |
+                 Select-Object -First 1 -ExpandProperty FullName
+          if (-not $bin) { throw "WiX bin directory not found" }
+          Add-Content -Path $env:GITHUB_PATH -Value $bin
+          Write-Host "Added $bin to PATH"
+
+      - name: Determine version
+        id: ver
+        shell: pwsh
+        run: |
+          $v = (cargo metadata --no-deps --format-version 1 | ConvertFrom-Json).packages |
+               Where-Object { $_.name -eq 'qmkonnect' } |
+               Select-Object -ExpandProperty version
+          "version=$v" | Add-Content -Path $env:GITHUB_OUTPUT
+
+      # -SkipBuild: we already ran cargo build above. The script still computes
+      # the version from Cargo.toml and invokes candle/light with -d Version=.
+      - name: Build MSI
+        working-directory: packaging/windows
+        shell: pwsh
+        run: ./build-installer.ps1 -SkipBuild
+
+      - name: Rename MSI with version
+        working-directory: packaging/windows
+        shell: pwsh
+        run: Move-Item qmkonnect-Setup.msi "QMKonnect-${{ steps.ver.outputs.version }}-windows-x64.msi"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-msi
+          path: packaging/windows/QMKonnect-*-windows-x64.msi
+          if-no-files-found: error
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Linux — portable binary tarball (broad glibc compatibility via 22.04).
+  # Contains the two binaries + the static udev rule + the systemd template.
+  # ─────────────────────────────────────────────────────────────────────────
+  linux-binary:
+    name: Linux (binary tarball)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install Linux system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config \
+            libgtk-3-dev libglib2.0-dev libayatana-appindicator3-dev \
+            libx11-dev libxcb1-dev libxdo-dev libhidapi-dev libudev-dev
+
+      - name: Determine version
+        id: ver
+        run: |
+          v=$(cargo metadata --no-deps --format-version 1 \
+              | jq -r '.packages[] | select(.name=="qmkonnect") | .version')
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+      - name: cargo build (release)
+        run: cargo build --release
+
+      - name: Stage binary tarball
+        run: |
+          set -eux
+          VER="${{ steps.ver.outputs.version }}"
+          STAGE="qmkonnect-${VER}-linux-x86_64"
+          mkdir -p "$STAGE/udev" "$STAGE/systemd"
+          cp target/release/qmkonnect       "$STAGE/"
+          cp target/release/qmkonnect-hid-id "$STAGE/"
+          cp packaging/linux/udev/69-qmkonnect-rawhid.rules "$STAGE/udev/"
+          cp packaging/linux/systemd/qmkonnect.service.template "$STAGE/systemd/"
+          tar czf "${STAGE}.tar.gz" "$STAGE"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-binary
+          path: qmkonnect-*-linux-x86_64.tar.gz
+          if-no-files-found: error
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Arch Linux — .pkg.tar.zst built via makepkg in an archlinux container.
+  # Second most likely job to need a first-run tweak (pacman deps / makepkg).
+  # ─────────────────────────────────────────────────────────────────────────
+  arch:
+    name: Linux (Arch .pkg.tar.zst)
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    steps:
+      # Container ships no git, so install the full toolchain before checkout.
+      - name: Install build dependencies
+        run: |
+          pacman -Sy --noconfirm --needed \
+            base-devel rust cargo git pkg-config jq \
+            gtk3 glib2 libayatana-appindicator libx11 libxcb xdotool \
+            hidapi libusb zenity libnotify systemd systemd-libs
+
+      - uses: actions/checkout@v4
+
+      - name: Determine version
+        id: ver
+        run: |
+          v=$(cargo metadata --no-deps --format-version 1 \
+              | jq -r '.packages[] | select(.name=="qmkonnect") | .version')
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+      # PKGBUILD ships a placeholder pkgver; sync it to the Cargo version.
+      - name: Patch pkgver into PKGBUILD
+        working-directory: packaging/linux/arch
+        run: sed -i "s/^pkgver=.*/pkgver=${{ steps.ver.outputs.version }}/" PKGBUILD
+
+      # makepkg refuses to run as root; build as an unprivileged user.
+      - name: Build Arch package
+        working-directory: packaging/linux/arch
+        run: |
+          useradd -m -G wheel builder
+          echo 'builder ALL=(ALL) NOPASSWD: ALL' >> /etc/sudoers
+          chown -R builder "$GITHUB_WORKSPACE"
+          # --nodeps: deps installed explicitly above (PKGBUILD's declared set is
+          # incomplete for the tao/tray-icon stack); --skipinteg: no checksums.
+          su builder -c "makepkg --noconfirm --nodeps --skipinteg"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: arch-pkg
+          path: packaging/linux/arch/*.pkg.tar.zst
+          if-no-files-found: error
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Publish — only on real tag pushes (skipped for workflow_dispatch dry-runs).
+  # ─────────────────────────────────────────────────────────────────────────
+  publish:
+    name: Publish GitHub Release
+    needs: [macos, windows, linux-binary, arch]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { path: artifacts }
+
+      - name: List release artifacts
+        run: find artifacts -type f -exec ls -lh {} \;
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          # v0.2.0-rc.1 etc. publish as a prerelease; v0.2.0 as a full release.
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          files: |
+            artifacts/macos-dmg/*
+            artifacts/windows-msi/*
+            artifacts/linux-binary/*
+            artifacts/arch-pkg/*

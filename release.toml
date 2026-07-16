@@ -1,0 +1,35 @@
+# cargo-release configuration
+# Docs: https://github.com/crate-ci/cargo-release/blob/master/docs/reference.md
+#
+# QMKonnect is a binary desktop app, NOT a library — we never publish to
+# crates.io. `cargo release <level>` (e.g. `cargo release 0.3.0` or
+# `cargo release minor`) does the version chore:
+#
+#   1. bump `version` in Cargo.toml (+ Cargo.lock)
+#   2. commit the bump
+#   3. create an annotated `v<version>` tag
+#   4. push the commit + tag to origin
+#
+# Pushing the tag triggers .github/workflows/release.yml, which builds the
+# per-platform artifacts and publishes the GitHub Release. Nothing here tags or
+# publishes on its own — you stay in full control of *when* a release happens.
+
+# Releases always reflect shipped work, so cut them from main. If you prefer to
+# release from another long-lived branch, add it here.
+allow-branch = ["main"]
+
+# Binary app: do not touch any registry.
+publish = false
+
+# Commit the version bump, then push it along with the tag.
+push = true
+
+# Annotated tag with a `v` prefix, e.g. v0.2.0, v0.3.0-rc.1.
+tag = true
+tag-prefix = "v"
+tag-message = "Release {{version}}"
+
+pre-release-commit-message = "chore: release {{version}}"
+
+# installer.wxs / PKGBUILD versions are INJECTED from Cargo.toml at build time
+# (see .github/workflows/release.yml), so no pre-release-replacements needed.

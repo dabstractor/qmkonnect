@@ -1,0 +1,60 @@
+name: CI
+
+# Continuous integration: build + test on all three desktop platforms. Runs
+# ONLY on pushes to main by design — feature branches get no automatic CI (use
+# workflow_dispatch to run it on demand). No artifacts are published; that's
+# release.yml's job.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fmt:
+    name: rustfmt
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+
+  build-and-test:
+    name: build + test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      # tao / tray-icon / libxdo / hidapi pull in GTK3, X11, appindicator and
+      # HID headers on Linux. macOS (IOKit) and Windows (hid.dll) need none.
+      - name: Install Linux system libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config \
+            libgtk-3-dev libglib2.0-dev libayatana-appindicator3-dev \
+            libx11-dev libxcb1-dev libxdo-dev libhidapi-dev libudev-dev
+
+      - name: cargo build (release, all targets)
+        run: cargo build --release --all-targets
+
+      # Single-threaded: AGENTS.md notes shared debouncer state across tests.
+      - name: cargo test
+        run: cargo test --bin qmkonnect -- --test-threads=1
