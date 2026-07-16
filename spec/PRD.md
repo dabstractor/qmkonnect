@@ -24,7 +24,7 @@ keyboard*: your keymap adapts automatically to the app you're using.
 QMKonnect is the **desktop half** of a strictly two-part system. It only *sends*
 window metadata; it does not decide behavior. All layer/command logic lives in
 firmware. The two halves communicate over a tiny, well-defined wire protocol
-(see `SPEC_PROTOCOL.md`).
+(see `PROTOCOL.md`).
 
 ```
    ┌──────────────────────────┐      Raw HID (usage 0xFF60/0x61)     ┌─────────────────────────┐
@@ -97,7 +97,7 @@ QMKonnect is one node in a small ecosystem. A dev agent must understand all of:
 - **QMK hobbyist** who runs qmk-notifier and wants a turnkey desktop notifier
   without hand-editing config or writing a script.
 - **Tinkerer on a non-Hyprland desktop** — partially served today; a clear
-  roadmap exists (see §12 and `SPEC_PLATFORMS.md`).
+  roadmap exists (see §12 and `PLATFORMS.md`).
 
 ---
 
@@ -105,16 +105,16 @@ QMKonnect is one node in a small ecosystem. A dev agent must understand all of:
 
 | # | Feature | Where specified |
 |---|---|---|
-| F1 | Foreground-window detection (app class + title) per platform | `SPEC_PLATFORMS.md` |
-| F2 | Raw HID transport with burst-write, device cache, retry | `SPEC_PROTOCOL.md` |
-| F3 | Auto device discovery by usage page/usage (optional VID/PID) | `SPEC_PROTOCOL.md` §3 |
-| F4 | Debounced coalescing of rapid window changes (configurable) | `SPEC_ARCHITECTURE.md` §6 |
-| F5 | TOML config with zero-config defaults + CLI flags | `SPEC_CONFIG.md` |
-| F6 | Tray / menu-bar UI with settings, device status, window info | `SPEC_UI.md` |
-| F7 | "Open at Login" toggle, default on (HKCU Run / SMAppService / systemd) | `SPEC_UI.md` §4 |
-| F8 | Per-platform installer + CI release pipeline | `SPEC_PACKAGING.md` |
-| F9 | Linux: static udev rule + usage-page helper + root-aware reload | `SPEC_LINUX.md` |
-| F10 | Companion firmware module contract (`qmk-notifier`) | `SPEC_FIRMWARE.md` |
+| F1 | Foreground-window detection (app class + title) per platform | `PLATFORMS.md` |
+| F2 | Raw HID transport with burst-write, device cache, retry | `PROTOCOL.md` |
+| F3 | Auto device discovery by usage page/usage (optional VID/PID) | `PROTOCOL.md` §3 |
+| F4 | Debounced coalescing of rapid window changes (configurable) | `ARCHITECTURE.md` §6 |
+| F5 | TOML config with zero-config defaults + CLI flags | `CONFIG.md` |
+| F6 | Tray / menu-bar UI with settings, device status, window info | `UI.md` |
+| F7 | "Open at Login" toggle, default on (HKCU Run / SMAppService / systemd) | `UI.md` §4 |
+| F8 | Per-platform installer + CI release pipeline | `PACKAGING.md` |
+| F9 | Linux: static udev rule + usage-page helper + root-aware reload | `LINUX.md` |
+| F10 | Companion firmware module contract (`qmk-notifier`) | `FIRMWARE.md` |
 
 ---
 
@@ -152,8 +152,8 @@ Wayland compositors. The Rust **MSRV is 1.88** (enforced by `rust-version`).
    `layer_map` (defined by the user's `DEFINE_SERIAL_COMMANDS` /
    `DEFINE_SERIAL_LAYERS`) → toggles the active layer / invokes callbacks.
 
-The full byte-level protocol is in `SPEC_PROTOCOL.md`; the debounce/concurrency
-model is in `SPEC_ARCHITECTURE.md`.
+The full byte-level protocol is in `PROTOCOL.md`; the debounce/concurrency
+model is in `ARCHITECTURE.md`.
 
 ---
 
@@ -170,7 +170,7 @@ model is in `SPEC_ARCHITECTURE.md`.
   keyboard. (Windows/macOS don't generate focus events for "no window".)
 - **Internal/shell windows are filtered** (e.g. `Shell_TrayWnd`,
   `ApplicationFrameWindow`, tray-overflow flyouts) so switching to the tray
-  doesn't spam the keyboard. See `SPEC_PLATFORMS.md` §1.4.
+  doesn't spam the keyboard. See `PLATFORMS.md` §1.4.
 - **Device status is live in the tray.** A read-only `hidapi` enumeration
   (never opens the device) runs on a background thread and flips the menu's
   "● Device Connected / ○ No Device Connected" line within ~1–3 s of
@@ -185,7 +185,7 @@ model is in `SPEC_ARCHITECTURE.md`.
 
 ---
 
-## 8. Configuration Summary (full detail: `SPEC_CONFIG.md`)
+## 8. Configuration Summary (full detail: `CONFIG.md`)
 
 A single TOML file, **all fields optional** (zero-config by default):
 
@@ -220,7 +220,7 @@ A single TOML file, **all fields optional** (zero-config by default):
 - **No world-writable device nodes.** The udev rule uses `GROUP="input",
   MODE="0660"` plus `TAG+="uaccess"` (never `0666`), and the build actively
   detects/repairs a historically-dangerous multi-line rule form that corrupted
-  host-wide device permissions (`SPEC_LINUX.md` §5).
+  host-wide device permissions (`LINUX.md` §5).
 
 ---
 
@@ -271,7 +271,7 @@ failures degrade silently and recover automatically.)
 4. `cargo test --bin qmkonnect -- --test-threads=1` passes (the debouncer has
    shared global state; tests must be serial).
 5. Per-platform clean build + install + launch loop works (see `AGENTS.md` and
-   `SPEC_PACKAGING.md` §6).
+   `PACKAGING.md` §6).
 
 ---
 
@@ -320,14 +320,14 @@ PRD.
 | Document | Scope |
 |---|---|
 | **`PRD.md`** (this) | Product vision, goals, users, features, glossary, doc map. |
-| **`SPEC_ARCHITECTURE.md`** | Repository layout, module map, end-to-end data flow, concurrency/threading model, trait design, error model, the platform-divergence problem. |
-| **`SPEC_PROTOCOL.md`** | The Raw HID wire protocol: payload format, report framing, constants, the `qmk_notifier` crate contract, device matching & discovery, retry/cache. |
-| **`SPEC_PLATFORMS.md`** | Per-OS window monitoring (Windows WinEventHook, macOS NSWorkspace, Hyprland IPC, X11), window filtering, config paths, permissions. |
-| **`SPEC_UI.md`** | Tray/menu-bar UI, menu layouts, Settings dialogs, "Show Window Information" dialogs, device-status indicator, "Open at Login" autostart. |
-| **`SPEC_LINUX.md`** | Linux-specific: static udev rule, `qmkonnect-hid-id` helper, config-driven fallback rule, dangerous-rule detection/repair, root-aware `--reload`, systemd service, SNI tray, GTK window-info dialog. |
-| **`SPEC_CONFIG.md`** | TOML schema, defaults, render body, config paths per OS, CLI flag reference. |
-| **`SPEC_PACKAGING.md`** | Cargo build profile, per-platform installers (Inno/PKGBUILD/DMG), CI release workflow, code signing, the dev test loop. |
-| **`SPEC_FIRMWARE.md`** | The `qmk-notifier` firmware module contract, keymap integration steps, pattern-matching syntax, the user's reference keymap. |
+| **`ARCHITECTURE.md`** | Repository layout, module map, end-to-end data flow, concurrency/threading model, trait design, error model, the platform-divergence problem. |
+| **`PROTOCOL.md`** | The Raw HID wire protocol: payload format, report framing, constants, the `qmk_notifier` crate contract, device matching & discovery, retry/cache. |
+| **`PLATFORMS.md`** | Per-OS window monitoring (Windows WinEventHook, macOS NSWorkspace, Hyprland IPC, X11), window filtering, config paths, permissions. |
+| **`UI.md`** | Tray/menu-bar UI, menu layouts, Settings dialogs, "Show Window Information" dialogs, device-status indicator, "Open at Login" autostart. |
+| **`LINUX.md`** | Linux-specific: static udev rule, `qmkonnect-hid-id` helper, config-driven fallback rule, dangerous-rule detection/repair, root-aware `--reload`, systemd service, SNI tray, GTK window-info dialog. |
+| **`CONFIG.md`** | TOML schema, defaults, render body, config paths per OS, CLI flag reference. |
+| **`PACKAGING.md`** | Cargo build profile, per-platform installers (Inno/PKGBUILD/DMG), CI release workflow, code signing, the dev test loop. |
+| **`FIRMWARE.md`** | The `qmk-notifier` firmware module contract, keymap integration steps, pattern-matching syntax, the user's reference keymap. |
 
 > **Living source of truth:** the production codebase itself
 > (`src/`, `Cargo.toml`, `packaging/`). Where a spec and the code disagree, the
@@ -336,4 +336,4 @@ PRD.
 
 ---
 
-*End of PRD. Continue with `SPEC_ARCHITECTURE.md`.*
+End of PRD. Continue with @ARCHITECTURE.md
