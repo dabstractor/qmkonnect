@@ -58,6 +58,11 @@ jobs:
           # Ad-hoc ('-') unless notarization is enabled and an identity secret
           # is present.
           CODESIGN_IDENTITY: ${{ (vars.ENABLE_MACOS_NOTARIZE == 'true' && secrets.APPLE_SIGNING_IDENTITY) || '-' }}
+          # Universal (aarch64 + x86_64) binary so the .app runs on Apple
+          # Silicon AND Intel Macs. The macos-latest runner is arm64, so
+          # without this the release fails to launch on Intel with
+          # "…not supported on this Mac".
+          MACOS_UNIVERSAL: "1"
         run: ./build.sh
 
       - name: Notarize + staple DMG

@@ -1,7 +1,25 @@
 #!/bin/bash
 set -e
 
-cargo build --release
+# Build the binary.
+#
+# Default (local dev): build only the host architecture — fast.
+# Set MACOS_UNIVERSAL=1 (as the CI release job does) to build a universal
+# (aarch64 + x86_64) Mach-O so the same .app runs on both Apple Silicon and
+# Intel Macs. Without this, a binary built on an arm64 host (macos-latest)
+# fails to launch on Intel Macs with "…not supported on this Mac".
+if [ "${MACOS_UNIVERSAL:-0}" = "1" ]; then
+    echo "🔨 Building universal (aarch64 + x86_64) binary…"
+    rustup target add aarch64-apple-darwin x86_64-apple-darwin >/dev/null
+    cargo build --release --target aarch64-apple-darwin
+    cargo build --release --target x86_64-apple-darwin
+    lipo -create -output "../../target/release/qmkonnect" \
+        "../../target/aarch64-apple-darwin/release/qmkonnect" \
+        "../../target/x86_64-apple-darwin/release/qmkonnect"
+    echo "✅ Universal binary assembled."
+else
+    cargo build --release
+fi
 
 # Create app bundle with human-readable name
 rm -rf "QMKonnect.app"
