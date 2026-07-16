@@ -320,14 +320,14 @@ PRD.
 | Document | Scope |
 |---|---|
 | **`PRD.md`** (this) | Product vision, goals, users, features, glossary, doc map. |
-| **`ARCHITECTURE.md`** | Repository layout, module map, end-to-end data flow, concurrency/threading model, trait design, error model, the platform-divergence problem. |
-| **`PROTOCOL.md`** | The Raw HID wire protocol: payload format, report framing, constants, the `qmk_notifier` crate contract, device matching & discovery, retry/cache. |
-| **`PLATFORMS.md`** | Per-OS window monitoring (Windows WinEventHook, macOS NSWorkspace, Hyprland IPC, X11), window filtering, config paths, permissions. |
-| **`UI.md`** | Tray/menu-bar UI, menu layouts, Settings dialogs, "Show Window Information" dialogs, device-status indicator, "Open at Login" autostart. |
-| **`LINUX.md`** | Linux-specific: static udev rule, `qmkonnect-hid-id` helper, config-driven fallback rule, dangerous-rule detection/repair, root-aware `--reload`, systemd service, SNI tray, GTK window-info dialog. |
-| **`CONFIG.md`** | TOML schema, defaults, render body, config paths per OS, CLI flag reference. |
-| **`PACKAGING.md`** | Cargo build profile, per-platform installers (Inno/PKGBUILD/DMG), CI release workflow, code signing, the dev test loop. |
-| **`FIRMWARE.md`** | The `qmk-notifier` firmware module contract, keymap integration steps, pattern-matching syntax, the user's reference keymap. |
+| @ARCHITECTURE.md | Repository layout, module map, end-to-end data flow, concurrency/threading model, trait design, error model, the platform-divergence problem. |
+| @PROTOCOL.md | The Raw HID wire protocol: payload format, report framing, constants, the `qmk_notifier` crate contract, device matching & discovery, retry/cache. |
+| @PLATFORMS.md | Per-OS window monitoring (Windows WinEventHook, macOS NSWorkspace, Hyprland IPC, X11), window filtering, config paths, permissions. |
+| @UI.md | Tray/menu-bar UI, menu layouts, Settings dialogs, "Show Window Information" dialogs, device-status indicator, "Open at Login" autostart. |
+| @LINUX.md | Linux-specific: static udev rule, `qmkonnect-hid-id` helper, config-driven fallback rule, dangerous-rule detection/repair, root-aware `--reload`, systemd service, SNI tray, GTK window-info dialog. |
+| @CONFIG.md | TOML schema, defaults, render body, config paths per OS, CLI flag reference. |
+| @PACKAGING.md | Cargo build profile, per-platform installers (Inno/PKGBUILD/DMG), CI release workflow, code signing, the dev test loop. |
+| @FIRMWARE.md | The `qmk-notifier` firmware module contract, keymap integration steps, pattern-matching syntax, the user's reference keymap. |
 
 > **Living source of truth:** the production codebase itself
 > (`src/`, `Cargo.toml`, `packaging/`). Where a spec and the code disagree, the
@@ -336,4 +336,4 @@ PRD.
 
 ---
 
-End of PRD. Continue with @ARCHITECTURE.md
+*End of PRD. Continue with `ARCHITECTURE.md`.*
