@@ -52,10 +52,22 @@ Replicates [`../install.ps1`](../install.ps1):
 
 ## Release build & installation
 
-Run from the **repo root** in git-bash (PowerShell equivalents inline). The
-release exe lands in `%CARGO_TARGET_DIR%\release\` (i.e.
-`C:\cargo-target\release\` here; `.\target\release\` if `CARGO_TARGET_DIR` is
-unset).
+Run from the **repo root**. The release exe lands in the project-local
+`target\release\qmkonnect.exe` (the Rust default).
+
+> **Do NOT set a global `CARGO_TARGET_DIR`** (e.g. `C:\cargo-target`).
+> A machine-wide value silently redirects *every* project's build output to
+> one shared dir, which (a) defeats cargo's per-project fingerprinting and
+> causes stale "Finished in 0.2s" no-recompile builds, and (b) makes
+> `./target\` look empty, throwing off the dev loop in AGENTS.md. If a cargo
+> build finishes suspiciously fast, run `echo %CARGO_TARGET_DIR%` — it must
+> be undefined. Remove with (admin cmd): `reg delete "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment" /v CARGO_TARGET_DIR /f`, then reboot.
+>
+> **Work from the canonical path, not through a junction.** On this machine
+> `C:\projects` is a junction to `Z:\projects`; building from
+> `C:\projects\...` makes cargo print `warn: could not canonicalize path`
+> and weakens its change-detection. Use `Z:\projects\qmkonnect` (or
+> `/z/projects/qmkonnect` in git-bash) directly.
 
 ```bash
 cd /z   # repo root
@@ -97,7 +109,7 @@ PowerShell/cmd, omit it.)
 ls -l "$LOCALAPPDATA/Programs/QMKonnect/"
 
 # SHA256: the installed exe MUST equal the built one
-sha256sum /c/cargo-target/release/qmkonnect.exe "$LOCALAPPDATA/Programs/QMKonnect/QMKonnect.exe"
+sha256sum target/release/qmkonnect.exe "$LOCALAPPDATA/Programs/QMKonnect/QMKonnect.exe"
 
 # default-on autostart value present
 powershell -NoProfile -Command "(Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name QMKonnect).QMKonnect"
@@ -118,7 +130,7 @@ Then right-click the tray icon → **"Open at Login"** should be checked.
   launch, sign out and back in. Toggle "Open at Login" off in the tray and repeat
   to confirm it stays off.
 - **Quick dev iteration (no installer)**: `taskkill //IM qmkonnect.exe //F` then
-  run `C:\cargo-target\release\qmkonnect.exe` directly in your session — same tray,
+  run `target\release\qmkonnect.exe` (or the installed `QMKonnect.exe`) directly in your session — same tray,
   just not "installed".
 - **Uninstall**: Add/Remove Programs, or
   `& "$env:LOCALAPPDATA\Programs\QMKonnect\unins000.exe" /VERYSILENT /SUPPRESSMSGBOXES`.

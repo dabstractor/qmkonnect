@@ -15,8 +15,8 @@ use windows::Win32::Foundation::HWND;
 use windows::Win32::System::LibraryLoader::GetModuleHandleA;
 use windows::Win32::UI::Accessibility::{SetWinEventHook, UnhookWinEvent, HWINEVENTHOOK};
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetClassNameW, GetForegroundWindow, GetWindowTextW, GetWindowThreadProcessId,
-    EVENT_OBJECT_FOCUS, WINEVENT_OUTOFCONTEXT,
+    EnumChildWindows, GetClassNameW, GetForegroundWindow, GetWindowTextW,
+    GetWindowThreadProcessId, EVENT_OBJECT_FOCUS, WINEVENT_OUTOFCONTEXT,
 };
 
 // Thread-safe replacements for the former `static mut` globals (issue #5).
@@ -196,7 +196,17 @@ fn handle_focus_change(hwnd: HWND) {
 }
 
 fn should_ignore_window(window_info: &WindowInfo) -> bool {
-    // Filter out Windows internal components
+    // Filter out Windows internal components.
+    //
+    // NOTE: `ApplicationFrameWindow` (the UWP shell frame) and the hosted
+    // `Windows.UI.Core.CoreWindow` content window are deliberately NOT in
+    // this list. `get_window_info` already resolves the frame to its real
+    // content window, so by the time we get here a UWP app reports as its
+    // content class with a meaningful title ("Calculator", "Settings", ...).
+    // Re-filtering `CoreWindow` here would throw that resolved content away
+    // -- the original bug that hid every UWP app. Stray top-level `CoreWindow`
+    // shells without a frame are rare and carry empty titles, so they are
+    // caught by the empty-title rule below instead.
     let ignore_classes = [
         "ForegroundStaging",
         "XamlExplorerHostIslandWindow",
@@ -204,8 +214,6 @@ fn should_ignore_window(window_info: &WindowInfo) -> bool {
         "Windows.UI.Input.InputSite.WindowClass",
         "TaskSwitcherWnd",
         "TaskSwitcherOverlayWnd",
-        "Windows.UI.Core.CoreWindow",
-        "ApplicationFrameWindow", // UWP app frame (we want the actual content)
         // Shell / tray chrome hosted by explorer.exe. These are never an app
         // the user is "using", but they are top-level windows that grab
         // foreground briefly when opened — e.g. clicking the tray-overflow
@@ -250,14 +258,82 @@ fn should_ignore_window(window_info: &WindowInfo) -> bool {
     false
 }
 
+/// Class name of the outer shell window that hosts every UWP/Store app
+/// (Calculator, Settings, Photos, Weather, ...). The frame is owned by
+/// `ApplicationFrameHost.exe`; the real app content lives in a descendant
+/// window owned by the app's own process.
+const APPLICATION_FRAME_CLASS: &str = "ApplicationFrameWindow";
+
+/// State carried into the `EnumChildWindows` callback when resolving the
+/// content window hosted by an `ApplicationFrameWindow`.
+struct ContentWindowSearch {
+    /// Process ID of the `ApplicationFrameHost` frame window. The real content
+    /// window belongs to a *different* process (the app itself), so any
+    /// descendant sharing this PID is just frame chrome and must be skipped.
+    frame_pid: u32,
+    /// First matching content window found, if any.
+    found: Option<HWND>,
+}
+
+/// Given a focused `ApplicationFrameWindow`, locate the hosted UWP content
+/// window.
+///
+/// UWP apps (Calculator, Settings, Photos, ...) are wrapped in a shell frame
+/// (`ApplicationFrameWindow`, owned by `ApplicationFrameHost.exe`). The
+/// actual app content is a descendant `Windows.UI.Core.CoreWindow` (or
+/// similar) owned by the app's own process. We walk descendants and pick the
+/// first visible descendant window that belongs to a process other than the
+/// frame's. Returns the content `HWND`, or `None` if none was found (the
+/// frame may briefly have no child during launch/teardown).
+unsafe fn find_uwp_content_window(frame_hwnd: HWND) -> Option<HWND> {
+    let mut frame_pid: u32 = 0;
+    GetWindowThreadProcessId(frame_hwnd, Some(&mut frame_pid as *mut u32));
+
+    let mut search = ContentWindowSearch {
+        frame_pid,
+        found: None,
+    };
+
+    let _ = EnumChildWindows(
+        frame_hwnd,
+        Some(content_window_proc),
+        windows::Win32::Foundation::LPARAM(&mut search as *mut _ as isize),
+    );
+
+    search.found
+}
+
+/// `EnumChildWindows` callback for `find_uwp_content_window`. See that
+/// function for the selection criteria.
+unsafe extern "system" fn content_window_proc(
+    hwnd: HWND,
+    lparam: windows::Win32::Foundation::LPARAM,
+) -> windows::Win32::Foundation::BOOL {
+    use windows::Win32::UI::WindowsAndMessaging::IsWindowVisible;
+
+    let search = &mut *(lparam.0 as *mut ContentWindowSearch);
+
+    if !IsWindowVisible(hwnd).as_bool() {
+        return windows::Win32::Foundation::BOOL(1); // continue
+    }
+
+    let mut pid: u32 = 0;
+    GetWindowThreadProcessId(hwnd, Some(&mut pid as *mut u32));
+
+    if pid != search.frame_pid && pid != 0 {
+        // First visible descendant owned by a different process than the frame.
+        search.found = Some(hwnd);
+        return windows::Win32::Foundation::BOOL(0); // stop
+    }
+
+    windows::Win32::Foundation::BOOL(1) // continue
+}
+
 fn get_window_info(hwnd: HWND) -> Result<Option<WindowInfo>, Box<dyn Error>> {
     unsafe {
         if hwnd.0 == 0 {
             return Ok(None);
         }
-
-        let mut process_id: u32 = 0;
-        GetWindowThreadProcessId(hwnd, Some(&mut process_id as *mut u32));
 
         let mut class_name_w: [u16; 256] = [0; 256];
         let class_name_len = GetClassNameW(hwnd, &mut class_name_w);
@@ -268,8 +344,36 @@ fn get_window_info(hwnd: HWND) -> Result<Option<WindowInfo>, Box<dyn Error>> {
             String::new()
         };
 
+        // UWP/Store apps (Calculator, Settings, Photos, ...) are hosted inside
+        // an `ApplicationFrameWindow` shell. When focus lands on that frame,
+        // resolve and report the *actual* app content window instead: the frame
+        // itself carries only a generic class and an often-empty title, and is
+        // explicitly filtered out by `should_ignore_window`. The content
+        // window has a meaningful title ("Calculator", "Settings", ...) and a
+        // more specific class.
+        let (report_hwnd, report_class) = if app_class == APPLICATION_FRAME_CLASS {
+            if let Some(content_hwnd) = find_uwp_content_window(hwnd) {
+                let mut content_class_w: [u16; 256] = [0; 256];
+                let content_class_len = GetClassNameW(content_hwnd, &mut content_class_w);
+                let content_class = if content_class_len > 0 {
+                    let os_string =
+                        OsString::from_wide(&content_class_w[..content_class_len as usize]);
+                    os_string.to_string_lossy().into_owned()
+                } else {
+                    app_class.clone()
+                };
+                (content_hwnd, content_class)
+            } else {
+                // No hosted content (frame is mid-launch/teardown) — report
+                // nothing rather than the empty frame.
+                return Ok(None);
+            }
+        } else {
+            (hwnd, app_class)
+        };
+
         let mut window_text_w: [u16; 512] = [0; 512];
-        let window_text_len = GetWindowTextW(hwnd, &mut window_text_w);
+        let window_text_len = GetWindowTextW(report_hwnd, &mut window_text_w);
         let title = if window_text_len > 0 {
             let os_string = OsString::from_wide(&window_text_w[..window_text_len as usize]);
             // Trim surrounding whitespace: some windows pad their title with
@@ -281,7 +385,7 @@ fn get_window_info(hwnd: HWND) -> Result<Option<WindowInfo>, Box<dyn Error>> {
             String::new()
         };
 
-        Ok(Some(WindowInfo::new(app_class, title)))
+        Ok(Some(WindowInfo::new(report_class, title)))
     }
 }
 

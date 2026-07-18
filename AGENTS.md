@@ -21,4 +21,23 @@ taskkill /IM qmkonnect.exe /F                    # mandatory — single-instance
 .\target\release\qmkonnect.exe                    # run in your own session, NOT as the service
 ```
 
+**Two environment traps that will silently break this loop — verify before debugging anything else:**
+
+1. **`echo %CARGO_TARGET_DIR%` must be empty.** A machine-wide value
+   (this box previously had `C:\cargo-target`) redirects build output away from
+   `.\target\`, so `cargo build` finishes in ~0.2s without recompiling and the
+   exe at `.\target\release\` is stale or absent. Remove (admin cmd):
+   `reg delete "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment" /v CARGO_TARGET_DIR /f`, then **reboot** (new processes inherit the old env
+   from the already-running `explorer.exe` until it restarts).
+2. **Build from the canonical path, not through the junction.** `C:\projects`
+   is a junction to `Z:\projects`; building under `C:\projects\qmkonnect` makes
+   cargo print `warn: could not canonicalize path` and weakens its change-
+   detection. `cd Z:\projects\qmkonnect` (or `/z/projects/qmkonnect` in git-bash)
+   instead.
+
+After a build that you expect to reflect source changes, always confirm the exe
+mtime is newer than your edit (`dir .\target\release\qmkonnect.exe`). If it
+isn't, cargo served a stale artifact — do not trust it.
+
+
 `taskkill` is mandatory: the app holds a named-mutex single-instance lock, so a second launch exits silently with "Another instance is already running" while the old process lives. Run the `.exe` directly in your own desktop session — never via `sc start` or `services.msc`. The shipped app is a per-user **tray app** (installed via the Inno installer — see below), **not** a service — a Session-0 service *cannot* show a tray icon in your interactive session, so only running the exe in your own session renders the tray. Toolchain prerequisite: **Visual Studio Build Tools** with the *Desktop development with C++* workload (MSVC + Windows SDK) — use the default `stable-x86_64-pc-windows-msvc` host, not `gnu`, or the `windows`-crate link step fails. The release binary statically links the C runtime (`.cargo/config.toml` ⇒ `+crt-static`), so it has **no Visual C++ Redistributable** dependency. By default, logs go to **Windows Event Log** (Event Viewer → "QMKonnect"); when launched directly from a terminal with `-v`, they print there instead. Exclude `target\`, `~/.cargo`, and the project dir from Windows Defender — real-time scanning makes cargo builds crawl. The **installer** is Inno Setup: `powershell -NoProfile -ExecutionPolicy Bypass -File packaging\windows\inno\build.ps1` → `packaging\windows\inno\Output\QMKonnect-Setup.exe` (needs `winget install JRSoftware.InnoSetup`). Build outputs (`target/`, `*.exe` installers, `arch/pkg/`) are gitignored; never commit them.
