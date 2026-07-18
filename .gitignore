@@ -31,3 +31,4 @@ docs/_site/
 # macOS / editor cruft
 .DS_Store
 *.swp
+/.envrc
