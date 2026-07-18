@@ -28,7 +28,7 @@
 #define MyAppExeName   "QMKonnect.exe"
 
 #ifndef MyAppVersion
-  #define MyAppVersion "0.2.0"
+  #define MyAppVersion "0.2.8"
 #endif
 
 ; Built exe: CARGO_TARGET_DIR\release if set (this machine = C:\cargo-target),

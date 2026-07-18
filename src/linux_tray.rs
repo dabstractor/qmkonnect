@@ -317,7 +317,7 @@ pub(crate) fn show_window_info_linux() {
     // back to the zenity popup below only when GTK can't init (headless).
     match gtk_dialog::sender() {
         Some(tx) => match tx.send(rows) {
-            Ok(()) => return,
+            Ok(()) => (),
             Err(recovered) => show_window_info_linux_zenity(&recovered.0),
         },
         None => show_window_info_linux_zenity(&rows),

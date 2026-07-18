@@ -116,13 +116,18 @@ fn rule_line_has_leading_match_key(line: &str) -> bool {
 pub fn get_config_paths() -> Vec<PathBuf> {
     let mut paths = Vec::new();
 
-    // Try XDG_CONFIG_HOME first (most standard)
+    // Try XDG_CONFIG_HOME first (most standard). NOTE: an *empty* value
+    // must be treated as unset, otherwise `PathBuf::from("").join(...)` is
+    // a *relative* path and we'd write the config into the CWD. `dirs` itself
+    // treats empty as unset, but `std::env::var` returns `Ok("")` for empty.
     if let Ok(xdg_config) = std::env::var("XDG_CONFIG_HOME") {
-        paths.push(
-            PathBuf::from(xdg_config)
-                .join("qmk-notifier")
-                .join("config.toml"),
-        );
+        if !xdg_config.is_empty() {
+            paths.push(
+                PathBuf::from(xdg_config)
+                    .join("qmk-notifier")
+                    .join("config.toml"),
+            );
+        }
     }
 
     // Try home directory paths as fallback
@@ -414,12 +419,14 @@ pub fn reload_udev_rules() -> Result<(), Box<dyn Error>> {
 
 // For creating configuration directory
 pub fn create_config_dir() -> Result<PathBuf, Box<dyn Error>> {
-    let config_dir = if let Ok(xdg_config) = std::env::var("XDG_CONFIG_HOME") {
-        PathBuf::from(xdg_config).join("qmk-notifier")
-    } else if let Some(home) = dirs::home_dir() {
-        home.join(".config").join("qmk-notifier")
-    } else {
-        return Err("Could not determine configuration directory".into());
+    let config_dir = match std::env::var("XDG_CONFIG_HOME") {
+        // Treat an empty XDG_CONFIG_HOME as unset — an empty value would make
+        // PathBuf::from("").join(...) a *relative* path (CWD), not $HOME/.config.
+        Ok(xdg_config) if !xdg_config.is_empty() => PathBuf::from(xdg_config).join("qmk-notifier"),
+        _ => match dirs::home_dir() {
+            Some(home) => home.join(".config").join("qmk-notifier"),
+            None => return Err("Could not determine configuration directory".into()),
+        },
     };
 
     fs::create_dir_all(&config_dir)?;

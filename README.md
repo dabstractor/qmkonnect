@@ -10,8 +10,8 @@ QMKonnect watches which window is active and sends that info to your QMK keyboar
 
 This tool is part of a broader ecosystem:
 - **[qmk-notifier](https://github.com/dabstractor/qmk-notifier)**: QMK module that receives commands and handles layer/feature toggling on your keyboard
-- **[qmk_notifier](https://github.com/dabstractor/qmk_notifier)**: Desktop application that sends commands to your keyboard via Raw HID
-- **QMKonnect** (this tool): Application that detects window changes across platforms
+- **[qmk_notifier](https://github.com/dabstractor/qmk_notifier)**: The Rust transport library that QMKonnect links to send commands to your keyboard via Raw HID
+- **QMKonnect** (this tool): Cross-platform desktop daemon that detects window changes and streams them to your keyboard through `qmk_notifier`
 
 ## Features
 
@@ -56,7 +56,7 @@ makepkg -si
 ```
 
 ### Other Linux Systems
-Download the release binary: [qmkonnect](https://github.com/dabstractor/qmkonnect/releases/download/v0.1.0/qmkonnect)
+Download the release binary: [qmkonnect](https://github.com/dabstractor/qmkonnect/releases/latest)
 
 If you want it to start automatically, install the service file and start the service:
 ```
@@ -87,7 +87,7 @@ sudo qmkonnect -r     # root-aware: finds your config even under sudo
 
 ### macOS
 
-1. Download QMKonnect.app from the [releases page](https://github.com/dabstractor/qmkonnect/releases/download/v0.1.0/QMKonnect.dmg)
+1. Download QMKonnect.app from the [releases page](https://github.com/dabstractor/qmkonnect/releases/latest)
 2. Copy QMKonnect.app to your Applications folder
 3. Launch QMKonnect from Applications folder
 4. It starts automatically at login by default — toggle it from the menu-bar icon → **Launch at Login**.
@@ -279,7 +279,7 @@ qmkonnect & disown
 
 This tool works in conjunction with:
 - The [qmk-notifier](https://github.com/dabstractor/qmk-notifier) QMK module running on your keyboard
-- The [qmk_notifier](https://github.com/dabstractor/qmk_notifier) tool which handles the Raw HID communication
+- The [qmk_notifier](https://github.com/dabstractor/qmk_notifier) transport library that QMKonnect links to handle the Raw HID communication
 
 When a window focus change is detected, this application formats the data as:
 `{application_class}{GS}{window_title}` where `{GS}` is the Group Separator character (0x1D).

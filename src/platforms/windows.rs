@@ -15,8 +15,8 @@ use windows::Win32::Foundation::HWND;
 use windows::Win32::System::LibraryLoader::GetModuleHandleA;
 use windows::Win32::UI::Accessibility::{SetWinEventHook, UnhookWinEvent, HWINEVENTHOOK};
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumChildWindows, GetClassNameW, GetForegroundWindow, GetWindowTextW,
-    GetWindowThreadProcessId, EVENT_OBJECT_FOCUS, WINEVENT_OUTOFCONTEXT,
+    EnumChildWindows, GetClassNameW, GetForegroundWindow, GetWindowTextW, GetWindowThreadProcessId,
+    EVENT_OBJECT_FOCUS, WINEVENT_OUTOFCONTEXT,
 };
 
 // Thread-safe replacements for the former `static mut` globals (issue #5).
