@@ -1,0 +1,939 @@
+{
+  "backlog": [
+    {
+      "type": "Phase",
+      "id": "P1",
+      "title": "Core Foundation — Platform-Independent Engine",
+      "status": "Planned",
+      "description": "Build the platform-independent core: WindowInfo type, TOML config system with zero-config defaults, the Notifier trait + QmkNotifier impl, the debounce coalescing pipeline with single worker thread, device filter resolution, and read-only device probes. This phase covers PRD features F2 (partial), F3, F4, and F5.",
+      "milestones": [
+        {
+          "type": "Milestone",
+          "id": "P1.M1",
+          "title": "Core Types & Config System",
+          "status": "Planned",
+          "description": "Define WindowInfo value type and the complete TOML config system with zero-config defaults, hot-reload semantics, and the shared config-body renderer.",
+          "tasks": [
+            {
+              "type": "Task",
+              "id": "P1.M1.T1",
+              "title": "WindowInfo Value Type",
+              "status": "Planned",
+              "description": "The single data type every platform monitor produces: app_class + title. Must derive Debug, PartialEq, Eq, Clone for dedup and ergonomics.",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P1.M1.T1.S1",
+                  "title": "Implement WindowInfo struct with constructors and tests",
+                  "status": "Planned",
+                  "story_points": 1,
+                  "dependencies": [],
+                  "prd_selectors": ["h2.5", "h2.6", "h2.12"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See plan/001_4a76d46cb048/architecture/core_analysis.md §4. The current types.rs defines WindowInfo { app_class: String, title: String } with Debug+PartialEq only. Gap G8: should also derive Eq, Clone, Default. This is the foundational type consumed by ALL platform monitors and the notifier pipeline.\n2. INPUT: None (leaf type — no dependencies).\n3. LOGIC: Implement `src/core/types.rs` with `pub struct WindowInfo { pub app_class: String, pub title: String }`. Derive `Debug, PartialEq, Eq, Clone, Default`. Provide `WindowInfo::new(app_class: String, title: String) -> Self`. Write unit tests for creation and equality. The app_class field is the stable identifier (Win32 class / macOS localizedName / Hyprland initial_class / X11 WM_CLASS). The title is the window title (may be empty).\n4. OUTPUT: `WindowInfo` struct accessible as `crate::core::types::WindowInfo` for consumption by all platform monitors (P2.*) and the notifier pipeline (P1.M2.T2).\n5. DOCS: [Mode A] Add/review JSDoc-style doc comments on the struct and its fields. No user-facing config/API surface change."
+                }
+              ]
+            },
+            {
+              "type": "Task",
+              "id": "P1.M1.T2",
+              "title": "Config Struct & TOML Parsing",
+              "status": "Planned",
+              "description": "The deserialized TOML config with all-optional device-ID fields (zero-config defaults), timing fields, and serde defaults that match runtime semantics.",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P1.M1.T2.S1",
+                  "title": "Implement Config struct with serde defaults and parse_config",
+                  "status": "Planned",
+                  "story_points": 1,
+                  "dependencies": ["P1.M1.T1.S1"],
+                  "prd_selectors": ["h2.7", "h2.6"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See core_analysis.md §2.2. The Config struct has 6 fields: vendor_id/product_id (Option<u16>, None=match any), usage_page/usage (Option<u16>, resolved to 0xFF60/0x61 at use site), debounce_ms (u64, default 50), poll_interval_ms (u64, default 0). Gap G4: #[derive(Default)] yields debounce_ms=0 because serde default fns aren't invoked by Default derive — must use manual Default impl or document the difference. parse_config is a straight toml::from_str with no validation (Gap G3 — acceptable for now).\n2. INPUT: WindowInfo from P1.M1.T1.S1 (not directly, but same module).\n3. LOGIC: Implement `src/core/mod.rs` Config struct with `#[derive(serde::Deserialize, serde::Serialize)]`. Use `#[serde(default)]` on device-ID fields (None = auto-discovery) and `#[serde(default = \"default_debounce_ms\")]` / `#[serde(default = \"default_poll_interval_ms\")]` for timing. Constants: DEFAULT_DEBOUNCE_MS=50, DEFAULT_POLL_INTERVAL_MS=0. Implement `now_ms() -> u128` using a process-local monotonic epoch (OnceLock<Instant>). Implement `parse_config(path: &Path) -> Result<Config, Box<dyn Error>>` via `fs::read_to_string` + `toml::from_str`. Implement `configured_timing() -> (u64, u64)` and `configured_debounce_ms() -> u64` that re-read config from disk on every call (hot config). Add manual `Default` impl returning correct defaults (50/0).\n4. OUTPUT: `Config` struct, `parse_config()`, `configured_timing()`, `configured_debounce_ms()`, `now_ms()` accessible as `crate::core::*` for consumption by the notifier (P1.M2) and all platform modules.\n5. DOCS: [Mode A] Document the zero-config design in doc comments on Config. Update docs/configuration.md if the struct shape changes. No new user-facing surface beyond what CONFIG.md already documents."
+                }
+              ]
+            },
+            {
+              "type": "Task",
+              "id": "P1.M1.T3",
+              "title": "Config Body Renderer & Default Config Creation",
+              "status": "Planned",
+              "description": "The single shared config-file writer that every write path uses (CLI, Win32 dialog, NSAlert, zenity/GTK) so the file format never drifts.",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P1.M1.T3.S1",
+                  "title": "Implement render_config_body and create_default_config",
+                  "status": "Planned",
+                  "story_points": 1,
+                  "dependencies": ["P1.M1.T2.S1"],
+                  "prd_selectors": ["h2.7", "h2.6"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See core_analysis.md §2.7. `render_config_body(vendor_id: Option<u16>, product_id: Option<u16>) -> String` is the SINGLE SOURCE OF TRUTH for config file format. VID/PID lines are explicit (uncommented) when Some, commented when None. Usage/timing options always shown as commented hints. `create_default_config(path)` writes render_config_body(None, None), creating parent dirs, no-op if file exists.\n2. INPUT: Config struct and parse_config from P1.M1.T2.S1.\n3. LOGIC: Implement `render_config_body(vendor_id: Option<u16>, product_id: Option<u16>) -> String` producing valid TOML. When Some(v) → `vendor_id  = 0x{v:04x}`. When None → `# vendor_id  = 0xfeed   # unset: auto-discovery`. Always comment out usage_page, usage, debounce_ms, poll_interval_ms as hints. Implement `create_default_config(config_path: &Path) -> Result<(), Box<dyn Error>>` that: (a) no-op + message if file exists, (b) create parent dirs, (c) write render_config_body(None, None). Write round-trip tests: parse(render_config_body(vid, pid)) yields correct values.\n4. OUTPUT: `render_config_body()` and `create_default_config()` accessible as `crate::core::*` for consumption by CLI dispatch (P1.M3.T1) and all platform settings dialogs (P3.M2).\n5. DOCS: [Mode A] Ensure doc comments on render_config_body note it is the single shared writer. The config format is documented in spec/CONFIG.md §2 — keep in sync."
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "Milestone",
+          "id": "P1.M2",
+          "title": "Notifier Pipeline & Debounce Engine",
+          "status": "Planned",
+          "description": "The Notifier trait abstraction, QmkNotifier implementation (wrapping qmk_notifier crate with retry/backoff), the DeviceFilter resolution, read-only probes, and the debounce coalescing pipeline with a single long-lived worker thread.",
+          "tasks": [
+            {
+              "type": "Task",
+              "id": "P1.M2.T1",
+              "title": "Notifier Trait, QmkNotifier & Device Filter",
+              "status": "Planned",
+              "description": "The Notifier trait abstraction (Send+Sync for global Arc<Mutex>), QmkNotifier real implementation wrapping the qmk_notifier crate with retry/backoff, and DeviceFilter resolution from config.",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P1.M2.T1.S1",
+                  "title": "Implement Notifier trait, QmkNotifier, and global notifier state",
+                  "status": "Planned",
+                  "story_points": 1,
+                  "dependencies": ["P1.M1.T1.S1"],
+                  "prd_selectors": ["h2.5", "h2.9", "h2.6"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See core_analysis.md §3.1, §3.5, §3.7 and external_deps.md for the qmk_notifier crate API. The Notifier trait is `pub trait Notifier: Send + Sync { fn notify(&self, message: String) -> Result<(), Box<dyn Error + Send + Sync>>; }`. Global state: `static NOTIFIER: Lazy<Arc<Mutex<Box<dyn Notifier>>>>` (once_cell). QmkNotifier::notify builds RunParameters and calls qmk_notifier::run. Retry: 3 attempts with linear backoff (100ms*attempt) for device errors ('no device found', 'permission denied', 'failed to open'), then returns Ok(()) to prevent restart loops. Non-device errors propagate immediately.\n2. INPUT: WindowInfo from P1.M1.T1.S1, Config from P1.M1.T2.S1.\n3. LOGIC: Implement in `src/core/notifier.rs`: (a) Notifier trait with Send+Sync bound, (b) QmkNotifier unit struct implementing Notifier, (c) global NOTIFIER static via once_cell::sync::Lazy, (d) get_notifier() accessor, (e) set_notifier() test seam (#[cfg(test)]). QmkNotifier::notify: resolve DeviceFilter via configured_filter(), build RunParameters::new(RunCommand::SendMessage(msg), vid, pid, usage_page, usage, verbose=false), call qmk_notifier::run(params) with retry logic. Mock qmk_notifier::run for unit testing via the Notifier trait.\n4. OUTPUT: Notifier trait, QmkNotifier, NOTIFIER global accessible as crate::core::notifier::* for consumption by the debounce pipeline (P1.M2.T2) and test mocks.\n5. DOCS: [Mode A] Document the retry/Ok-after-exhaustion design decision in doc comments on QmkNotifier::notify (relates to PRD §10 graceful degradation)."
+                },
+                {
+                  "type": "Subtask",
+                  "id": "P1.M2.T1.S2",
+                  "title": "Implement DeviceFilter and configured_filter resolution",
+                  "status": "Planned",
+                  "story_points": 1,
+                  "dependencies": ["P1.M2.T1.S1", "P1.M1.T2.S1"],
+                  "prd_selectors": ["h2.7", "h2.6"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See core_analysis.md §3.2 and gap_analysis.md G6. DeviceFilter { vendor_id: Option<u16>, product_id: Option<u16>, usage_page: u16, usage: u16 }. configured_filter() re-reads config from disk on every call (hot config). usage_page/usage default to qmk_notifier::DEFAULT_USAGE_PAGE (0xFF60) / DEFAULT_USAGE (0x61) when None. VID/PID stay Option (None = match any = auto-discovery). GAP G6: the matching predicate is duplicated in startup_device_probe, is_device_connected, and qmk_notifier — extract a single DeviceFilter::matches() method here to DRY it up.\n2. INPUT: Config struct and parse_config from P1.M1.T2.S1, qmk_notifier crate constants.\n3. LOGIC: Implement `struct DeviceFilter` with fields. Implement `configured_filter() -> DeviceFilter` (private) that reads config paths, parses, and resolves defaults. Implement `DeviceFilter::matches(&self, usage_page: u16, usage: u16, vid: u16, pid: u16) -> bool` with the predicate: usage_page==&&usage==&&vid.is_none_or(==)&&pid.is_none_or(==). This single method replaces the inline closures in startup_device_probe and is_device_connected.\n4. OUTPUT: DeviceFilter struct with matches() method accessible within crate::core::notifier for consumption by P1.M2.T2 (probes) and QmkNotifier::notify.\n5. DOCS: none — no user-facing/config/API surface change."
+                }
+              ]
+            },
+            {
+              "type": "Task",
+              "id": "P1.M2.T2",
+              "title": "Read-Only Device Probes",
+              "status": "Planned",
+              "description": "startup_device_probe (one-time startup check with clear miss diagnostic) and is_device_connected (tray status backing). Both use pure hidapi enumeration — never open the device.",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P1.M2.T2.S1",
+                  "title": "Implement startup_device_probe, is_device_connected, and list_devices",
+                  "status": "Planned",
+                  "story_points": 2,
+                  "dependencies": ["P1.M2.T1.S2"],
+                  "prd_selectors": ["h2.6", "h2.9", "h2.10"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See core_analysis.md §3.3-§3.4. startup_device_probe(verbose) does a one-time read-only hidapi enumeration (api.device_list().any(|d| filter.matches(d.usage_page(), d.usage(), d.vendor_id(), d.product_id()))) and prints a clear diagnostic on miss. is_device_connected() -> bool is the same enumeration (never opens device). list_devices() prints vid:pid page:usage product for every device (backs --list-devices CLI). All three use the unified DeviceFilter::matches() from P1.M2.T1.S2 (fixes Gap G6). Treat any HID enumeration failure as 'absent' in is_device_connected.\n2. INPUT: DeviceFilter and configured_filter() from P1.M2.T1.S2, qmk_notifier crate (for hidapi access).\n3. LOGIC: Implement `pub fn startup_device_probe(verbose: bool)` — creates HidApi instance, enumerates against configured_filter(), prints 'Found <product> (vid:pid)' on success or 'No device matching <filter> found — check config.toml or use --list-devices' on miss. Implement `pub fn is_device_connected() -> bool` — same enumeration, returns bool. Implement `pub fn list_devices() -> Result<(), Box<dyn Error>>` — enumerates ALL devices and prints info. Mock HidApi in tests via trait abstraction or integration test boundary.\n4. OUTPUT: startup_device_probe(), is_device_connected(), list_devices() accessible as crate::core::notifier::* for consumption by runners (P2.M3) and tray device-status threads (P3.M3).\n5. DOCS: [Mode A] Document the read-only probe guarantee (never opens device) in doc comments."
+                }
+              ]
+            },
+            {
+              "type": "Task",
+              "id": "P1.M2.T3",
+              "title": "Debounce Coalescing Pipeline",
+              "status": "Planned",
+              "description": "The debounce state machine with single worker thread that collapses rapid window-change bursts to one immediate send plus at most one follow-up. The key correctness property: new pending messages do NOT reset last_sent_time.",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P1.M2.T3.S1",
+                  "title": "Implement DebounceState, debounce_worker thread, and notify_qmk entry point",
+                  "status": "Planned",
+                  "story_points": 2,
+                  "dependencies": ["P1.M2.T1.S1"],
+                  "prd_selectors": ["h2.5", "h2.6", "h2.9"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See core_analysis.md §3.6 and ARCHITECTURE.md §5.3. State: struct DebounceState { last_sent_time: Option<Instant>, pending: Option<String>, verbose: bool, interval: Duration }. Globals: STATE (Lazy<Mutex<DebounceState>>), COND (Lazy<Condvar>), WORKER (Lazy<JoinHandle>). Algorithm in notify_qmk: if due (now - last_sent >= interval or never sent) → send immediately, set last_sent=now, clear pending. Else → set pending=msg (overwriting older), COND.notify_one(). Worker: waits on COND while pending is None, then waits remainder of window measured from last_sent_time (NOT from message arrival), flushes newest pending. GAP G5: interval is loaded once at static init and never refreshed — the implementation should re-read configured_debounce_ms() periodically (e.g., at the top of each worker loop iteration, under the lock) to make debounce_ms truly hot-configurable.\n2. INPUT: Notifier trait and get_notifier() from P1.M2.T1.S1, WindowInfo from P1.M1.T1.S1, configured_debounce_ms() from P1.M1.T2.S1.\n3. LOGIC: Implement the DebounceState struct, the STATE/COND/WORKER statics, debounce_worker() (infinite loop: lock STATE, wait on COND while pending.is_none(), compute target=last_sent+interval, if now>=target flush+send else wait_timeout), ensure_worker(), and notify_qmk(window_info: &WindowInfo, verbose: bool) -> Result<(), Box<dyn Error + Send + Sync>> that formats the payload as format!(\"{}{}{}\", app_class, '\\x1D', title) and applies the debounce algorithm. interval=0 disables coalescing (flush immediately). Add reset_test_state() for testing.\n4. OUTPUT: notify_qmk() accessible as crate::core::notifier::notify_qmk for consumption by ALL platform monitors (P2.*). Internal debounce state is process-global.\n5. DOCS: [Mode A] Document the burst-collapse invariant in doc comments on notify_qmk. Note the single-threaded test requirement."
+                },
+                {
+                  "type": "Subtask",
+                  "id": "P1.M2.T3.S2",
+                  "title": "Debounce test suite with MockNotifier",
+                  "status": "Planned",
+                  "story_points": 1,
+                  "dependencies": ["P1.M2.T3.S1"],
+                  "prd_selectors": ["h2.10", "h2.9"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See core_analysis.md §3.8-§3.9. Tests must run single-threaded (--test-threads=1) because STATE/COND/WORKER are process-global. MockNotifier counts calls via AtomicUsize and records last message via Mutex<Option<String>>. Tests: test_immediate_send_first_message, test_debounce_subsequent_messages (widened to 200ms tolerance for CI scheduler jitter), test_send_after_debounce_timeout, test_multiple_rapid_updates (asserts burst collapses to newest), test_verbose_mode, test_threads_dont_interfere. reset_test_state() drains in-flight work (150ms sleep), resets last_sent/pending/verbose/interval=50ms.\n2. INPUT: notify_qmk() and debounce pipeline from P1.M2.T3.S1, Notifier trait and set_notifier() from P1.M2.T1.S1.\n3. LOGIC: Implement MockNotifier struct with call counter and last-message capture. Implement reset_test_state(). Write the 6 test functions listed above. Each test: reset_test_state(), set_notifier(Box::new(MockNotifier)), perform timed notify_qmk calls, assert call count and last message. Tests verify: first message sends immediately, rapid burst collapses to exactly one follow-up, quiet period resets the window, debounce_ms=0 sends every change.\n4. OUTPUT: Test suite in src/core/notifier.rs #[cfg(test)] module. All tests must pass with --test-threads=1.\n5. DOCS: none — tests only, no user-facing surface."
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "Milestone",
+          "id": "P1.M3",
+          "title": "CLI Dispatch & Entry Point",
+          "status": "Planned",
+          "description": "The main.rs entry point with manual argv scanning, CLI flag dispatch, logging initialization, and platform-runner delegation.",
+          "tasks": [
+            {
+              "type": "Task",
+              "id": "P1.M3.T1",
+              "title": "CLI Parser, Flag Dispatch & Logging Init",
+              "status": "Planned",
+              "description": "Hand-rolled argv scanner for all CLI flags (-h, -v, -c, -r, -l, --list-devices, --show-window-info, --tray-app, --console) plus logging initialization per platform.",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P1.M3.T1.S1",
+                  "title": "Implement main(), run(), CLI flag dispatch, and logging init",
+                  "status": "Planned",
+                  "story_points": 2,
+                  "dependencies": ["P1.M1.T3.S1", "P1.M2.T2.S1"],
+                  "prd_selectors": ["h2.7", "h2.9", "h2.5"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See core_analysis.md §1. main.rs has #![cfg_attr(target_os=\"windows\", windows_subsystem=\"windows\")] at top. run() manually scans env::args() (no clap). Flag precedence: -h/--help, then -v/--verbose (sets flag, doesn't short-circuit), -c/--config (create_config), -r/--reload (reload_config with --config/--user/--uid value flags via parse_value_flag), -l/--list, --list-devices, --show-window-info (macOS/Win only), default→runners::create_runner(verbose)?.run(&args). GAP G1: Non-Windows init_logging is a no-op — should install env_logger on macOS/Linux too so log::* macros emit output.\n2. INPUT: create_default_config/render_config_body from P1.M1.T3.S1, list_devices from P1.M2.T2.S1, platforms::list_foreground_windows from P2.M1.T1.S1.\n3. LOGIC: Implement src/main.rs: (a) #![cfg_attr(windows, windows_subsystem=\"windows\")] attribute, (b) init_logging() — Windows: try eventlog::init('QMKonnect', Info), fallback env_logger; macOS/Linux: init env_logger (fix Gap G1), (c) main() → init_logging → run() with error handling, (d) run() manual flag scan in precedence order, (e) print_help() listing all flags, (f) reload_config() that resolves config path (Linux: root-aware resolve_config_for_reload, else get_config_path), parses, and on Linux calls update_udev_rules + reload_udev_rules, (g) create_config() that creates config dir and default config, (h) parse_value_flag() for --config/--user/--uid space and = syntax, (i) print_platforms().\n4. OUTPUT: Complete main.rs binary entry point. Delegates to runners::create_runner (P2.M3) for default run mode.\n5. DOCS: [Mode A] Update spec/CONFIG.md §4 CLI reference if any flags change. Keep AGENTS.md test commands in sync."
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "Phase",
+      "id": "P2",
+      "title": "Platform Window Monitors & Lifecycle Runners",
+      "status": "Planned",
+      "description": "Implement foreground-window detection for each supported platform (Windows WinEventHook, macOS NSWorkspace, Hyprland IPC, X11 xprop fallback), the WindowMonitor trait abstraction, per-OS lifecycle runners, and platform-specific config paths. Covers PRD feature F1.",
+      "milestones": [
+        {
+          "type": "Milestone",
+          "id": "P2.M1",
+          "title": "WindowMonitor Trait & Platform Dispatchers",
+          "status": "Planned",
+          "description": "The shared trait definition and dispatch functions for monitor creation, config paths, config dir creation, and foreground window listing.",
+          "tasks": [
+            {
+              "type": "Task",
+              "id": "P2.M1.T1",
+              "title": "WindowMonitor Trait & Dispatch Functions",
+              "status": "Planned",
+              "description": "The Send-bounded WindowMonitor trait (platform_name, start, stop) and the per-OS dispatchers (create_monitor, get_config_paths, create_config_dir, list_foreground_windows).",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P2.M1.T1.S1",
+                  "title": "Implement WindowMonitor trait and all dispatch functions in platforms/mod.rs",
+                  "status": "Planned",
+                  "story_points": 2,
+                  "dependencies": ["P1.M1.T1.S1"],
+                  "prd_selectors": ["h2.4", "h2.5", "h2.6"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See platforms_analysis.md §1. The trait is `pub trait WindowMonitor: Send { fn platform_name(&self) -> &str; fn start(&mut self) -> Result<(), Box<dyn Error>>; fn stop(&mut self) -> Result<(), Box<dyn Error>> { Ok(()) } }`. Module gating: hyprland.rs has inner #![cfg(...)] (no outer cfg), x11 is mutually exclusive with hyprland feature, macos/windows cfg-gated. Dispatchers: create_monitor(verbose) → cfg-ladder returning Box<dyn WindowMonitor>. get_config_paths() → delegates per-OS. list_foreground_windows() → Vec<(String,String)> for macOS/Windows/Linux+hyprland; X11 gap noted (returns empty). create_config_dir() → per-OS.\n2. INPUT: WindowInfo from P1.M1.T1.S1.\n3. LOGIC: Implement src/platforms/mod.rs: (a) module declarations with cfg gates, (b) WindowMonitor trait definition, (c) create_monitor(verbose) cfg-ladder (Linux: hyprland if feature, else x11; macOS: MacOSMonitor; Windows: WindowsMonitor), (d) get_config_paths() per-OS dispatch, (e) create_config_dir() per-OS dispatch, (f) list_foreground_windows() per-OS dispatch returning Vec<(String,String)>. pub use linux::* on Linux to re-export udev/config helpers. MockWindowMonitor test for trait conformance.\n4. OUTPUT: WindowMonitor trait and dispatch functions accessible as crate::platforms::* for consumption by runners (P2.M3) and CLI dispatch (P1.M3.T1.S1).\n5. DOCS: [Mode A] Document the trait contract and Send bound rationale in doc comments."
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "Milestone",
+          "id": "P2.M2",
+          "title": "Per-Platform Window Monitors",
+          "status": "Planned",
+          "description": "Implement each platform's foreground-window detection: Windows (WinEventHook + polling fallback + UWP resolution), macOS (NSWorkspace observer + CGWindowList + Screen Recording permission), Hyprland (EventListener IPC + reconnect backoff + poll burst), X11 (xprop polling fallback).",
+          "tasks": [
+            {
+              "type": "Task",
+              "id": "P2.M2.T1",
+              "title": "Windows Window Monitor (WinEventHook)",
+              "status": "Planned",
+              "description": "Dual detection (WinEventHook + 100ms polling fallback), window class filtering (should_ignore_window), UWP ApplicationFrameWindow content resolution, thread-safe atomics, and list_foreground_windows enumeration.",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P2.M2.T1.S1",
+                  "title": "Implement WindowsMonitor: hook+poll, filtering, UWP resolution",
+                  "status": "Planned",
+                  "story_points": 2,
+                  "dependencies": ["P2.M1.T1.S1", "P1.M2.T3.S1"],
+                  "prd_selectors": ["h2.4", "h2.5", "h2.6"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See platforms_analysis.md §2. WindowsMonitor uses SetWinEventHook(EVENT_OBJECT_FOCUS, WINEVENT_OUTOFCONTEXT) as primary signal + 100ms polling thread (GetForegroundWindow) as fallback. Thread-safe globals: G_VERBOSE (AtomicBool), G_HOOK (AtomicIsize), LAST_WINDOW_INFO (Mutex<Option<(String,String)>>). should_ignore_window filters shell classes (Shell_TrayWnd, ApplicationFrameWindow, etc.) and short/empty titles with allowlist. UWP resolution: ApplicationFrameWindow → find_uwp_content_window via EnumChildWindows (first visible descendant with different PID). get_window_info uses GetClassNameW + GetWindowTextW. list_foreground_windows uses EnumWindows with same pipeline.\n2. INPUT: WindowMonitor trait from P2.M1.T1.S1, notify_qmk from P1.M2.T3.S1.\n3. LOGIC: Implement src/platforms/windows.rs: (a) WindowsMonitor struct with running: Arc<AtomicBool>, (b) start(): install SetWinEventHook, spawn 100ms polling thread, return immediately (non-blocking), (c) stop(): flip running=false, UnhookWinEvent, (d) event_proc callback → handle_focus_change(hwnd), (e) handle_focus_change: get_window_info → should_ignore_window → dedup against LAST_WINDOW_INFO → notify_qmk, (f) should_ignore_window with ignore_classes list + empty-title allowlist + short-title filter, (g) find_uwp_content_window for ApplicationFrameWindow resolution, (h) get_window_info(hwnd) → WindowInfo, (i) list_foreground_windows via EnumWindows, (j) get_config_paths (APPDATA/LOCALAPPDATA/exe-dir), (k) create_config_dir. Use windows crate 0.52 features.\n4. OUTPUT: WindowsMonitor implementing WindowMonitor, registered in create_monitor dispatch. Compiled under cfg(target_os=\"windows\").\n5. DOCS: [Mode A] Document the dual hook+poll design and UWP resolution in doc comments. Reference spec/PLATFORMS.md §2."
+                }
+              ]
+            },
+            {
+              "type": "Task",
+              "id": "P2.M2.T2",
+              "title": "macOS Window Monitor (NSWorkspace + CGWindowList)",
+              "status": "Planned",
+              "description": "NSWorkspaceDidActivateApplicationNotification observer, CGWindowList title extraction, Screen Recording permission graceful degradation, and list_foreground_windows enumeration.",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P2.M2.T2.S1",
+                  "title": "Implement MacOSMonitor: observer, permission handling, window info",
+                  "status": "Planned",
+                  "story_points": 2,
+                  "dependencies": ["P2.M1.T1.S1", "P1.M2.T3.S1"],
+                  "prd_selectors": ["h2.4", "h2.5", "h2.6", "h2.8"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See platforms_analysis.md §3. MacOSMonitor registers an observer on NSWorkspace.sharedWorkspace.notificationCenter for NSWorkspaceDidActivateApplicationNotification. Handler calls get_active_window_info → notify_qmk. start() calls ensure_screen_recording_permission (CGPreflightScreenCaptureAccess → CGRequestScreenCaptureAccess, returns immediately, keeps running with app-name-only degradation), sets up observer, fires initial notification, then blocks on CFRunLoopRun (background thread). get_active_window_info: frontmostApplication.localizedName → app name; CGWindowListCopyWindowInfo → match kCGWindowOwnerName → kCGWindowName → title. VERBOSE: AtomicBool. list_foreground_windows: runningApplications filtered to activationPolicy==0 + isFinishedLaunching. GAP P-MacDeadState: running field is dead, stop() can't halt CFRunLoop.\n2. INPUT: WindowMonitor trait from P2.M1.T1.S1, notify_qmk from P1.M2.T3.S1.\n3. LOGIC: Implement src/platforms/macos.rs: (a) MacOSMonitor struct, (b) extern FFI declarations for CGPreflightScreenCaptureAccess, CGRequestScreenCaptureAccess, (c) ensure_screen_recording_permission(verbose) — non-blocking, keep running without permission, (d) setup_observers — RustNotificationObserver class (guarded by Class::get), observeNotification: selector, (e) start() — permission check, setup observers, initial notification, CFRunLoopRun (blocks), (f) get_active_window_info() → WindowInfo, (g) list_foreground_windows(), (h) build_owner_title_map from CG window list, (i) get_config_paths (Application Support/XDG/etc), (j) create_config_dir. Uses objc, core-foundation, core-graphics, dispatch crates.\n4. OUTPUT: MacOSMonitor implementing WindowMonitor. Compiled under cfg(target_os=\"macos\"). Blocks on CFRunLoopRun (runner places on background thread).\n5. DOCS: [Mode A] Document Screen Recording permission model (PRD §9, PLATFORMS.md §4.2) in doc comments."
+                }
+              ]
+            },
+            {
+              "type": "Task",
+              "id": "P2.M2.T3",
+              "title": "Hyprland Window Monitor (IPC + Reconnect)",
+              "status": "Planned",
+              "description": "Hyprland EventListener IPC with reconnect backoff, socket liveness probing, environment self-heal, optional periodic polling, and poll-burst after layer events.",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P2.M2.T3.S1",
+                  "title": "Implement HyprlandMonitor: reconnect loop, handlers, socket liveness, polling",
+                  "status": "Planned",
+                  "story_points": 2,
+                  "dependencies": ["P2.M1.T1.S1", "P1.M2.T3.S1"],
+                  "prd_selectors": ["h2.4", "h2.5", "h2.6", "h2.9"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See platforms_analysis.md §4 and ARCHITECTURE.md §5. HyprlandMonitor::start() is a reconnect loop: wait_for_hyprland (exponential backoff, 30s timeout, socket env + Monitors::get() IPC verify) → check_hyprland_environment (self-heal: resolve live instance signature, republish env var) → build EventListener, register handlers → start_listener (blocks). Handlers: active_window_changed→handle_window_state_change, workspace_changed→handle_workspace_change, window_closed→handle_window_state_change, layer_opened/closed→handle_window_state_change+spawn_poll_burst. Reconnect: INITIAL_RECONNECT_MS=100, MAX=10000, ×3 growth, reset to initial if listener stayed up ≥STABLE_CONNECTION_THRESHOLD (5s). Hard-fail if first attempt dies within 2s. hyprland_socket_is_live: actual connect(2) with 500ms timeout. Optional poll: poll_interval_ms>0 (default 0=off). Poll burst: 5×100ms after layer events. WindowState in Arc<Mutex<Option<>>> for dedup.\n2. INPUT: WindowMonitor trait from P2.M1.T1.S1, notify_qmk from P1.M2.T3.S1, configured_timing() from P1.M1.T2.S1 for poll_interval_ms.\n3. LOGIC: Implement src/platforms/hyprland.rs (#![cfg(all(linux, feature=\"hyprland\"))]): (a) constants (reconnect/poll tuning), (b) HyprlandMonitor struct, (c) start() reconnect loop with wait_for_hyprland + check_hyprland_environment + listener, (d) wait_for_hyprland (probe socket env + Monitors::get, exponential backoff, 30s timeout), (e) hyprland_socket_is_live (connect(2) on short-lived thread, 500ms timeout), (f) check_hyprland_environment (scan XDG_RUNTIME_DIR/hypr/* for live socket, republish env), (g) handle_window_state_change (Client::get_active → WindowInfo or empty, dedup), (h) spawn_poll_burst (5×100ms), (i) poll_window_state (optional periodic poll), (j) list_foreground_windows (Clients::get, mapped, active to front), (k) handle_workspace_change. Unit tests for socket liveness and WindowState.\n4. OUTPUT: HyprlandMonitor implementing WindowMonitor. Blocks calling thread on start_listener. Compiled under cfg(all(linux, feature=\"hyprland\")).\n5. DOCS: [Mode A] Document reconnect backoff and poll strategies in doc comments. Reference spec/PLATFORMS.md §5."
+                }
+              ]
+            },
+            {
+              "type": "Task",
+              "id": "P2.M2.T4",
+              "title": "X11 Window Monitor (xprop Polling Fallback)",
+              "status": "Planned",
+              "description": "xprop-based polling fallback monitor: _NET_ACTIVE_WINDOW → WM_CLASS/_NET_WM_NAME. Fails loudly if xprop is missing (never emits placeholder strings).",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P2.M2.T4.S1",
+                  "title": "Implement X11Monitor: xprop polling, loud failure, dedup",
+                  "status": "Planned",
+                  "story_points": 1,
+                  "dependencies": ["P2.M1.T1.S1", "P1.M2.T3.S1"],
+                  "prd_selectors": ["h2.2", "h2.4", "h2.6"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See platforms_analysis.md §5. X11Monitor is built only with --no-default-features (no hyprland). get_active_window_info: xprop -root _NET_ACTIVE_WINDOW → window id (0x0/0=empty desktop→Ok(None)), then xprop -id <wid> WM_CLASS _NET_WM_NAME → class (2nd WM_CLASS field preferred, 1st fallback) + title. start() asserts xprop -version exists (hard-fails otherwise — issue #14), spawns 500ms polling thread. Dedup against last_window: Option<(String,String)>. GAP P-X11: list_foreground_windows returns empty — should implement xprop -root _NET_CLIENT_LIST for the tray dialog.\n2. INPUT: WindowMonitor trait from P2.M1.T1.S1, notify_qmk from P1.M2.T3.S1.\n3. LOGIC: Implement src/platforms/x11.rs (#![cfg(all(linux, not(feature=\"hyprland\")))]): (a) X11Monitor struct with running: Arc<AtomicBool>, verbose: bool, last_window: Arc<Mutex<Option<(String,String)>>>, (b) get_active_window_info() → Option<WindowInfo> via two xprop subprocess calls, parse output, (c) start() — assert xprop exists (Command::new('xprop').arg('-version')), spawn 500ms polling thread with dedup, return immediately, (d) stop() — flip running=false, (e) list_foreground_windows() — xprop -root _NET_CLIENT_LIST → enumerate windows (fix Gap P-X11). Config paths come from linux.rs via pub use.\n4. OUTPUT: X11Monitor implementing WindowMonitor. Compiled under cfg(all(linux, not(feature=\"hyprland\"))). Non-blocking start (polling thread).\n5. DOCS: [Mode A] Document that this is a fallback, non-default build, and the 500ms polling cadence rationale."
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "Milestone",
+          "id": "P2.M3",
+          "title": "Per-OS Lifecycle Runners",
+          "status": "Planned",
+          "description": "The PlatformRunner trait and three thin per-OS runners that wire monitor thread placement, tray lifecycle, startup probe, and signal handling. Each runner resolves the platform-divergence problem (who owns the main thread).",
+          "tasks": [
+            {
+              "type": "Task",
+              "id": "P2.M3.T1",
+              "title": "PlatformRunner Trait & Per-OS Runners",
+              "status": "Planned",
+              "description": "Windows (single-instance mutex + tray-app/console modes), macOS (monitor on background thread + tray on main), Linux (Hyprland: monitor blocks main + SNI tray on own thread; X11: monitor on thread + tray/park on main).",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P2.M3.T1.S1",
+                  "title": "Implement PlatformRunner trait and create_runner dispatch",
+                  "status": "Planned",
+                  "story_points": 1,
+                  "dependencies": ["P2.M1.T1.S1"],
+                  "prd_selectors": ["h2.4", "h2.5", "h2.9"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See platforms_analysis.md §7. PlatformRunner trait: `fn run(&mut self, args: &[String]) -> Result<(), Box<dyn Error>>`. create_runner(verbose) → cfg-ladder → WindowsRunner/MacOSRunner/LinuxRunner. All runners share: create_monitor(verbose) → startup_device_probe(verbose) → ctrlc handler → start monitor (thread placement differs) → drive tray/park.\n2. INPUT: create_monitor from P2.M1.T1.S1, startup_device_probe from P1.M2.T2.S1.\n3. LOGIC: Implement src/runners/mod.rs: (a) PlatformRunner trait, (b) create_runner(verbose) cfg-ladder returning Box<dyn PlatformRunner>, (c) module declarations with cfg gates.\n4. OUTPUT: PlatformRunner trait and create_runner accessible as crate::runners::* for consumption by main.rs run() dispatch.\n5. DOCS: [Mode A] Document the thread-ownership divergence rationale in module doc comment."
+                },
+                {
+                  "type": "Subtask",
+                  "id": "P2.M3.T1.S2",
+                  "title": "Implement WindowsRunner: single-instance + tray/console modes",
+                  "status": "Planned",
+                  "story_points": 1,
+                  "dependencies": ["P2.M3.T1.S1", "P3.M1.T2.S1"],
+                  "prd_selectors": ["h2.4", "h2.9", "h2.6"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See platforms_analysis.md §7.1. WindowsRunner::run: --console → run_console_mode (AllocConsole, monitor on calling thread, sleep loop — GAP P-WinConsole: hook callbacks never fire without message pump); --tray-app (default) → run_tray_app. run_tray_app: single-instance guard (single-instance crate, 'qmkonnect-app-id', Box::leak to hold for process life) → create_monitor → startup_device_probe → monitor.start() (non-blocking) → tray::setup_tray() (blocks). ctrlc → process::exit(0).\n2. INPUT: PlatformRunner trait from P2.M3.T1.S1, create_monitor from P2.M1.T1.S1, startup_device_probe from P1.M2.T2.S1, tray::setup_tray from P3.M1.T2.S1.\n3. LOGIC: Implement src/runners/windows.rs: (a) WindowsRunner struct, (b) run() dispatching to --console or --tray-app, (c) run_tray_app() with single-instance guard + monitor + tray, (d) run_console_mode() (note the message-pump limitation). Use single-instance crate.\n4. OUTPUT: WindowsRunner implementing PlatformRunner. Compiled under cfg(target_os=\"windows\").\n5. DOCS: [Mode A] Note the console-mode limitation (hook callbacks need message pump). Reference ARCHITECTURE.md §7.1."
+                },
+                {
+                  "type": "Subtask",
+                  "id": "P2.M3.T1.S3",
+                  "title": "Implement MacOSRunner: monitor thread + tray on main",
+                  "status": "Planned",
+                  "story_points": 1,
+                  "dependencies": ["P2.M3.T1.S1", "P3.M1.T2.S1"],
+                  "prd_selectors": ["h2.4", "h2.9"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See platforms_analysis.md §7.2. MacOSRunner::run: create_monitor → startup_device_probe → ctrlc handler → spawn monitor.start() on background thread (it blocks on CFRunLoopRun) → tray::setup_tray() on main thread (blocks until Quit). On tray exit: drop(monitor_thread) (deliberately not joined — CFRunLoopRun is infinite).\n2. INPUT: PlatformRunner trait from P2.M3.T1.S1, create_monitor, startup_device_probe, tray::setup_tray from P3.M1.T2.S1.\n3. LOGIC: Implement src/runners/macos.rs: MacOSRunner::run() with the monitor-on-thread + tray-on-main pattern. Import tray::setup_tray.\n4. OUTPUT: MacOSRunner implementing PlatformRunner. Compiled under cfg(target_os=\"macos\").\n5. DOCS: none — internal lifecycle, no user-facing surface."
+                },
+                {
+                  "type": "Subtask",
+                  "id": "P2.M3.T1.S4",
+                  "title": "Implement LinuxRunner: Hyprland block + X11 thread patterns",
+                  "status": "Planned",
+                  "story_points": 1,
+                  "dependencies": ["P2.M3.T1.S1", "P3.M1.T3.S1"],
+                  "prd_selectors": ["h2.4", "h2.9"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See platforms_analysis.md §7.3. LinuxRunner::run split by cfg: Hyprland → optionally linux_tray::spawn() (ksni, own thread), then monitor.start()? blocks main thread on IPC listener. X11 → optionally linux_tray::spawn(); spawn monitor on background thread; if linux-tray is on, thread::park() loop (ksni owns its loop); else drive tray::setup_tray() on main. Both arms: create_monitor → startup_device_probe → ctrlc handler. Relies on systemd Restart=always + panic='abort' for crash recovery.\n2. INPUT: PlatformRunner trait from P2.M3.T1.S1, create_monitor, startup_device_probe, linux_tray::spawn from P3.M1.T3.S1.\n3. LOGIC: Implement src/runners/linux.rs: LinuxRunner::run() with cfg(all(linux, feature='hyprland')) arm (block main) and cfg(all(linux, not(feature='hyprland'))) arm (thread + park/tray). Handle linux-tray feature gate for tray spawning.\n4. OUTPUT: LinuxRunner implementing PlatformRunner. Compiled under cfg(target_os=\"linux\").\n5. DOCS: none — internal lifecycle."
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "Phase",
+      "id": "P3",
+      "title": "Tray/Menu-Bar UI, Dialogs & Device Status",
+      "status": "Planned",
+      "description": "Implement the tray/menu-bar UI on all three platforms: macOS/Windows (tao+tray-icon+muda), Linux (ksni SNI). Includes settings dialogs, Show Window Information dialogs, live device-status indicator, and the EventLoopProxy pattern for thread-safe UI updates. Covers PRD feature F6.",
+      "milestones": [
+        {
+          "type": "Milestone",
+          "id": "P3.M1",
+          "title": "Tray Setup & Menu Structure",
+          "status": "Planned",
+          "description": "The tray icon creation, menu assembly, event-loop wiring, and device-status polling thread for macOS/Windows (tray.rs) and Linux SNI (linux_tray.rs).",
+          "tasks": [
+            {
+              "type": "Task",
+              "id": "P3.M1.T1",
+              "title": "macOS/Windows Tray Foundation (tray.rs)",
+              "status": "Planned",
+              "description": "EventLoop with UserEvent, tray icon setup, menu assembly (About, device status, autostart toggle, Settings, Window Info, Quit), device-status poll thread, and EventLoopProxy pattern.",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P3.M1.T1.S1",
+                  "title": "Implement UserEvent enum, EventLoopProxy, and device-status poll thread",
+                  "status": "Planned",
+                  "story_points": 1,
+                  "dependencies": ["P1.M2.T2.S1"],
+                  "prd_selectors": ["h2.6", "h2.9"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See ui_integration_analysis.md §1.2, §1.6. UserEvent enum: MenuEvent(MenuEvent), DeviceStatus(bool) [cfg(macos/windows)], AutostartSync [cfg(macos)]. EventLoop built with EventLoopBuilder::<UserEvent>::with_user_event(). MenuEvent::set_event_handler clones proxy and forwards every MenuEvent. Device-status background thread: polls is_device_connected() every 3s, posts DeviceStatus(connected) only on transition (avoid churn). Device-status text: '● Device Connected' (U+25CF) / '○ No Device Connected' (U+25CB). muda MenuItem is !Send (Rc<RefCell>) — mutate ONLY on event-loop thread.\n2. INPUT: is_device_connected() from P1.M2.T2.S1.\n3. LOGIC: Implement in src/tray.rs: (a) UserEvent enum with cfg-gated variants, (b) device_status_text(connected) -> &str helper, (c) the device-status poll thread closure (3s interval, transition-only posting). Set up the MenuEvent::set_event_handler bridge with cloned proxy.\n4. OUTPUT: UserEvent enum, device-status helpers, and the proxy bridge pattern for use by setup_tray (P3.M1.T1.S2).\n5. DOCS: [Mode A] Document the !Send invariant on MenuItem in doc comments."
+                },
+                {
+                  "type": "Subtask",
+                  "id": "P3.M1.T2.S1",
+                  "title": "Implement setup_tray: icon, menu assembly, event loop",
+                  "status": "Planned",
+                  "story_points": 2,
+                  "dependencies": ["P3.M1.T1.S1", "P4.M1.T1.S1", "P4.M1.T2.S1"],
+                  "prd_selectors": ["h2.6", "h2.9", "h2.4"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See ui_integration_analysis.md §1.3-§1.5, §1.13. tray.rs is gated #![cfg(not(all(linux, feature=\"hyprland\")))]. setup_tray builds EventLoop::<UserEvent>, creates menu items: About (PredefinedMenuItem), device status (disabled MenuItem), Launch/Open at Login (CheckMenuItem), Settings (MenuItem), Show Window Info (MenuItem), Quit (MenuItem). Init handler: builds tray icon (macOS: load_template_icon_from_bundle + with_icon_as_template(true) + CFRunLoopWakeUp; Windows: load_windows_tray_icon with 20% zoom), syncs autostart checkbox, calls autostart_first_run_default_on on macOS. Event handling: MenuEvent→dispatch, DeviceStatus→set_text, AutostartSync→re-sync checkbox. tray_icon.take()+ControlFlow::Exit on Quit. macOS: set_activation_policy(Accessory) before run().\n2. INPUT: UserEvent and proxy from P3.M1.T1.S1, autostart::is_enabled from P4.M1.T1.S1 (Windows) / tray::autostart from P4.M1.T2.S1 (macOS).\n3. LOGIC: Implement setup_tray() in src/tray.rs: (a) EventLoop with UserEvent, (b) menu item creation and append, (c) Init handler: icon load + autostart sync, (d) event dispatch for all menu items, (e) device-status item update, (f) icon loading functions (load_template_icon_from_bundle, load_windows_tray_icon, zoom_in_about_20_percent, create_default_icon), (g) bundle_resource helper for macOS. Use tao 0.32, tray-icon 0.20, muda, image crate.\n4. OUTPUT: setup_tray() entry point accessible as crate::tray::setup_tray, blocking the main thread until Quit. Used by runners (P2.M3.T1.S2/S3).\n5. DOCS: [Mode A] Document the activation policy fix for macOS (Accessory before run). Reference spec/UI.md §1, §7."
+                }
+              ]
+            },
+            {
+              "type": "Task",
+              "id": "P3.M1.T3",
+              "title": "Linux SNI Tray (linux_tray.rs)",
+              "status": "Planned",
+              "description": "StatusNotifierItem tray via ksni with device-status, color-scheme detection, icon dimming, hidden structural toggle for LayoutUpdated, and poll thread.",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P3.M1.T3.S1",
+                  "title": "Implement QmkTray SNI: menu, icons, color-scheme, poll thread, spawn",
+                  "status": "Planned",
+                  "story_points": 2,
+                  "dependencies": ["P1.M2.T2.S1"],
+                  "prd_selectors": ["h2.4", "h2.6", "h2.9"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See ui_integration_analysis.md §2. linux_tray.rs is gated #![cfg(all(linux, feature=\"linux-tray\"))]. QmkTray implements ksni::Tray with device_connected: bool, dark_mode: bool. Menu: device status (disabled StandardItem), hidden structural toggle (visible:false, present only when connected — forces LayoutUpdated redraw), Settings…, Show Window Information, Quit. Icons: embedded TRAY_ICON_DARK_PNG / TRAY_ICON_LIGHT_PNG (128×128 from packaging/), selected by dark_mode, dimmed to ~35% alpha (DIM_ALPHA=90) when device absent. Color scheme: dbus-send query org.freedesktop.appearance.color-scheme (1=dark, 2=light, 0=pref→dark), polled every 10 ticks (~30s). Device poll: 1s interval, transition-only updates via handle.update(). spawn(): assume_sni_available(true) (register-and-wait, not hard-fail). Quit→process::exit(0).\n2. INPUT: is_device_connected() from P1.M2.T2.S1.\n3. LOGIC: Implement src/linux_tray.rs: (a) QmkTray struct implementing ksni::Tray (id, title, tool_tip, icon_pixmap, menu), (b) embedded icon bytes via include_bytes!, (c) detect_dark_mode() (dbus-send shell-out), parse_color_scheme() with unit test, (d) dim_icon with alpha scaling, (e) spawn() -> Option<Handle> with QmkTray::new().assume_sni_available(true).spawn(), (f) poll thread (1s device, 10-tick color scheme, transition-only handle.update). Unit tests for color-scheme parser, glyph parity, icon decode, initial probe.\n4. OUTPUT: spawn() -> Option<Handle> accessible as crate::linux_tray::spawn. Used by LinuxRunner (P2.M3.T1.S4).\n5. DOCS: [Mode A] Document the hidden structural toggle trick (LayoutUpdated vs ItemsPropertiesUpdated). Reference spec/LINUX.md §7, spec/UI.md §1.2."
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "Milestone",
+          "id": "P3.M2",
+          "title": "Settings & Window Information Dialogs",
+          "status": "Planned",
+          "description": "Per-platform settings dialogs (Win32/NSAlert/zenity) and Show Window Information dialogs (Win32 list/NSWindow+scroll/GTK popup) with clipboard copy.",
+          "tasks": [
+            {
+              "type": "Task",
+              "id": "P3.M2.T1",
+              "title": "Settings Dialogs (All Platforms)",
+              "status": "Planned",
+              "description": "VID/PID settings dialogs using the shared render_config_body writer. Windows: native Win32 dialog. macOS: NSAlert+accessory view. Linux: zenity --forms.",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P3.M2.T1.S1",
+                  "title": "Implement Windows Win32 settings dialog + shared parse_id_field",
+                  "status": "Planned",
+                  "story_points": 2,
+                  "dependencies": ["P1.M1.T3.S1"],
+                  "prd_selectors": ["h2.7", "h2.6"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See ui_integration_analysis.md §1.7. show_settings_dialog registers WNDCLASSW 'QMKSettingsDialog', creates 400×200 WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU|WS_VISIBLE window, COLOR_3DFACE background. Controls: Vendor ID EDIT (id 1001), Product ID EDIT (1002), OK button (1003), Cancel button (1004), static labels. Fields pre-filled with current 4-digit hex or empty if None. settings_dialog_proc: on OK, GetDlgItemTextW both fields, parse_id_field each (empty/'auto'→None, strip 0x, u16::from_str_radix(16)), store in DIALOG_RESULT Mutex, DestroyWindow. On parse error, MessageBoxW. Modal loop via GetMessageW. On success, write config via render_config_body. Shared state: DIALOG_RESULT: Mutex<Option<(Option<u16>, Option<u16>)>> (replaces former Arc leak #9).\n2. INPUT: render_config_body from P1.M1.T3.S1, get_config_path/create_config_dir from P2.M1.T1.S1.\n3. LOGIC: Implement in src/tray.rs: (a) show_settings_dialog() with Win32 window class + controls + modal loop, (b) settings_dialog_proc WndProc handling WM_COMMAND, (c) parse_id_field(text) -> Result<Option<u16>, String> (shared helper), (d) DIALOG_RESULT static, (e) load_app_icon helper. Use windows crate Win32 UI features.\n4. OUTPUT: show_settings_dialog() and parse_id_field() accessible within tray.rs, invoked by Settings menu item handler.\n5. DOCS: [Mode A] Document the shared render_config_body invariant (all dialogs use it). Reference spec/UI.md §2.1."
+                },
+                {
+                  "type": "Subtask",
+                  "id": "P3.M2.T1.S2",
+                  "title": "Implement macOS NSAlert settings dialog",
+                  "status": "Planned",
+                  "story_points": 1,
+                  "dependencies": ["P1.M1.T3.S1"],
+                  "prd_selectors": ["h2.7", "h2.6"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See ui_integration_analysis.md §1.8. show_macos_settings_dialog wraps in NSAutoreleasePool (LSUIElement background apps lack main pool). NSAlert with message text showing current format_id_hex values ('auto' when None). OK/Cancel buttons. Accessory NSView with two NSTextFields pre-filled. On OK (response 1000), read both fields, parse via shared parse_id_field, write via render_config_body. Errors via NSAlert (critical).\n2. INPUT: render_config_body from P1.M1.T3.S1, parse_id_field from P3.M2.T1.S1.\n3. LOGIC: Implement show_macos_settings_dialog() in src/tray.rs using objc crate: (a) NSAutoreleasePool, (b) NSAlert construction with accessory view, (c) NSTextField creation + layout, (d) runModal, (e) response handling → parse → write config, (f) show_macos_error_message for parse failures. Also implement format_id_hex(Option<u16>) -> String helper.\n4. OUTPUT: show_macos_settings_dialog() accessible within tray.rs, invoked by Settings menu item handler on macOS.\n5. DOCS: [Mode A] Note NSAutoreleasePool requirement for LSUIElement apps. Reference spec/UI.md §2.2."
+                },
+                {
+                  "type": "Subtask",
+                  "id": "P3.M2.T1.S3",
+                  "title": "Implement Linux zenity settings dialog + apply_device_rule",
+                  "status": "Planned",
+                  "story_points": 2,
+                  "dependencies": ["P1.M1.T3.S1", "P5.M1.T2.S1"],
+                  "prd_selectors": ["h2.7", "h2.6"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See ui_integration_analysis.md §2.6. show_settings_dialog_linux uses zenity --forms --add-entry='Vendor ID (hex)' --add-entry='Product ID (hex)' with current values in --text. Parse |-separated stdout; parse_id each (empty/'auto'→None). write_config → create_config_dir + render_config_body. apply_device_rule post-save: both None→just udevadm control --reload-rules + trigger; at least one Some→render_vidpid_rule, stage to temp_dir, install via pkexec (install -m644 + udevadm + rm). On pkexec absence→notify 'Settings saved. Run: sudo qmkonnect -r'. Notifications via notify-send (--app-name=QMKonnect --icon=input-keyboard).\n2. INPUT: render_config_body from P1.M1.T3.S1, render_vidpid_rule from P5.M1.T2.S1.\n3. LOGIC: Implement show_settings_dialog_linux() and apply_device_rule(vendor_id, product_id) in src/linux_tray.rs: (a) zenity --forms subprocess, (b) parse stdout, (c) write_config, (d) apply_device_rule with pkexec install path, (e) notify-send for success/failure, (f) copy_to_clipboard helper (wl-copy then xclip). parse_id shared logic.\n4. OUTPUT: show_settings_dialog_linux() accessible within linux_tray.rs, invoked by Settings menu item handler on Linux.\n5. DOCS: [Mode A] Document the pkexec install path and sudo fallback. Reference spec/UI.md §2.3, spec/LINUX.md §4."
+                }
+              ]
+            },
+            {
+              "type": "Task",
+              "id": "P3.M2.T2",
+              "title": "Show Window Information Dialogs (All Platforms)",
+              "status": "Planned",
+              "description": "Per-platform dialogs letting users discover exact class/title strings: Windows (Win32 list + scroll + copy), macOS (NSWindow + NSScrollView + SF Symbol buttons), Linux (native GTK popup + zenity fallback).",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P3.M2.T2.S1",
+                  "title": "Implement Windows Win32 window-info dialog with scroll + copy",
+                  "status": "Planned",
+                  "story_points": 2,
+                  "dependencies": ["P2.M1.T1.S1"],
+                  "prd_selectors": ["h2.6"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See ui_integration_analysis.md §1.10. show_window_info_dialog: class QMKWindowInfoDialog, WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU|WS_THICKFRAME|WS_MINIMIZEBOX|WS_MAXIMIZEBOX|WS_VSCROLL, default 760×520, min 480×320. Layout: bold header, scrollable rows (read-only EDIT + Copy BUTTON per row, 26px height), footer tip. Scrolling: WININFO_SCROLL_POS AtomicI32, wininfo_relayout repositions in-view rows, WM_VSCROLL/WM_MOUSEWHEEL (3 rows/notch). Copy: id >= WI_IDC_COPY_BASE (6000) → index = id-6000 → WINDOW_INFO_ROWS lookup → copy_to_clipboard_windows (CF_UNICODETEXT, GlobalAlloc). WINDOW_INFO_ROWS: Mutex<Vec<(String,String)>>. copy_text_for_row returns 'class|title' or just 'class'.\n2. INPUT: list_foreground_windows() from P2.M1.T1.S1.\n3. LOGIC: Implement show_window_info_dialog() in src/tray.rs: (a) Win32 window class registration, (b) WndProc with scroll handling + copy button dispatch, (c) wininfo_relayout, (d) wininfo_set_scrollbar, (e) copy_to_clipboard_windows(hwnd, text), (f) WINDOW_INFO_ROWS static population, (g) copy_text_for_row helper.\n4. OUTPUT: show_window_info_dialog() accessible within tray.rs, invoked by Window Info menu item + --show-window-info CLI.\n5. DOCS: [Mode A] Document the purpose: discovering class/title strings for firmware rules. Reference spec/UI.md §3.1."
+                },
+                {
+                  "type": "Subtask",
+                  "id": "P3.M2.T2.S2",
+                  "title": "Implement macOS NSWindow window-info dialog + copy",
+                  "status": "Planned",
+                  "story_points": 2,
+                  "dependencies": ["P2.M1.T1.S1"],
+                  "prd_selectors": ["h2.6"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See ui_integration_analysis.md §1.11. show_macos_window_info_dialog: NSWindow (titled+closable+miniaturizable, setReleasedWhenClosed:NO) with NSScrollView + NSView document. One row per app: selectable NSTextField (truncating tail) + NSButton Copy (SF Symbol 'doc.on.doc' macOS 11+ guarded, else text). Rows top-aligned (NSView bottom-left origin counting down). Two NSObject subclasses: RustWindowInfoCopyTarget (copyRow: → wi_copy_row, reads tag=index, copies via copy_to_pasteboard_macos) and RustWindowInfoWindowDelegate (windowWillClose: → stopModal). NSApp activateIgnoringOtherApps:YES before runModalForWindow.\n2. INPUT: list_foreground_windows() from P2.M1.T1.S1.\n3. LOGIC: Implement show_macos_window_info_dialog() + _inner() in src/tray.rs using objc crate: (a) NSWindow creation, (b) NSScrollView + NSView document with rows, (c) RustWindowInfoCopyTarget class with copyRow: selector, (d) RustWindowInfoWindowDelegate with windowWillClose:, (e) copy_to_pasteboard_macos(text), (f) NSApp activation + runModalForWindow, (g) cleanup.\n4. OUTPUT: show_macos_window_info_dialog() accessible within tray.rs, invoked by Window Info menu item + --show-window-info CLI on macOS.\n5. DOCS: [Mode A] Document the app-activation requirement for LSUIElement apps. Reference spec/UI.md §3.2."
+                },
+                {
+                  "type": "Subtask",
+                  "id": "P3.M2.T2.S3",
+                  "title": "Implement Linux GTK window-info popup + zenity fallback",
+                  "status": "Planned",
+                  "story_points": 2,
+                  "dependencies": ["P2.M1.T1.S1"],
+                  "prd_selectors": ["h2.6", "h2.4"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See ui_integration_analysis.md §2.5. show_window_info_linux prefers native GTK popup (gtk_dialog::sender().send(rows)), falls back to show_window_info_linux_zenity. GTK popup: single owner thread (OnceLock) runs gtk::init() once + gtk::main(). Requests via mpsc channel polled every 50ms via glib::timeout_add_local. Each opens WindowType::Toplevel with WindowTypeHint::Dialog, set_resizable(false), 640×760. ScrolledWindow + ListBox of rows (Label end-ellipsized + Copy Button → Clipboard::set_text('class|title')). zenity fallback: --forms --add-list with --ok-label=Copy (height-capped ~3-4 rows). Clipboard: wl-copy then xclip. sanitize_list_value replaces | with ¦ (U+00A6).\n2. INPUT: list_foreground_windows() from P2.M1.T1.S1.\n3. LOGIC: Implement show_window_info_linux(), mod gtk_dialog (spawn thread, gtk::main, mpsc channel, popup window), show_window_info_linux_zenity() in src/linux_tray.rs. Use gtk 0.18 crate. Implement copy_to_clipboard (wl-copy then xclip). Implement sanitize_list_value.\n4. OUTPUT: show_window_info_linux() accessible within linux_tray.rs, invoked by Show Window Information menu item on Linux.\n5. DOCS: [Mode A] Document why native GTK over zenity (zenity can't float+tall simultaneously). Reference spec/UI.md §3.3."
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "Phase",
+      "id": "P4",
+      "title": "OS Integration & Autostart",
+      "status": "Planned",
+      "description": "Implement per-platform 'Open at Login' / 'Launch at Login' autostart (Windows HKCU Run, macOS SMAppService), first-run default-on logic, and marker files. Covers PRD feature F7.",
+      "milestones": [
+        {
+          "type": "Milestone",
+          "id": "P4.M1",
+          "title": "Autostart Implementation",
+          "status": "Planned",
+          "description": "Windows HKCU Run key (single source of truth shared with installer) and macOS SMAppService (deferred first-run registration with marker file).",
+          "tasks": [
+            {
+              "type": "Task",
+              "id": "P4.M1.T1",
+              "title": "Windows Autostart (HKCU Run)",
+              "status": "Planned",
+              "description": "Self-contained Windows module managing the HKCU Run registry value. Single source of truth shared with the installer. Path self-heals from current_exe().",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P4.M1.T1.S1",
+                  "title": "Implement autostart.rs: is_enabled, set_enabled, enable, disable",
+                  "status": "Planned",
+                  "story_points": 1,
+                  "dependencies": [],
+                  "prd_selectors": ["h2.6", "h2.9"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See ui_integration_analysis.md §3. SUBKEY='Software\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Run', VALUE='QMKonnect'. This exact spelling is the contract shared with install.ps1, uninstall.ps1, and the Inno .iss [Registry] section. is_enabled: RegGetValueW(HKCU, SUBKEY, VALUE, RRF_RT_REG_SZ), presence-based (len > 0). Does NOT consult StartupApproved override. enable: RegOpenKeyExW(KEY_SET_VALUE) → RegSetValueExW(REG_SZ, UTF-16 current_exe path). disable: RegDeleteValueW (missing value not an error). Path self-heals: written from current_exe() at toggle time.\n2. INPUT: None (leaf module).\n3. LOGIC: Implement src/autostart.rs (#![cfg(target_os=\"windows\")]): (a) SUBKEY and VALUE constants, (b) is_enabled() -> bool via RegGetValueW, (c) enable() via RegOpenKeyExW + RegSetValueExW, (d) disable() via RegDeleteValueW, (e) set_enabled(b: bool), (f) current_exe_wide() helper. Use windows crate Win32_System_Registry feature.\n4. OUTPUT: is_enabled(), set_enabled(bool) accessible as crate::autostart::* for consumption by tray event handlers (P3.M1.T2.S1).\n5. DOCS: [Mode A] Document the shared VALUE name contract with installers. Reference spec/UI.md §6.1."
+                }
+              ]
+            },
+            {
+              "type": "Task",
+              "id": "P4.M1.T2",
+              "title": "macOS Autostart (SMAppService)",
+              "status": "Planned",
+              "description": "SMAppService.mainApp() register/unregister (macOS 13+), first-run default-on via deferred dispatch + marker file, and tray checkbox sync.",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P4.M1.T2.S1",
+                  "title": "Implement tray::mod autostart: SMAppService, first-run default-on, handlers",
+                  "status": "Planned",
+                  "story_points": 2,
+                  "dependencies": ["P3.M1.T1.S1"],
+                  "prd_selectors": ["h2.6", "h2.9"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See ui_integration_analysis.md §1.12. Links ServiceManagement.framework. SMAppService.mainApp() register/unregister (macOS 13+). STATUS_ENABLED=1 raw value. is_enabled() returns true only when status==1. main_app_service() returns mainAppService or None (macOS <13 → no-op). autostart_first_run_default_on(proxy): dispatched onto main serial queue via dispatch::Queue::main().exec_async (XPC register never blocks Init). Writes marker file .autostart_initialized under config dir regardless of success (so transient failure doesn't retry forever). Posts AutostartSync to re-sync checkbox. handle_launch_at_login_click: derives desired state from real is_enabled() (robust to muda auto-toggle), performs register/unregister, mirrors outcome into checkmark.\n2. INPUT: UserEvent::AutostartSync and EventLoopProxy from P3.M1.T1.S1.\n3. LOGIC: Implement mod autostart in src/tray.rs: (a) extern FFI for SMAppService, (b) is_enabled() -> bool, (c) enable()/disable() via registerAndReturnError:/unregisterAndReturnError:, (d) main_app_service() -> Option, (e) autostart_first_run_default_on(proxy) with dispatch::Queue::main().exec_async + marker file, (f) handle_launch_at_login_click(&CheckMenuItem). Use objc + dispatch crates.\n4. OUTPUT: autostart module accessible as crate::tray::autostart::* for consumption by setup_tray Init handler and event dispatch.\n5. DOCS: [Mode A] Document the first-run marker file logic and deferred registration rationale. Reference spec/UI.md §6.2."
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "Phase",
+      "id": "P5",
+      "title": "Linux System Integration",
+      "status": "Planned",
+      "description": "Implement the Linux-specific infrastructure: static udev rule + qmkonnect-hid-id helper binary, config-driven fallback udev rule generation, dangerous-rule detection/repair, root-aware config resolution for --reload, systemd user service template, and Arch PKGBUILD packaging. Covers PRD feature F9.",
+      "milestones": [
+        {
+          "type": "Milestone",
+          "id": "P5.M1",
+          "title": "udev Rules & Helper Binary",
+          "status": "Planned",
+          "description": "The static usage-page udev rule, the qmkonnect-hid-id report-descriptor parser binary, config-driven VID/PID rule rendering, dangerous-rule detection/repair, and atomic rule installation.",
+          "tasks": [
+            {
+              "type": "Task",
+              "id": "P5.M1.T1",
+              "title": "qmkonnect-hid-id Helper Binary",
+              "status": "Planned",
+              "description": "Pure-std binary that parses a hidraw report descriptor and prints ID_QMKONNECT=1 when it carries the QMK Raw HID signature (usage page 0xFF60 / usage 0x61).",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P5.M1.T1.S1",
+                  "title": "Implement hid_id.rs: report descriptor parser with QMK signature matching",
+                  "status": "Planned",
+                  "story_points": 2,
+                  "dependencies": [],
+                  "prd_selectors": ["h2.6", "h2.9"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See ui_integration_analysis.md §4 and spec/LINUX.md §3. Pure std (no hidapi). Binary name qmkonnect-hid-id. Second [[bin]] target in Cargo.toml. Invocation: udev passes %S%p as argv[1] (hidraw syspath). Fallback: $DEVPATH prefixed with /sys. Reads <syspath>/device/report_descriptor (binary). Walks HID item stream: prefix byte → bSize (bits 0-1, 3→4 bytes), bType (bits 2-3, 1=Global, 2=Local), bTag (bits 4-7). Long item (0xFE prefix): skip. Global Usage Page (bType=1,bTag=0) → current_usage_page. Local Usage (bType=2,bTag=0) → check if current_usage_page==0xFF60 && usage==0x61. Known signatures: 06 60 ff (page), 09 61 (usage). Bounds-checked every item; truncation → return false.\n2. INPUT: None (standalone binary, no crate dependencies).\n3. LOGIC: Implement src/bin/hid_id.rs: (a) main() — resolve syspath from argv[1] or $DEVPATH, read report_descriptor, call matches_qmk_signature, print ID_QMKONNECT=1 on match, (b) matches_qmk_signature(bytes) -> bool — walk short/long items, track current_usage_page, match 0xFF60/0x61, (c) read_le(data, n) -> u32 little-endian. Unit tests: known signature, items-in-between, wrong page, wrong usage, truncated/empty, long-item skip, read_le.\n4. OUTPUT: qmkonnect-hid-id binary. Installed to /usr/lib/udev/qmkonnect-hid-id by PKGBUILD.\n5. DOCS: [Mode A] Document the binary's role in the udev rule chain. Reference spec/LINUX.md §3."
+                }
+              ]
+            },
+            {
+              "type": "Task",
+              "id": "P5.M1.T2",
+              "title": "Config-Driven udev Rule & Dangerous-Rule Repair",
+              "status": "Planned",
+              "description": "Render VID/PID udev rules (single safe line), detect/repair globally-dangerous legacy rules, atomic installation, root-aware config resolution for --reload.",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P5.M1.T2.S1",
+                  "title": "Implement render_vidpid_rule, is_rule_globally_dangerous, update_udev_rules, resolve_config_for_reload",
+                  "status": "Planned",
+                  "story_points": 2,
+                  "dependencies": ["P1.M1.T2.S1"],
+                  "prd_selectors": ["h2.6", "h2.9", "h2.8"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See platforms_analysis.md §6 and spec/LINUX.md §4-§5. render_vidpid_rule(vid, pid) -> Option<String>: None when both None (static rule covers it). Otherwise single physical line starting with KERNEL=='hidraw*'. When only one of VID/PID set, omit the unset ATTRS clause (udev can't wildcard). is_rule_globally_dangerous(content) -> bool: join backslash-continuations, flag any line whose first key is assignment (= /+= /:=/-=) not match (==/!=). update_udev_rules(vid, pid, verbose): read existing /etc/udev/rules.d/99-qmkonnect.rules, check dangerous, if both unset purge dangerous rule else no-op, if rule needed write atomically via NamedTempFile in rules dir + persist, on PermissionDenied print sudo tee copy-paste. resolve_config_for_reload(config, user, uid): under sudo HOME=/root, resolve invoking user via --uid/--user/$SUDO_UID/$SUDO_USER/$PKEXEC_UID → getent passwd → home dir. Fail loudly (never silently Ok). libc::geteuid()==0 check.\n2. INPUT: Config struct and parse_config from P1.M1.T2.S1.\n3. LOGIC: Implement src/platforms/linux.rs: (a) render_vidpid_rule(vendor_id, product_id) -> Option<String>, (b) rule_line_has_leading_match_key(line) -> bool, (c) is_rule_globally_dangerous(content) -> bool, (d) update_udev_rules(vendor_id, product_id, verbose) with write_rule_atomic/purge_rule, (e) reload_udev_rules(), (f) resolve_config_for_reload(config, user, uid), (g) resolve_homes/getent_home helpers, (h) get_config_paths (XDG/standard/system), (i) create_config_dir. Extensive regression tests for rule rendering + dangerous-rule detection.\n4. OUTPUT: render_vidpid_rule, update_udev_rules, resolve_config_for_reload accessible as crate::platforms::* (via pub use linux::*). Used by CLI --reload (P1.M3.T1.S1) and Linux settings dialog (P3.M2.T1.S3).\n5. DOCS: [Mode A] Document the single-line udev rule safety invariant. Reference spec/LINUX.md §4-§5."
+                }
+              ]
+            },
+            {
+              "type": "Task",
+              "id": "P5.M1.T3",
+              "title": "Static udev Rule & systemd Service Template",
+              "status": "Planned",
+              "description": "The shipped static udev rule (69-qmkonnect-rawhid.rules) and systemd user service template. These are static files that enable zero-config device permissions and hotplug auto-start.",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P5.M1.T3.S1",
+                  "title": "Create static udev rule and systemd service template files",
+                  "status": "Planned",
+                  "story_points": 1,
+                  "dependencies": ["P5.M1.T1.S1"],
+                  "prd_selectors": ["h2.6", "h2.9", "h2.8"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See ui_integration_analysis.md §5-§6 and spec/LINUX.md §2, §6. Static rule (packaging/linux/udev/69-qmkonnect-rawhid.rules): SUBSYSTEM=='hidraw' IMPORT{program}='/usr/lib/udev/qmkonnect-hid-id %S%p', then ENV{ID_QMKONNECT}=='1' → GROUP='input' MODE='0660' TAG+='uaccess' SYMLINK+='qmkonnect_device' TAG+='systemd' ENV{SYSTEMD_USER_WANTS}+='qmkonnect.service'. Numbered 69 to run before config-driven 99. systemd service (packaging/linux/systemd/qmkonnect.service.template): BindsTo=dev-qmkonnect_device.device, Restart=always, RestartSec=5, ExecStart=/usr/bin/qmkonnect, ProtectSystem=full, NoNewPrivileges=true. GAP PKG-TplVestige: .template suffix is vestigial (no substitution). GAP PKG-SvcPath: docs say /usr/local/bin but service expects /usr/bin.\n2. INPUT: qmkonnect-hid-id binary from P5.M1.T1.S1.\n3. LOGIC: Create packaging/linux/udev/69-qmkonnect-rawhid.rules with the IMPORT+ENV-gated rule. Create packaging/linux/systemd/qmkonnect.service with BindsTo+Restart=always+hardening directives. Ensure the service ExecStart path matches the documented install path.\n4. OUTPUT: Static udev rule and systemd service files in packaging/linux/. Installed by PKGBUILD (P6.M1.T2.S1).\n5. DOCS: [Mode A] Document the two-rule hybrid strategy and uaccess+GROUP fallback. Reference spec/LINUX.md §1-§2, §6."
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "Phase",
+      "id": "P6",
+      "title": "Packaging, Installers & CI Pipeline",
+      "status": "Planned",
+      "description": "Implement per-platform installers (Windows Inno Setup, macOS DMG, Linux Arch PKGBUILD), the CI release workflow, and the Cargo build profile. Covers PRD feature F8.",
+      "milestones": [
+        {
+          "type": "Milestone",
+          "id": "P6.M1",
+          "title": "Per-Platform Installers",
+          "status": "Planned",
+          "description": "Windows Inno Setup per-user installer, macOS .app bundle + DMG with codesigning, Linux Arch PKGBUILD with pacman hooks.",
+          "tasks": [
+            {
+              "type": "Task",
+              "id": "P6.M1.T1",
+              "title": "Windows Inno Setup Installer",
+              "status": "Planned",
+              "description": "Per-user, no-admin installer producing QMKonnect-Setup.exe. Manages the shared HKCU Run autostart value. Kills running instance before install/uninstall.",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P6.M1.T1.S1",
+                  "title": "Create QMKonnect.iss Inno Setup script and build.ps1",
+                  "status": "Planned",
+                  "story_points": 1,
+                  "dependencies": ["P4.M1.T1.S1"],
+                  "prd_selectors": ["h2.4", "h2.9"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See ui_integration_analysis.md §8 and spec/PACKAGING.md §3. packaging/windows/inno/QMKonnect.iss: PrivilegesRequired=lowest, DefaultDirName={localappdata}\\\\Programs\\\\QMKonnect, DisableDirPage=yes. AppId={{FAAE1F7A-...}} (stable upgrade identity). [Files]: qmkonnect.exe→{app}, Icon.ico, IconTray-dark.png. [Registry]: HKCU Run value 'QMKonnect' (uninsdeletevalue). [Icons]: Start Menu shortcut. [Code] KillRunningInstance: taskkill /IM qmkonnect.exe /F /T in InitializeSetup/InitializeUninstall. [Run]: postinstall launch with skipifsilent. build.ps1 reads version from Cargo.toml, locates ISCC (PATH→winget→Program Files), invokes iscc /DMyAppVersion=$Version.\n2. INPUT: autostart VALUE name from P4.M1.T1.S1.\n3. LOGIC: Create packaging/windows/inno/QMKonnect.iss with the per-user configuration above. Create packaging/windows/inno/build.ps1 that reads Cargo.toml version and invokes ISCC. GAP PKG-DualWin: this is the canonical installer; install.ps1 is the PowerShell equivalent.\n4. OUTPUT: QMKonnect.iss and build.ps1 in packaging/windows/inno/. Produces QMKonnect-Setup.exe.\n5. DOCS: [Mode A] Document the per-user no-admin design rationale. Reference spec/PACKAGING.md §3."
+                }
+              ]
+            },
+            {
+              "type": "Task",
+              "id": "P6.M1.T2",
+              "title": "macOS App Bundle & DMG",
+              "status": "Planned",
+              "description": "build.sh assembles QMKonnect.app (universal binary option), generates Info.plist with LSUIElement, codesigns (ad-hoc or Developer ID), and builds DMG. clean.sh resets TCC/LaunchServices state.",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P6.M1.T2.S1",
+                  "title": "Create build.sh, clean.sh, install.sh, uninstall.sh for macOS",
+                  "status": "Planned",
+                  "story_points": 2,
+                  "dependencies": [],
+                  "prd_selectors": ["h2.4", "h2.9"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See ui_integration_analysis.md §7 and spec/PACKAGING.md §5. build.sh: MACOS_UNIVERSAL=1→build aarch64+x86_64+lipo; default host arch only. Assembles QMKonnect.app/Contents/{MacOS/qmkonnect,Resources/{Icon.icns,IconTemplate.png}}. Generates Info.plist: CFBundleIdentifier=io.mulletware.qmkonnect, CFBundleExecutable=qmkonnect, LSUIElement=true (no Dock/CMD-Tab). Codesign: codesign --deep --force --sign ${CODESIGN_IDENTITY:--} (ad-hoc by default). Builds QMKonnect.dmg (UDZO + /Applications symlink). clean.sh: pkill, eject DMGs, lsregister -u stale copies, rm -rf, tccutil reset ScreenCapture. install.sh: mount DMG, cp -R to /Applications. uninstall.sh: remove app + SMAppService entry + config. GAP PKG-MacVer: Info.plist lacks CFBundleShortVersionString/CFBundleVersion.\n2. INPUT: None (packaging scripts).\n3. LOGIC: Create packaging/macos/build.sh, clean.sh, install.sh, uninstall.sh with the functionality above. Fix GAP PKG-MacVer: read version from Cargo.toml and inject CFBundleShortVersionString/CFBundleVersion into Info.plist.\n4. OUTPUT: macOS build/install/clean/uninstall scripts in packaging/macos/. Produce QMKonnect.app + QMKonnect.dmg.\n5. DOCS: [Mode A] Document the ad-hoc signing re-prompt loop and Developer ID fix. Reference spec/PACKAGING.md §5, AGENTS.md macOS section."
+                }
+              ]
+            },
+            {
+              "type": "Task",
+              "id": "P6.M1.T3",
+              "title": "Linux Arch PKGBUILD & pacman hooks",
+              "status": "Planned",
+              "description": "Arch PKGBUILD building both binaries with -lhidapi-hidraw, installing qmkonnect, qmkonnect-hid-id, udev rule, systemd service. pacman hooks for udev reload, systemd enable, and template instantiation.",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P6.M1.T3.S1",
+                  "title": "Create PKGBUILD, qmkonnect.install hooks, and validate packaging",
+                  "status": "Planned",
+                  "story_points": 2,
+                  "dependencies": ["P5.M1.T2.S1", "P5.M1.T3.S1"],
+                  "prd_selectors": ["h2.4", "h2.9", "h2.6"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See spec/PACKAGING.md §4 and spec/LINUX.md §6. packaging/linux/arch/PKGBUILD: build() with RUSTFLAGS='-C link-arg=-lhidapi-hidraw' cargo build --release (builds qmkonnect + qmkonnect-hid-id). package() installs: qmkonnect→/usr/bin/, qmkonnect-hid-id→/usr/lib/udev/, 69-qmkonnect-rawhid.rules→/usr/lib/udev/rules.d/, qmkonnect.service→/usr/lib/systemd/user/. depends=('systemd' 'hidapi' 'libusb' 'zenity' 'libnotify'). backup=(template). options=(!strip). qmkonnect.install: post_install → instantiate service template (or just copy), udevadm control --reload-rules && udevadm trigger, systemctl --global enable qmkonnect.service, print zero-config next-steps. post_upgrade → re-copy template + reload udev. post_remove → systemctl --global disable, stop+disable per-user, rm 99-qmkonnect.rules + service, reload udev.\n2. INPUT: udev rule and service from P5.M1.T3.S1, binaries from build.\n3. LOGIC: Create packaging/linux/arch/PKGBUILD and packaging/linux/arch/qmkonnect.install with the above. Ensure no interactive stdin prompts (issue #18). Ensure ExecStart path matches install path.\n4. OUTPUT: PKGBUILD + .install in packaging/linux/arch/. Produce .pkg.tar.zst via makepkg.\n5. DOCS: [Mode A] Document the -lhidapi-hidraw requirement (not -libusb) for usage/usage_page matching. Reference spec/PACKAGING.md §4."
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "Milestone",
+          "id": "P6.M2",
+          "title": "CI Release Pipeline & Build Profile",
+          "status": "Planned",
+          "description": "GitHub Actions release workflow triggered by v* tags, building per-platform artifacts. Cargo release profile optimized for size.",
+          "tasks": [
+            {
+              "type": "Task",
+              "id": "P6.M2.T1",
+              "title": "CI Release Workflow & Cargo Profile",
+              "status": "Planned",
+              "description": "Three-platform CI build with optional macOS notarization, version injection from Cargo.toml, and the size-optimized release profile.",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P6.M2.T1.S1",
+                  "title": "Create release.yml CI workflow and configure Cargo release profile",
+                  "status": "Planned",
+                  "story_points": 2,
+                  "dependencies": ["P6.M1.T1.S1", "P6.M1.T2.S1", "P6.M1.T3.S1"],
+                  "prd_selectors": ["h2.9", "h2.4"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See spec/PACKAGING.md §7. .github/workflows/release.yml triggers on v* tag push (build+publish) or workflow_dispatch (build only, dry-run). macOS job: cargo build + build.sh, optional notarize if ENABLE_MACOS_NOTARIZE=true + APPLE_* secrets (import cert, CODESIGN_IDENTITY, notarytool submit --wait, stapler staple), universal binary. Windows job: cargo build + Inno build.ps1 → QMKonnect-Setup.exe (not WiX MSI — already reconciled per git log c1cfc72/cb9a165). Linux job: Arch makepkg/docker → .pkg.tar.zst + standalone binary. Version from cargo metadata. qmk_notifier is pinned git dep so checkout suffices. Cargo profile.release: opt-level='z', lto=true, codegen-units=1, panic='abort', strip=true. .cargo/config.toml: windows-msvc +crt-static. release.toml: cargo-release config (tag v<x.y.z>, push, no crates.io publish).\n2. INPUT: All packaging scripts from P6.M1.*.\n3. LOGIC: Create .github/workflows/release.yml with three platform jobs. Verify Cargo.toml [profile.release] is correct. Verify .cargo/config.toml crt-static. Verify release.toml.\n4. OUTPUT: CI workflow producing platform artifacts on tag push.\n5. DOCS: [Mode A] Document the CI workflow_dispatch dry-run capability. Reference spec/PACKAGING.md §7-§8."
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "Phase",
+      "id": "P7",
+      "title": "Hardening, Code Quality & Future Work",
+      "status": "Planned",
+      "description": "Address verified gaps from the codebase audit: live debounce interval (G5), DRY device matching (G6), non-Windows logging (G1), X11 list_foreground_windows, dead macOS state, Config::default inconsistency, once_cell→LazyLock migration, and architecture unification groundwork. Covers PRD §10 (Non-Functional Requirements) and §12 (Future Work).",
+      "milestones": [
+        {
+          "type": "Milestone",
+          "id": "P7.M1",
+          "title": "Core Hardening",
+          "status": "Planned",
+          "description": "Fix verified medium-severity gaps in the core: live debounce interval, DRY device matching, and cross-platform logging.",
+          "tasks": [
+            {
+              "type": "Task",
+              "id": "P7.M1.T1",
+              "title": "Fix Debounce Interval Hot-Reload (G5)",
+              "status": "Planned",
+              "description": "The debounce interval is loaded once at static init and never refreshed. Config edits to debounce_ms require a restart, contradicting the hot-config promise.",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P7.M1.T1.S1",
+                  "title": "Re-read debounce_ms in the worker loop to make interval truly live",
+                  "status": "Planned",
+                  "story_points": 1,
+                  "dependencies": ["P1.M2.T3.S1"],
+                  "prd_selectors": ["h2.6", "h2.9"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See gap_analysis.md G5. DebounceState.interval is set once via Lazy<Mutex<DebounceState>> initialization from configured_debounce_ms(). The worker thread's loop should re-read configured_debounce_ms() at the top of each iteration (under the STATE lock) and update state.interval, so config edits to debounce_ms take effect without restart — matching the hot-config behavior of configured_filter() and configured_timing().\n2. INPUT: DebounceState and debounce_worker from P1.M2.T3.S1.\n3. LOGIC: Modify debounce_worker() in src/core/notifier.rs: at the top of each loop iteration (under STATE lock), read state.interval = Duration::from_millis(crate::core::configured_debounce_ms()). This makes the interval hot-configurable. Update the existing debounce tests to verify that changing config mid-test affects the interval. Ensure reset_test_state() still works correctly.\n4. OUTPUT: Debounce interval is truly hot-configurable. All existing tests pass.\n5. DOCS: [Mode A] Update the doc comment on DebounceState to note interval is now refreshed per-iteration. Reference ARCHITECTURE.md §5.3 invariant #4 (config re-read every notification)."
+                }
+              ]
+            },
+            {
+              "type": "Task",
+              "id": "P7.M1.T2",
+              "title": "DRY Device Matching Predicate (G6)",
+              "status": "Planned",
+              "description": "The VID/PID/usage matching predicate is duplicated in startup_device_probe, is_device_connected, and qmk_notifier. Extract a single DeviceFilter::matches() method.",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P7.M1.T2.S1",
+                  "title": "Replace inline matching closures with DeviceFilter::matches() in probes",
+                  "status": "Planned",
+                  "story_points": 1,
+                  "dependencies": ["P1.M2.T1.S2", "P1.M2.T2.S1"],
+                  "prd_selectors": ["h2.9"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See gap_analysis.md G6. The matching predicate `usage_page==&&usage==&&vid.is_none_or(==)&&pid.is_none_or(==)` is inlined identically in startup_device_probe (notifier.rs ~lines 77-125) and is_device_connected (notifier.rs ~lines 127-140). DeviceFilter::matches() was added in P1.M2.T1.S2. Replace the inline closures in both probe functions with calls to filter.matches(d.usage_page(), d.usage(), d.vendor_id(), d.product_id()).\n2. INPUT: DeviceFilter::matches() from P1.M2.T1.S2, startup_device_probe and is_device_connected from P1.M2.T2.S1.\n3. LOGIC: Modify startup_device_probe and is_device_connected in src/core/notifier.rs to use filter.matches() instead of inline closures. Verify the predicate logic is identical. All existing tests must still pass.\n4. OUTPUT: Single source of truth for device matching. Reduced code duplication.\n5. DOCS: none — internal refactoring, no user-facing surface."
+                }
+              ]
+            },
+            {
+              "type": "Task",
+              "id": "P7.M1.T3",
+              "title": "Cross-Platform Logging (G1)",
+              "status": "Planned",
+              "description": "Non-Windows init_logging is a no-op, so log::* macros silently drop output on macOS/Linux. Install env_logger on all platforms.",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P7.M1.T3.S1",
+                  "title": "Install env_logger on macOS/Linux in init_logging",
+                  "status": "Planned",
+                  "story_points": 0.5,
+                  "dependencies": ["P1.M3.T1.S1"],
+                  "prd_selectors": ["h2.9"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See gap_analysis.md G1. init_logging() on macOS/Linux (main.rs ~lines 48-52) returns Ok(()) without installing a logger. The comment says 'env_logger is only available on Windows in this configuration' — but env_logger is a common dep in Cargo.toml, not Windows-gated. Fix: install env_logger on all platforms. Windows keeps its eventlog-first-with-env_logger-fallback approach.\n2. INPUT: main.rs init_logging from P1.M3.T1.S1.\n3. LOGOGIC: Modify init_logging() in src/main.rs for the non-Windows cfg: call env_logger::init() (or Builder::from_env) instead of returning Ok(()) immediately. Windows keeps its current approach (eventlog first, env_logger fallback).\n4. OUTPUT: log::* macros emit output on macOS/Linux (to stderr, captured by systemd journal on Linux).\n5. DOCS: [Mode A] Update spec/CONFIG.md §4.2 logging section if needed. Note that journalctl captures stderr on Linux."
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "Milestone",
+          "id": "P7.M2",
+          "title": "Platform Hardening",
+          "status": "Planned",
+          "description": "Fix platform-specific gaps: X11 list_foreground_windows, dead macOS state, Config::default inconsistency, and once_cell→LazyLock modernization.",
+          "tasks": [
+            {
+              "type": "Task",
+              "id": "P7.M2.T1",
+              "title": "X11 list_foreground_windows & macOS Cleanup",
+              "status": "Planned",
+              "description": "Implement X11 window enumeration for the tray dialog (currently returns empty), and remove dead macOS running field.",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P7.M2.T1.S1",
+                  "title": "Implement X11 list_foreground_windows via xprop _NET_CLIENT_LIST",
+                  "status": "Planned",
+                  "story_points": 1,
+                  "dependencies": ["P2.M2.T4.S1"],
+                  "prd_selectors": ["h2.6", "h2.2"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See gap_analysis.md P-X11. platforms/mod.rs list_foreground_windows returns Vec::new() for the X11 build. The SNI tray 'Show Window Information' reports nothing. Data is obtainable via xprop -root _NET_CLIENT_LIST → list of window IDs → for each, xprop -id <wid> WM_CLASS _NET_WM_NAME. Wire this into X11Monitor or a free function in x11.rs.\n2. INPUT: X11Monitor from P2.M2.T4.S1.\n3. LOGIC: Add list_foreground_windows() to src/platforms/x11.rs: (a) xprop -root _NET_CLIENT_LIST → parse window IDs, (b) for each visible window, xprop -id <wid> WM_CLASS _NET_WM_NAME → (class, title), (c) return Vec<(String,String)>. Update the mod.rs dispatcher to call x11::list_foreground_windows() instead of returning empty.\n4. OUTPUT: X11 build now populates the Show Window Information dialog.\n5. DOCS: none — fills a feature gap on a non-default build."
+                },
+                {
+                  "type": "Subtask",
+                  "id": "P7.M2.T1.S2",
+                  "title": "Remove dead running field from MacOSMonitor",
+                  "status": "Planned",
+                  "story_points": 0.5,
+                  "dependencies": ["P2.M2.T2.S1"],
+                  "prd_selectors": ["h2.9"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See gap_analysis.md P-MacDeadState. MacOSMonitor.running: bool is written at macos.rs ~line 142 (start) and ~line 180 (stop) but never read anywhere. stop() cannot actually halt CFRunLoopRun from another thread. Remove the field and the dead writes. Document that process exit handles cleanup.\n2. INPUT: MacOSMonitor from P2.M2.T2.S1.\n3. LOGIC: Remove the running field from MacOSMonitor struct in src/platforms/macos.rs. Remove the writes in start() and stop(). Update stop() to document that it's a no-op (CFRunLoopRun cannot be stopped from another thread; process exit handles cleanup).\n4. OUTPUT: Cleaner MacOSMonitor with no dead state.\n5. DOCS: none — internal cleanup."
+                }
+              ]
+            },
+            {
+              "type": "Task",
+              "id": "P7.M2.T2",
+              "title": "Config Default Consistency & LazyLock Migration",
+              "status": "Planned",
+              "description": "Fix Config::default() inconsistency (derives 0 instead of 50 for debounce_ms) and migrate once_cell::Lazy to std::sync::LazyLock where applicable.",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P7.M2.T2.S1",
+                  "title": "Fix Config Default impl and evaluate LazyLock migration",
+                  "status": "Planned",
+                  "story_points": 1,
+                  "dependencies": ["P1.M1.T2.S1", "P1.M2.T3.S1"],
+                  "prd_selectors": ["h2.9"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See gap_analysis.md G4 and G9. G4: #[derive(Default)] on Config yields debounce_ms=0 and poll_interval_ms=0 because serde default functions aren't invoked by the derive. Config::default() should return the same values as a parsed empty file (50/0). Fix: implement Default manually returning Config { vendor_id: None, product_id: None, usage_page: None, usage: None, debounce_ms: DEFAULT_DEBOUNCE_MS, poll_interval_ms: DEFAULT_POLL_INTERVAL_MS }. G9: once_cell::sync::Lazy used for NOTIFIER, STATE, COND, WORKER — std LazyLock (stable 1.80) could replace it, dropping the once_cell dependency. qmk_notifier already uses LazyLock. Evaluate: if migration is straightforward, do it; if it causes friction, document and defer.\n2. INPUT: Config from P1.M1.T2.S1, notifier statics from P1.M2.T3.S1.\n3. LOGIC: (a) Replace #[derive(Default)] on Config with manual impl Default returning correct defaults. (b) Evaluate replacing once_cell::sync::Lazy with std::sync::LazyLock in notifier.rs statics (NOTIFIER, STATE, COND, WORKER). If done, remove once_cell from Cargo.toml. If deferred, document why. All existing tests must pass.\n4. OUTPUT: Config::default() returns consistent values. Optionally reduced dependency count.\n5. DOCS: none — internal consistency fix."
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "Phase",
+      "id": "P8",
+      "title": "Documentation Sync & Final Verification",
+      "status": "Planned",
+      "description": "Sync changeset-level documentation: README.md feature updates, docs/ site pages, architecture overview, and final verification of all success criteria from PRD §11.",
+      "milestones": [
+        {
+          "type": "Milestone",
+          "id": "P8.M1",
+          "title": "Sync Changeset-Level Documentation",
+          "status": "Planned",
+          "description": "Final task that sweeps all changeset-level docs (README.md, docs/ site, spec/ files) to reflect the complete implementation. This is Mode B documentation — cross-cutting docs that only make sense once the whole change is in place.",
+          "tasks": [
+            {
+              "type": "Task",
+              "id": "P8.M1.T1",
+              "title": "Sync changeset-level documentation",
+              "status": "Planned",
+              "description": "Update README.md features section, docs/ Jekyll site pages (installation, configuration, usage, troubleshooting, qmk-integration, examples), and ensure spec/ files match the final codebase state.",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P8.M1.T1.S1",
+                  "title": "Update README.md features, install instructions, and capability summary",
+                  "status": "Planned",
+                  "story_points": 1,
+                  "dependencies": ["P1.M2.T3.S2", "P2.M3.T1.S4", "P3.M2.T2.S3", "P4.M1.T2.S1", "P5.M1.T3.S1", "P6.M2.T1.S1", "P7.M2.T2.S1"],
+                  "prd_selectors": ["h2.0", "h2.3", "h2.4", "h2.7", "h2.10", "h2.13"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See spec/PRD.md §14 Document Map. README.md is the top-level project overview. It should accurately reflect the current feature set (F1-F10), supported platforms, install instructions, and link to the docs/ site and spec/ files. docs/ is a Jekyll site with pages: index.md, installation.md, configuration.md, usage.md, troubleshooting.md, qmk-integration.md, examples.md. The spec/ directory contains the companion technical specs (ARCHITECTURE.md, PROTOCOL.md, PLATFORMS.md, UI.md, LINUX.md, CONFIG.md, PACKAGING.md, FIRMWARE.md).\n2. INPUT: All implementing subtasks from P1-P7 (dependencies list every implementing subtask).\n3. LOGIC: Review and update: (a) README.md — features section, platform matrix, install instructions, CLI usage, link to docs/, (b) docs/installation.md — per-platform install steps matching the actual packaging scripts, (c) docs/configuration.md — config schema matching Config struct, CLI reference matching main.rs flags, (d) docs/usage.md — tray/menu-bar usage, settings, window info dialog, (e) docs/troubleshooting.md — common issues and diagnostics, (f) docs/qmk-integration.md — firmware integration steps matching FIRMWARE.md, (g) Verify spec/*.md match final codebase (the code wins on disagreement — report drift). Ensure version references are consistent (PRD says 0.2.4, Cargo.toml says 0.2.8 — align).\n4. OUTPUT: All changeset-level docs are consistent with the codebase.\n5. DOCS: [Mode B] This IS the documentation sync task."
+                },
+                {
+                  "type": "Subtask",
+                  "id": "P8.M1.T1.S2",
+                  "title": "Verify all PRD §11 Success Criteria pass",
+                  "status": "Planned",
+                  "story_points": 1,
+                  "dependencies": ["P8.M1.T1.S1"],
+                  "prd_selectors": ["h2.10", "h2.9"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See spec/PRD.md §11. Success criteria: (1) Fresh install on any platform with default QMK keyboard switches layers with zero config, (2) Unplug shows 'No Device' in tray within seconds, replug restores — no restart/crash, (3) Open at Login toggle accurately reflects and controls autostart on all platforms, (4) cargo test --bin qmkonnect -- --test-threads=1 passes, (5) Per-platform clean build + install + launch loop works (AGENTS.md + PACKAGING.md §6).\n2. INPUT: All prior phases complete.\n3. LOGIC: Run full verification: (a) cargo test --bin qmkonnect -- --test-threads=1 (all 33+ tests pass), (b) cargo build --release on each platform, (c) Verify tray app launches and shows device status, (d) Verify --list-devices and --show-window-info CLI flags work, (e) Verify config.toml hot-reload for VID/PID and debounce_ms, (f) Cross-reference spec/ files against actual code — document any remaining drift. Generate a final verification report.\n4. OUTPUT: Verification report confirming all success criteria pass, or documenting any remaining gaps.\n5. DOCS: [Mode B] Include verification results in the final documentation."
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
