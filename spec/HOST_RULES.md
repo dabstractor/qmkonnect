@@ -227,254 +227,149 @@ board side effect on `proto_ver==2` firmware.)
 
 ## 6. Firmware Spec (`qmk-notifier`)
 
-**(1) Named callback registry** — add to `notifier.h`:
+> **Canonical: firmware `PRD.md` §14 (+ §4.6 wire, §4.7 OS).** This section is a
+> desktop-facing summary; the firmware repo owns the authoritative spec.
 
-```c
-typedef struct {
-    const char   *name;
-    callback_t    on_enable;   // may be NULL
-    callback_t    on_disable;  // may be NULL
-} host_callback_t;
+Round-B firmware additions (specified, not yet implemented):
 
-host_callback_t* get_host_callbacks(void);
-size_t           get_host_callbacks_size(void);
-
-#define DEFINE_HOST_CALLBACKS(...) \
-    host_callback_t user_host_callbacks[] = __VA_ARGS__; \
-    const size_t user_host_callbacks_size = \
-        sizeof(user_host_callbacks) / sizeof(user_host_callbacks[0]); \
-    host_callback_t* get_host_callbacks(void) { return user_host_callbacks; } \
-    size_t get_host_callbacks_size(void) { return user_host_callbacks_size; }
-```
-
-`notifier.c` adds weak empty defaults (mirroring the existing `command_map`
-pattern) so a keymap without `DEFINE_HOST_CALLBACKS` still compiles. Keymap usage
-(the functions already exist; this just registers them by name):
-
-```c
-DEFINE_HOST_CALLBACKS({
-    { "disable_vim",   disable_vim,    enable_vim    },
-    { "vim_lazy",       vim_lazy_insert, disable_vim   },
-    { "encoder_figma",  set_rotary_encoder_figma, reset_rotary_encoder },
-});
-```
-
-**ID = array index**, stable for a given firmware build. Re-querying names on
-every reconnect makes ID renumbering across flashes harmless.
-
-**(2) Host-layer tracker + host-callback enable state** — in `notifier.c`,
-alongside the existing `activated_layer` (board):
-
-```c
-#define LAYER_UNSET 255
-static uint8_t host_layer = LAYER_UNSET;
-static bool host_cb_enabled[HOST_CALLBACK_MAX];   // HOST_CALLBACK_MAX = 64 (v1)
-
-static void set_host_layer(uint8_t layer) {
-    if (host_layer != LAYER_UNSET) layer_off(host_layer);
-    host_layer = (layer == 0xFF) ? LAYER_UNSET : layer;
-    if (host_layer != LAYER_UNSET) layer_on(host_layer);
-}
-
-// id_list = the desired ENABLED set (count entries). Diff + call callbacks.
-static void apply_host_callbacks(const uint8_t *id_list, uint8_t count) {
-    size_t n = get_host_callbacks_size();
-    // disable-first (mirror board's disable-then-enable ordering)
-    for (size_t i = 0; i < n; i++)
-        if (host_cb_enabled[i] && !in_list(i, id_list, count)) {
-            host_cb_enabled[i] = false;
-            if (get_host_callbacks()[i].on_disable)
-                get_host_callbacks()[i].on_disable();
-        }
-    // then enable newly-in-set
-    for (size_t i = 0; i < n; i++)
-        if (!host_cb_enabled[i] && in_list(i, id_list, count)) {
-            host_cb_enabled[i] = true;
-            if (get_host_callbacks()[i].on_enable)
-                get_host_callbacks()[i].on_enable();
-        }
-}
-```
-
-> `HOST_CALLBACK_MAX` bounds static state; `QUERY_INFO.callback_count` tells the
-> host how many exist. If a registry exceeds the cap, firmware still reports the
-> true `callback_count` and the host must not reference ids ≥ cap (validate + warn).
-
-**(3) Typed-command dispatch** — patch the top of `hid_notify()`:
-
-```c
-void hid_notify(uint8_t *data, uint8_t length) {
-    if (length < 2 || data[0] != 0x81 || data[1] != 0x9F) return;
-
-    if (length >= 3 && data[2] == 0xF0) {
-        handle_typed_command(data, length);   // NEW
-        return;
-    }
-
-    // ----- legacy string path (UNCHANGED) -----
-    data += 2; length -= 2;
-    … existing reassembly + process_full_message() …
-}
-```
-
-`handle_typed_command()` parses `data[3]` = cmd_id and dispatches; always replies
-with a 32-byte report starting `[0x51][cmd_id]`. `QUERY_INFO`/`QUERY_CALLBACK`
-must be answerable even before any string has been seen. `APPLY_HOST_CONTEXT`
-calls `set_host_layer()` + `apply_host_callbacks()` then acks. This is backward
-compatible — old string sends have `data[2]` = first string char (printable,
-never `0xF0`).
-
-**(4) Firmware tests:** unit-test `set_host_layer` (on/off/clear; independence
-from board layer) and `apply_host_callbacks` (diff ordering; idempotence);
-extend the existing `pattern_match` test harness with typed-command round-trips;
-keep `printf` debug behind `CONSOLE_ENABLE` as today.
+- **Named callback registry** — `DEFINE_HOST_CALLBACKS({ … })` + weak-default
+  accessors (`get_host_callbacks`/`_size`). `ID = array index`, stable per build;
+  re-queried by name on every reconnect. Bounded by `HOST_CALLBACK_MAX` (static
+  array; the wire no longer caps the id list — multi-report — but the firmware's
+  static ceiling is real, so the host must not reference ids ≥
+  `HOST_CALLBACK_MAX`; `QUERY_INFO.callback_count` reports the true count).
+  ```c
+  typedef struct { const char *name; callback_t on_enable; callback_t on_disable; } host_callback_t;
+  host_callback_t* get_host_callbacks(void);
+  size_t           get_host_callbacks_size(void);
+  ```
+- **Second layer tracker** `host_layer` (independent of board `activated_layer`)
+  + `host_cb_enabled[]`. `set_host_layer(layer)`: `layer_on/off` the host tracker
+  only; `0xFF` ⇒ clear. `apply_host_callbacks(ids, count)`: disable-before-enable
+  diff (fire `on_disable` for ids leaving the set, `on_enable` for ids entering).
+- **Typed dispatch** at the top of `hid_notify()`: `data[2]==0xF0` ⇒
+  `handle_typed_command()` (return; **no** `process_full_message` side effect);
+  else legacy string (round A, unchanged). Handlers:
+  - `QUERY_INFO` / `QUERY_CALLBACK` — answerable before any string seen; the
+    firmware sets `has_been_queried` on the first `QUERY_INFO`.
+  - `APPLY_HOST_CONTEXT` — honor `clear_board` (flags bit 0): if set,
+    `deactivate_layer()` the board `activated_layer` + `disable_command()` the
+    board command **first**, then `set_host_layer()` + `apply_host_callbacks()`.
+  - `SET_OS` (`0x03`) — update `current_os` (host-authoritative while a host is
+    connected; firmware `OS_DETECTION` resumes as the offline fallback).
+- **Tests:** `set_host_layer` (on/off/clear; independence from board layer),
+  `apply_host_callbacks` (diff ordering; idempotence), typed-command round-trips,
+  `clear_board` clearing, `SET_OS` updating `current_os`.
 
 ## 7. Crate Spec (`qmk_notifier`, Rust)
 
-Public API additions:
+> **Canonical: the crate `SPEC.md` §10.** This section is a summary. The crate is
+> **transport-only** — it does no matching (the matcher lives in `qmkonnect`, §8).
+
+v0.3.0 API additions (specified; breaking vs v0.2.x's `run() -> Result<(), _>`):
 
 ```rust
 pub enum RunCommand {
-    SendMessage(String),                                    // legacy string (unchanged)
-    QueryInfo,
-    QueryCallback(u8),
-    ApplyHostContext { layer: Option<u8>, callbacks: Vec<u8> },
+    SendMessage(String),                                                // legacy string
+    ListDevices,
+    QueryInfo,                                                          // 0x01
+    QueryCallback(u8),                                                  // 0x02
+    SetOs(HostOs),                                                      // 0x03
+    ApplyHostContext { layer: Option<u8>, callbacks: Vec<u8>, clear_board: bool }, // 0x05
 }
 
+#[repr(u8)]
+pub enum HostOs { Unsure = 0, Linux = 1, Windows = 2, Macos = 3, Ios = 4 }  // mirrors os_variant_t
+
 pub enum CommandResponse {
-    Legacy { matched: bool },                              // response[0] ∈ {0,1}
-    Info { proto_ver: u8, feature_flags: u8,
-           callback_count: u8, board_rules_present: bool },
+    Legacy { matched: bool },              // response[0] in {0,1}
+    Info { proto_ver: u8, feature_flags: u8, callback_count: u8, board_rules_present: bool },
     CallbackName { index: u8, name: Option<String> },
     Ack { ok: bool },
     Timeout,
 }
 
-// run() now returns the parsed response (it already reads the 32-byte report;
-// surface it instead of discarding).
-pub fn run(params: RunParameters) -> Result<CommandResponse, …>;
+pub fn run(params: RunParameters) -> Result<CommandResponse, QmkError>;
 ```
 
-- **Framing:** `SendMessage` keeps the existing header+chunk+ETX path. The typed
-  variants build `[0x81,0x9F,0xF0,cmd, args…]` in a single report with a trailing
-  `0x03`.
-- **Response parse:** `response[0] == 0x51` ⇒ typed (decode by `cmd_echo`);
-  `response[0] ∈ {0,1}` ⇒ `Legacy { matched }`; otherwise/no reply ⇒ `Timeout`.
-- **Matcher module:** add `pub mod pattern` porting the firmware's stable subset
-  (`*`, `^`, `$`, two-part class+title). Public so `qmkonnect` reuses it (single
-  source of truth for match semantics). Port the firmware's test corpus as Rust
-  unit tests for parity.
+- **Framing:** `SendMessage` keeps the existing header+chunk+ETX path. Typed
+  variants build `[0x81,0x9F,0xF0,cmd, args…]` and reuse the **same ETX-framed,
+  multi-report chunking** as strings — so `APPLY_HOST_CONTEXT` may span reports
+  (no fixed callback-id cap). The device cache + retry logic are unchanged.
+- **Response parse:** after a typed burst, read one 32-byte IN report;
+  `response[0]==0x51` ⇒ typed (decode by `cmd_echo`); `in {0,1}` ⇒ `Legacy`; no
+  reply ⇒ `Timeout`.
 
-**Release:** bump to **v0.3.0**, tag, and update `qmkonnect/Cargo.toml`:
-`qmk_notifier = { git = "…", tag = "v0.3.0" }`.
+**Release:** bump to **v0.3.0**, tag; `qmkonnect/Cargo.toml` pins `tag = "v0.3.0"`.
 
 ## 8. QMKonnect Spec (this repo)
 
-**(1) `rules.toml` — schema & parsing.** New module `src/core/rules.rs`. File
-location: alongside `config.toml` via the existing `platforms::get_config_paths()`
-directory (Linux `~/.config/qmk-notifier/rules.toml`, Windows
-`%APPDATA%\QMKonnect\rules.toml`, macOS
-`~/Library/Application Support/QMKonnect/rules.toml`). Absent ⇒ host rules
-disabled (string-only, today's behavior). Full schema in §9.
+**(1) `rules.toml`** — new module `src/core/rules.rs`, alongside `config.toml`
+(Linux `~/.config/qmk-notifier/rules.toml`, Windows `%APPDATA%\QMKonnect\`,
+macOS `~/Library/Application Support/QMKonnect/`). Absent ⇒ host rules disabled
+(string-only). Schema in §9; CLI seeding in (6).
 
-**(2) Host matcher & evaluation.** Use `qmk_notifier::pattern` for matching,
-with parity semantics:
-- `Pattern::Single(p)`: if the window has a title, match `p` against the
-  **app_class only** (mirrors firmware: a delimiter-less pattern matches the
-  class part). If no title, match against the whole string.
-- `Pattern::Parts(c, t)`: both `c` (against class) and `t` (against title) must
-  match.
-- Per window change (after debounce, after ① string send completes):
-  1. **Layer:** iterate `layer_rules` in order; first match ⇒ `L_h`. None ⇒ `None` (clear).
-  2. **Callbacks:** iterate **all** `callback_rules`; for every match add its
-     `enable` names to the desired set. (`disable` names recorded as the "leave"
-     set — see state machine.)
-- `on_no_match = Clear` (default): no layer match ⇒ `layer=None`; no callback
-  match ⇒ desired set empty (firmware disables all host callbacks). `Keep`:
-  re-send the previous context (or skip the send).
+**(2) Host matcher — in qmkonnect, NOT the crate.** Port the firmware
+`pattern_match.c` to Rust at `src/core/pattern.rs` (**full parity**: `* ^ $ WT +`
+and `\d \D \w \W \s \S \b \B .` — all linear-time). Port the firmware test corpus
+as parity tests. Semantics:
+- `Pattern::Single(p)`: if the window has a title, match `p` against
+  **app_class only** (firmware parity); else against the whole string.
+- `Pattern::Parts(c, t)`: both halves must match.
 
-**(3) Host state machine** (`src/core/notifier.rs`). Track across window changes:
+**(3) Per-window evaluation** (`src/core/notifier.rs`). After debounce:
+1. **Layer:** first matching `layer_rule` ⇒ `L_h` (else none).
+2. **Callbacks:** **all** matching `callback_rules` ⇒ desired enabled id set;
+   each rule's `disable` names are an **explicit exclusion** (removed from the
+   desired set, so the firmware's diff fires their `on_disable`).
+3. **Stack-vs-replace:** the window is **replace** iff every matched rule's
+   effective `disable_firmware_config` is `true`.
 
-```rust
-struct HostContext {
-    capable: bool,                         // from handshake
-    name_to_id: HashMap<String, u8>,       // from QUERY_CALLBACK sweep
-    current_layer: Option<u8>,
-    current_enabled: HashSet<u8>,          // for logging/diagnostics
-    pending_disable: HashSet<u8>,          // names → ids collected from rules
-}
-```
+**(4) `notify_qmk` send logic** (the `disable_firmware_config` / `clear_board`
+model). For one debounced window change:
+- **Stack** (board has rules AND ≥1 matched rule non-disabling): send the
+  **string** first (`RunCommand::SendMessage`), await its `CommandResponse`, then
+  `ApplyHostContext { layer: L_h, callbacks, clear_board: false }`.
+- **Replace** (all matched rules disabling, OR board has no rules): send **only**
+  `ApplyHostContext { layer: L_h, callbacks, clear_board: true }` (no string →
+  board can't match → firmware clears its board layer/cmd via the flag).
+- **No match:** `ApplyHostContext { layer: None (0xFF), callbacks: empty,
+  clear_board: <per flag> }` — always clear the host layer + disable all host
+  callbacks (`on_no_match` is always clear; the `keep` option is withdrawn).
+- The `Notifier` trait / `QmkNotifier` gain the capability so the test mock
+  asserts ordering (string before context). Retry/cache parity with `SendMessage`.
 
-Per window change, after ①:
-
+**(5) Startup handshake + `SET_OS`.** Near `startup_device_probe`, once a device
+is connected:
 ```text
-desired_enable_ids = { resolve(name) for each enable name in all matched callback_rules }
-desired_disable_ids = { resolve(name) for each disable name in all matched callback_rules }
-L_h = first matching layer_rule.layer (else None)
-
-if on_no_match == Clear and no layer match:    layer_arg = None
-if on_no_match == Clear and no callback match: desired_enable_ids = {}
-
-// The firmware diffs desired_enable_ids against its own state (disable-then-enable).
-// To honor per-rule `disable` semantics too, send a preceding APPLY_HOST_CONTEXT
-// with those ids removed from the enabled set, OR (simpler v1) fold `disable`
-// names by NOT including them and letting them drop via the diff. See §13, Q2
-// — recommended v1: treat `disable` as "remove from desired set".
-send ApplyHostContext { layer: L_h, callbacks: desired_enable_ids }
-current_layer, current_enabled = …
-```
-
-Unknown callback names (not in `name_to_id`) are logged and skipped, not fatal.
-
-**(4) `notify_qmk` extension** (`src/core/notifier.rs`). Today `notify_qmk(window_info,
-verbose)` builds the string and sends it. Extend it (and the `Notifier` trait /
-`QmkNotifier` impl) to, **after** the string's round-trip succeeds, evaluate host
-rules and send `ApplyHostContext` via the crate's new `RunCommand`. Keep the
-debounce worker unchanged; the host-context send happens within the same
-debounced "send" step so one window change ⇒ one string + one context. The trait
-gains the capability so the test `Notifier` mock can assert ordering (string
-before context).
-
-**(5) Startup handshake.** In the startup path (near `startup_device_probe`),
-once a device is connected:
-
-```text
-resp = qmk_notifier::run(QueryInfo)
+resp = run(QueryInfo)
 match resp {
-  Info { proto_ver: 2, feature_flags, callback_count, .. } if flags & APPLY_HOST_CONTEXT => {
-      for i in 0..callback_count {
-          name = run(QueryCallback(i)) -> CallbackName.name
-          name_to_id.insert(name, i)
-      }
-      validate rules.toml callback names against name_to_id  // warn, don't fail
+  Info { proto_ver: 2, feature_flags, callback_count, .. } if flags & 0x01 => {
+      run(SetOs(host_os))                                  // host is OS-authoritative at connect
+      for i in 0..callback_count { name_to_id.insert(run(QueryCallback(i)).name, i) }
+      validate rules.toml names against name_to_id         // warn, don't fail
       capable = true
   }
-  _ => capable = false   // legacy or offline → string-only
+  _ => capable = false   // legacy/offline → string-only
 }
 ```
+The handshake runs **at most once per board boot** — the firmware's
+`has_been_queried` guards against mid-session-reconnect side effects on legacy
+firmware, and host-rules are gated on `proto_ver == 2`. Re-trigger only on a real
+device transition via the existing `is_device_connected()` poll, deduped by the
+`capable`/`has_been_queried` state.
 
-Re-run on reconnect (the tray already polls `is_device_connected()`).
+**(6) CLI:** `--list-callbacks` (handshake → name→id table, or "legacy");
+`--validate-rules [--rules-path <p>]` (parse + schema check; flag unknown callback
+names; non-zero exit on error); `--rules-path`. `-c`/`--config` seeds a commented
+`rules.toml` template.
 
-**(6) CLI:**
+**(7) Tray/UX:** add **"Reload rules"** to all three menus (re-read `rules.toml`,
+re-validate, re-handshake if needed). Optional status line: `proto v2 · N callbacks`.
 
-| Flag | Effect |
-| --- | --- |
-| `--list-callbacks` | Connect, run the handshake, print the `name → id` table (or "legacy firmware"). |
-| `--validate-rules` `[--rules-path <p>]` | Parse `rules.toml`; report TOML/schema errors; if a keyboard is connected, flag callback names not in its registry. Exits non-zero on errors. |
-| `--rules-path <path>` | Override the rules file location (mainly for testing/`--validate-rules`). |
-
-`-c`/`--config` should also seed an empty commented `rules.toml` template next to
-`config.toml` (discoverability).
-
-**(7) Tray / UX.** Add **"Reload rules"** to the Windows tray, macOS menu-bar,
-and Linux SNI menus (re-read `rules.toml`, re-validate, re-run handshake if
-needed). Mirrors the existing `-r` reload pattern. Optional: status line shows
-`proto v2 · N callbacks` when connected & capable.
-
-**(8) Backward-compatibility guarantees:** no `rules.toml` ⇒ identical to today
-(string-only); legacy firmware ⇒ handshake falls back ⇒ string-only, board rules
-unaffected; new firmware + old QMKonnect ⇒ old app sends only the string, new
-firmware's `hid_notify` still runs the legacy path, typed commands simply never
+**(8) Backward compatibility:** no `rules.toml` ⇒ identical to today; legacy
+firmware (`proto_ver != 2` / timeout) ⇒ string-only, board rules unaffected; new
+firmware + old QMKonnect ⇒ old app sends only the string, typed commands never
 arrive.
 
 ## 9. `rules.toml` Schema Reference
@@ -585,71 +480,70 @@ Board rules keep working, so migration is **incremental and optional**:
 
 ## 11. Phased Rollout
 
-- **Phase A — `qmk_notifier` crate v0.3.0:** typed-command framing, response
-  parsing, `pattern` matcher module + ported tests. Tag.
-- **Phase B — `qmk-notifier` firmware v0.3.0:** `DEFINE_HOST_CALLBACKS`,
-  `host_layer` tracker, host-callback enable state, `hid_notify` dispatch,
-  `QUERY_INFO`/`QUERY_CALLBACK`/`APPLY_HOST_CONTEXT` handlers, tests.
-- **Phase C — `qmkonnect`:** pin crate v0.3.0; `src/core/rules.rs`; host matcher;
-  handshake; `notify_qmk` extension + state; CLI flags; tray "Reload rules";
-  config-path integration; tests.
+- **Phase A — `qmk_notifier` crate v0.3.0:** typed-command framing (multi-report),
+  `CommandResponse` reply parsing, `HostOs`, `run()` → `CommandResponse`. Tag.
+  *(The matcher is NOT added here — it lives in qmkonnect.)*
+- **Phase B — `qmk-notifier` firmware v0.3.0 (round B):** `DEFINE_HOST_CALLBACKS`,
+  `host_layer`/`host_cb_enabled`, typed dispatch, `QUERY_INFO`/`QUERY_CALLBACK`/
+  `SET_OS`/`APPLY_HOST_CONTEXT` (with `clear_board`), `has_been_queried`, tests.
+- **Phase C — `qmkonnect`:** pin crate v0.3.0; `src/core/rules.rs` +
+  `src/core/pattern.rs` (full-parity matcher + ported corpus); handshake +
+  `SET_OS`; the `notify_qmk` `disable_firmware_config`/`clear_board` send logic +
+  state; CLI flags; tray "Reload rules"; config-path integration; tests.
 - **Phase D — docs:** `Readme.md`, `docs/qmk-integration.md`,
   `docs/configuration.md`, `docs/examples.md`, `docs/troubleshooting.md`,
-  regenerated `docs/llms_full.txt`, migration section.
-- **Phase E (future, separate spec):** VIA coexistence — a dispatching
-  `raw_hid_receive` (`0x81 0x9F`+`0xF0` → notifier, else → VIA), plus the
-  HID-exclusivity caveat in docs. Out of scope here.
+  regenerated `docs/llms_full.txt`.
+- **Phase E (future, separate spec):** VIA coexistence (a dispatching
+  `raw_hid_receive`: `0x81 0x9F`+`0xF0` → notifier, else → VIA).
 
 ## 12. Testing Plan
 
-**`qmk_notifier` crate:** unit-test framing of each `RunCommand` and response
-decoding (`0x51` typed vs `0/1` legacy vs timeout); unit-test `pattern` parity by
-porting the firmware `pattern_match` corpus (wildcards, `^`/`$`, two-part `WT`,
-case sensitivity) and asserting identical results.
+**`qmk_notifier` crate:** unit-test framing of each `RunCommand` (incl.
+multi-report `APPLY_HOST_CONTEXT`) and response decoding (`0x51` typed vs `0`/`1`
+legacy vs `Timeout`).
 
 **`qmk-notifier` firmware:** unit-test `set_host_layer` (on/off/clear;
-independence from board `activated_layer`) and `apply_host_callbacks` diff
+independence from board `activated_layer`) and `apply_host_callbacks`
 (disable-before-enable; idempotent re-apply; unknown ids ignored); integration:
-typed-command round-trips via the existing host-side test harness.
+typed-command round-trips, `clear_board` clearing, `SET_OS` updating `current_os`.
 
-**`qmkonnect`:** unit-test (`src/core/rules.rs`) TOML parse success/error,
-matcher first-match (layers) vs all-match (callbacks), `on_no_match` Clear vs
-Keep, unknown callback names skipped; unit-test handshake parsing (`Info` ⇒
-capable; legacy/timeout ⇒ string-only); unit-test ordering — the `Notifier` mock
-records calls and asserts string is sent before `ApplyHostContext`; integration
-against a real keyboard per `AGENTS.md` loops (edit `rules.toml`, "Reload rules",
-switch apps, confirm layer + callbacks fire in order; confirm legacy firmware
-still works).
+**`qmkonnect`:** unit-test (`src/core/rules.rs`) TOML parse success/error, matcher
+first-match (layers) vs all-match (callbacks), `disable` exclusion, unknown
+callback names skipped; unit-test (`src/core/pattern.rs`) **full matcher parity**
+by porting the firmware `pattern_match` corpus (wildcards, `^`/`$`, `WT`, `+`,
+classes, case sensitivity) and asserting identical results; unit-test handshake
+parsing (`Info { proto_ver: 2 }` ⇒ capable; legacy/timeout ⇒ string-only) and the
+`disable_firmware_config` ⇒ stack/replace send decision; unit-test ordering — the
+`Notifier` mock records calls and asserts string-before-context (stack) and
+context-only (replace); integration per `AGENTS.md`.
 
 ## 13. Risks & Open Questions
 
-- **R1 — HID round-trips per change.** Two sends (string + context) per debounced
-  window change. Mitigated by the existing debounce; future: a persistent HID
-  connection (today each `run()` opens/closes) and/or packing both into one
-  logical transaction.
-- **R2 — `APPLY_HOST_CONTEXT` fits one 32-byte report.** Header(2)+`0xF0`(1)+cmd(1)
-  +layer(1)+count(1) = 6 bytes ⇒ ≤26 callback ids. Most users have <10. If a
-  registry needs more, chunk across reports with ETX (like strings) in a later
-  iteration; v1 caps `count ≤ 26` and the host validates/warns.
-- **R3 — HID exclusivity.** Another Raw HID app (VIA browser/desktop) holding the
-  device will block QMKonnect. Documented in Phase E; not solved here.
+- **R1 — HID round-trips per change.** Stack mode = two sends (string + context)
+  per debounced change; replace mode = one. Mitigated by the existing debounce.
+- **R2 — `APPLY_HOST_CONTEXT` size — RESOLVED.** Typed commands are ETX-framed /
+  multi-report (like strings), so the callback-id list is uncapped; the earlier
+  "≤26 ids per report" v1 limit is withdrawn. (`HOST_CALLBACK_MAX` remains the
+  firmware's static array ceiling; the host validates against
+  `QUERY_INFO.callback_count`.)
+- **R3 — HID exclusivity.** Another Raw HID app (VIA) holding the device blocks
+  QMKonnect. Phase E.
 - **R4 — ID stability across flashes.** Mitigated by re-querying names on every
-  reconnect; IDs are positional, names are stable.
-- **Q1 — `on_no_match = "default"` with `default_layer`.** Reserved in the schema
-  but not wired in v1 (only `clear`/`keep`). Add when a use case appears.
-- **Q2 — `disable` list semantics on the host.** Recommended v1 behavior: names in
-  a matched rule's `disable` are treated as "remove from desired enabled set this
-  cycle" (so the firmware's diff calls their `on_disable`). A richer "explicitly
-  disable now, regardless of prior state" mode is deferred. Confirm during Phase
-  C review.
-- **Q3 — Board matcher stays first-match.** Host callbacks use all-match (C8); the
-  board's existing `DEFINE_SERIAL_COMMANDS` keeps first-match for backward
-  compatibility. Flip to all-match only if explicitly requested later.
-- **R5 — Multiple keyboards.** v1 uses one global ruleset; per-keyboard overrides
-  deferred (C9).
-- **R6 — Legacy handshake side effect.** See the "Handshake timing constraint"
-  note in §5: handshake must run only at (re)connect, not on a poll, to avoid
-  the legacy no-match path deactivating an active board layer/command.
+  reconnect (IDs positional, names stable).
+- **R5 — Multiple keyboards.** v1 = one global ruleset; per-keyboard overrides
+  deferred.
+- **R6 — Legacy handshake side effect — RESOLVED.** The firmware sets
+  `has_been_queried` on the first `QUERY_INFO`, and host-rules are gated on
+  `proto_ver == 2`; the host handshakes at most once per board boot. Legacy
+  firmware never receives typed commands.
+- **Q1 — `default_layer` / a "default" no-match mode.** Reserved in the schema
+  but not wired (`on_no_match` is always `clear`). Add if a use case appears.
+- **Q2 — `disable` list semantics — RESOLVED.** `disable` = explicit exclusion
+  (removed from the desired enabled set; the firmware's diff fires `on_disable`).
+  Focus-out `on_disable` also fires automatically when a callback leaves the
+  desired set across window changes.
+- **Q3 — Board matcher stays first-match.** Host callbacks use all-match (C8);
+  board `DEFINE_SERIAL_COMMANDS` keeps first-match for backward compatibility.
 
 ## 14. Appendix — File Layout Touched & Pattern Subset
 
@@ -658,30 +552,30 @@ still works).
 ```
 qmkonnect/
   Cargo.toml                              # bump qmk_notifier tag -> v0.3.0
-  src/core/notifier.rs                    # notify_qmk extension, handshake, state
+  src/core/notifier.rs                    # notify_qmk extension, handshake, SET_OS, state
   src/core/rules.rs                       # NEW: rules.toml model + evaluation
+  src/core/pattern.rs                     # NEW: full-parity matcher (ported from firmware)
   src/core/mod.rs                         # wire rules into config/startup
   src/main.rs                             # --list-callbacks / --validate-rules
   src/tray.rs / src/linux_tray.rs         # "Reload rules" menu item
-  Readme.md, docs/*.md, docs/llms_full.txt# Phase D docs
+  Readme.md, docs/*.md, docs/llms_full.txt
 qmk_notifier/  (external crate)
-  src/lib.rs (or new module)              # RunCommand variants, run() response
-  src/pattern.rs                          # NEW: matcher module
+  src/lib.rs / src/core.rs                # RunCommand variants, HostOs, CommandResponse, run()
 qmk-notifier/  (external firmware)
-  notifier.h                              # host_callback_t, DEFINE_HOST_CALLBACKS
-  notifier.c                              # host_layer, host_cb_enabled, dispatch
+  notifier.h / notifier.c                 # host_callback_t, DEFINE_HOST_CALLBACKS,
+                                          #   host_layer, host_cb_enabled, typed dispatch,
+                                          #   SET_OS, clear_board, has_been_queried
 ```
 
-**Pattern matching semantics (v1 stable subset)** — ported to Rust in
-`qmk_notifier::pattern`, mirroring `pattern_match.c`: `*` wildcard (any chars
-including none); `^` start anchor; `$` end anchor; two-part (`WT(class, title)` /
-`Pattern::Parts`) with both halves required, delimiter `0x1D` (GS); single
-pattern against a `{class}{GS}{title}` message matches the **class** part only
-(firmware parity); `case_sensitive` per rule (default `false`). Deferred: regex
-classes (`\d \w \s \b .`).
-
+**Pattern matching semantics** — a **full-parity** port of the firmware
+`pattern_match.c` into `qmkonnect::pattern` (not a subset): `*` wildcard; `^`/`$`
+anchors; two-part `WT(class,title)` / `Pattern::Parts` (delimiter `0x1D`, GS); `X+`
+quantifier; classes `\d \D \w \W \s \S \b \B`; `.`; escapes. All linear-time
+(Thompson NFA). `case_sensitive` per rule (default `false`). The firmware matcher
++ its test corpus are the single source of truth for match semantics.
 
 ---
 
-*Planned feature (targets v0.3.0); not yet implemented. Return to `PRD.md` for
-the product-level overview and the Document Map.*
+*Round B (targets v0.3.0); specified but not yet implemented. The wire contract is
+canonical in the firmware `PRD.md` §4.6; transport in the `qmk_notifier` crate
+`SPEC.md` §10. Return to `PRD.md` for the product-level overview and the Document Map.*
