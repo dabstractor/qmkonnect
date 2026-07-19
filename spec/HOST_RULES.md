@@ -1,7 +1,7 @@
-# SPEC — Host-Side Window Rules & Callbacks (Planned v0.3.0)
+# SPEC — Host-Side Window Rules & Callbacks
 
-> Companion to `PRD.md`. Complete design for a **planned** feature (not yet
-> implemented) that moves app→layer and app→callback matching onto the host so
+> Companion to `PRD.md`. Design for the feature that moves app→layer and
+> app→callback matching onto the host so
 > rules can change **without reflashing**. Host rules **stack on top of** the
 > board's `DEFINE_*` rules (board first, host on top; board callbacks first,
 > host callbacks after). Read alongside `PROTOCOL.md` (wire framing),
@@ -26,10 +26,10 @@ apply on top. Nothing existing is removed or deprecated.
 
 **Deliverables.**
 
-- **`qmk_notifier` crate (v0.3.0):** typed-command framing + response parsing, a
-  public pattern-matcher module (ported from the firmware matcher), and new
-  `RunCommand` variants.
-- **`qmk-notifier` firmware (v0.3.0):** a named callback registry
+- **`qmk_notifier` crate:** typed-command framing + response parsing, and new
+  `RunCommand` variants. (Transport-only — the matcher is NOT here; it lives in
+  `qmkonnect`.)
+- **`qmk-notifier` firmware:** a named callback registry
   (`DEFINE_HOST_CALLBACKS`), a separate host-layer tracker, host-callback enable
   state, typed-command dispatch inside `hid_notify()`, and handlers for
   `QUERY_INFO` / `QUERY_CALLBACK` / `APPLY_HOST_CONTEXT`.
@@ -80,12 +80,10 @@ Because the wire protocol is shared, this feature touches **all three repos**:
 
 ## 3. Locked Design Decisions
 
-> **Round-B revision (authoritative).** This section supersedes the earlier
-> stack-only design. The wire contract is owned by the firmware spec
+> **Design.** The wire contract is owned by the firmware spec
 > (`dabstractor/qmk-notifier`, `PRD.md` §4.6 — **canonical**); the transport by
 > the `qmk_notifier` crate (`PRD.md` §10); the host-side orchestration by this
-> document. Implementation-detail sections §6–§8 and §10–§14 below reflect the
-> pre-revision draft and are reconciled against §3–§5 + §9 where they conflict.
+> document.
 
 - **B1 — Coexistence = per-window stack-or-replace, host-chosen via
   `clear_board`.** The firmware offers **both**: with `clear_board=0` the board
@@ -202,7 +200,7 @@ update host state for next diff/logging
 | `0x04` | *(reserved — VIA, Phase E)* | — | — |
 | `0x05` | `APPLY_HOST_CONTEXT` | `[layer][flags][count][id…]` | `[ack]` |
 
-- `proto_ver`: `1` = legacy/multi-OS firmware; `2` = round-B. Firmware-owned.
+- `proto_ver`: `1` = legacy string-only firmware; `2` = typed-command capable. Firmware-owned.
 - `feature_flags`: `0x01` `APPLY_HOST_CONTEXT`; `0x02` callback registry; `0x04`
   *(reserved)* VIA.
 - `os_byte`: `0 UNSURE · 1 LINUX · 2 WINDOWS · 3 MACOS · 4 IOS`. The host sends
@@ -222,7 +220,7 @@ string and `process_full_message` always disables/deactivates first — harmless
 only when board state is fresh). If `response[0]==0x51` & `proto_ver==2` &
 `flags & 0x01` ⇒ `QUERY_CALLBACK` sweep → `name→id` map → validate `rules.toml`.
 Else (`response[0] != 0x51` or timeout) ⇒ legacy ⇒ string-only; **never send typed
-commands**. (Round-B typed commands bypass `process_full_message`, so they have no
+commands**. (Typed commands bypass `process_full_message`, so they have no
 board side effect on `proto_ver==2` firmware.)
 
 ## 6. Firmware Spec (`qmk-notifier`)
@@ -230,7 +228,7 @@ board side effect on `proto_ver==2` firmware.)
 > **Canonical: firmware `PRD.md` §14 (+ §4.6 wire, §4.7 OS).** This section is a
 > desktop-facing summary; the firmware repo owns the authoritative spec.
 
-Round-B firmware additions (specified, not yet implemented):
+Firmware requirements:
 
 - **Named callback registry** — `DEFINE_HOST_CALLBACKS({ … })` + weak-default
   accessors (`get_host_callbacks`/`_size`). `ID = array index`, stable per build;
@@ -249,7 +247,7 @@ Round-B firmware additions (specified, not yet implemented):
   diff (fire `on_disable` for ids leaving the set, `on_enable` for ids entering).
 - **Typed dispatch** at the top of `hid_notify()`: `data[2]==0xF0` ⇒
   `handle_typed_command()` (return; **no** `process_full_message` side effect);
-  else legacy string (round A, unchanged). Handlers:
+  else legacy string (unchanged). Handlers:
   - `QUERY_INFO` / `QUERY_CALLBACK` — answerable before any string seen; the
     firmware sets `has_been_queried` on the first `QUERY_INFO`.
   - `APPLY_HOST_CONTEXT` — honor `clear_board` (flags bit 0): if set,
@@ -266,7 +264,7 @@ Round-B firmware additions (specified, not yet implemented):
 > **Canonical: the crate `PRD.md` §10.** This section is a summary. The crate is
 > **transport-only** — it does no matching (the matcher lives in `qmkonnect`, §8).
 
-v0.3.0 API additions (specified; breaking vs v0.2.x's `run() -> Result<(), _>`):
+API additions (`run()` returns `CommandResponse` instead of `()`):
 
 ```rust
 pub enum RunCommand {
@@ -300,7 +298,7 @@ pub fn run(params: RunParameters) -> Result<CommandResponse, QmkError>;
   `response[0]==0x51` ⇒ typed (decode by `cmd_echo`); `in {0,1}` ⇒ `Legacy`; no
   reply ⇒ `Timeout`.
 
-**Release:** bump to **v0.3.0**, tag; `qmkonnect/Cargo.toml` pins `tag = "v0.3.0"`.
+**Release:** tag the release; `qmkonnect/Cargo.toml` pins the crate by git tag.
 
 ## 8. QMKonnect Spec (this repo)
 
@@ -478,23 +476,24 @@ Board rules keep working, so migration is **incremental and optional**:
    in both, the same `on_enable` would fire twice).
 4. Iterate by editing `rules.toml` + "Reload rules" — no reflashing.
 
-## 11. Phased Rollout
+## 11. Implementation Breakdown (by repo)
 
-- **Phase A — `qmk_notifier` crate v0.3.0:** typed-command framing (multi-report),
-  `CommandResponse` reply parsing, `HostOs`, `run()` → `CommandResponse`. Tag.
-  *(The matcher is NOT added here — it lives in qmkonnect.)*
-- **Phase B — `qmk-notifier` firmware v0.3.0 (round B):** `DEFINE_HOST_CALLBACKS`,
+One coordinated change across the three repos:
+
+- **`qmk_notifier` crate:** typed-command framing (multi-report),
+  `CommandResponse` reply parsing, `HostOs`, `run()` → `CommandResponse`. Tag the
+  release. *(The matcher is NOT added here — it lives in qmkonnect.)*
+- **`qmk-notifier` firmware:** `DEFINE_HOST_CALLBACKS`,
   `host_layer`/`host_cb_enabled`, typed dispatch, `QUERY_INFO`/`QUERY_CALLBACK`/
   `SET_OS`/`APPLY_HOST_CONTEXT` (with `clear_board`), `has_been_queried`, tests.
-- **Phase C — `qmkonnect`:** pin crate v0.3.0; `src/core/rules.rs` +
-  `src/core/pattern.rs` (full-parity matcher + ported corpus); handshake +
-  `SET_OS`; the `notify_qmk` `disable_firmware_config`/`clear_board` send logic +
-  state; CLI flags; tray "Reload rules"; config-path integration; tests.
-- **Phase D — docs:** `Readme.md`, `docs/qmk-integration.md`,
-  `docs/configuration.md`, `docs/examples.md`, `docs/troubleshooting.md`,
-  regenerated `docs/llms_full.txt`.
-- **Phase E (future, separate spec):** VIA coexistence (a dispatching
-  `raw_hid_receive`: `0x81 0x9F`+`0xF0` → notifier, else → VIA).
+- **`qmkonnect`:** pin the crate; `src/core/rules.rs` + `src/core/pattern.rs`
+  (full-parity matcher + ported corpus); handshake + `SET_OS`; the `notify_qmk`
+  `disable_firmware_config`/`clear_board` send logic + state; CLI flags; tray
+  "Reload rules"; config-path integration; tests.
+- **Docs:** `Readme.md`, `docs/qmk-integration.md`, `docs/configuration.md`,
+  `docs/examples.md`, `docs/troubleshooting.md`, regenerated `docs/llms_full.txt`.
+- **VIA coexistence (separate, out of scope here):** a dispatching
+  `raw_hid_receive` (`0x81 0x9F`+`0xF0` → notifier, else → VIA).
 
 ## 12. Testing Plan
 
@@ -551,7 +550,7 @@ context-only (replace); integration per `AGENTS.md`.
 
 ```
 qmkonnect/
-  Cargo.toml                              # bump qmk_notifier tag -> v0.3.0
+  Cargo.toml                              # pin qmk_notifier crate by git tag
   src/core/notifier.rs                    # notify_qmk extension, handshake, SET_OS, state
   src/core/rules.rs                       # NEW: rules.toml model + evaluation
   src/core/pattern.rs                     # NEW: full-parity matcher (ported from firmware)
@@ -576,6 +575,6 @@ quantifier; classes `\d \D \w \W \s \S \b \B`; `.`; escapes. All linear-time
 
 ---
 
-*Round B (targets v0.3.0); specified but not yet implemented. The wire contract is
-canonical in the firmware `PRD.md` §4.6; transport in the `qmk_notifier` crate
-`PRD.md` §10. Return to `PRD.md` for the product-level overview and the Document Map.*
+*The wire contract is canonical in the firmware `PRD.md` §4.6; transport in the
+`qmk_notifier` crate `PRD.md` §10. Return to `PRD.md` for the product-level
+overview and the Document Map.*

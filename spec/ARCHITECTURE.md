@@ -265,9 +265,9 @@ Read-only enumeration; `true` iff any interface matches the filter. Backs the
 tray device-status line. Runs on a background thread (3 s macOS/Windows,
 1 s Linux) and only fires a UI update on a transition.
 
-### 5.7 Round-B host-side-rules extension (planned, v0.3.0)
+### 5.7 Host-side-rules extension
 
-The v0.3.0 host-side-rules feature extends this pipeline; the full design is in
+Host-side rules extend this pipeline; the full design is in
 `HOST_RULES.md` and the wire contract is canonical in the firmware `PRD.md` §4.6.
 In summary, after the debounced string send, QMKonnect additionally:
 - runs a **capability handshake** at (re)connect (`QUERY_INFO`; gated on

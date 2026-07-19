@@ -3,7 +3,7 @@
 **Product Requirements Document & Master Specification**
 Version: 0.2.4 · Status: Beta · Owner: Mulletware · License: MIT
 
-> **Planned feature (v0.3.0, "round B"):** Host-side window rules — edit
+> **Host-side window rules:** edit
 > layer/callback rules in `rules.toml` with no reflash. Fully specified in the
 > companion `HOST_RULES.md`; the **typed-command wire contract is owned by the
 > firmware spec** ([`dabstractor/qmk-notifier` `PRD.md`
@@ -85,7 +85,7 @@ QMKonnect is one node in a small ecosystem. A dev agent must understand all of:
 ### 2.2 Non-Goals (explicitly out of scope for the beta)
 
 - Behavior/layer logic on the desktop side. QMKonnect is a pure sensor. *(To be
-  relaxed by the planned Host-Side Window Rules feature — see `HOST_RULES.md` —
+  relaxed by the Host-Side Window Rules feature — see `HOST_RULES.md` —
   where the host optionally matches rules and stacks a layer + callbacks on top
   of the board's.)*
 - X11 support as a first-class target (a fallback `xprop`-polling monitor
@@ -127,8 +127,8 @@ QMKonnect is one node in a small ecosystem. A dev agent must understand all of:
 | F8 | Per-platform installer + CI release pipeline | `PACKAGING.md` |
 | F9 | Linux: static udev rule + usage-page helper + root-aware reload | `LINUX.md` |
 | F10 | Companion firmware module contract (`qmk-notifier`) | `FIRMWARE.md` |
-| **F11** *(planned v0.3.0)* | **Host-side window rules:** edit `rules.toml` to map apps → layers/callbacks with **no reflash** (stacks on top of board rules) | `HOST_RULES.md` |
-| **F12** *(planned v0.3.0)* | **Named callback registry** + typed Raw HID commands (`QUERY_INFO` / `QUERY_CALLBACK` / `APPLY_HOST_CONTEXT`) with a capability handshake | `HOST_RULES.md` |
+| **F11** | **Host-side window rules:** edit `rules.toml` to map apps → layers/callbacks with **no reflash** (stacks on top of board rules) | `HOST_RULES.md` |
+| **F12** | **Named callback registry** + typed Raw HID commands (`QUERY_INFO` / `QUERY_CALLBACK` / `APPLY_HOST_CONTEXT`) with a capability handshake | `HOST_RULES.md` |
 
 ---
 
@@ -291,8 +291,7 @@ failures degrade silently and recover automatically.)
 
 ## 12. Beta Status & Future Work
 
-- **Host-side window rules (planned, v0.3.0).** The biggest planned feature:
-  edit layer/callback rules in `rules.toml` on the host — no reflash — stacking
+- **Host-side window rules.** Edit layer/callback rules in `rules.toml` on the host — no reflash — stacking
   on top of the board's `DEFINE_*` rules. Fully specified in `HOST_RULES.md`; it
   spans the `qmk_notifier` crate, the `qmk-notifier` firmware, and this app.
 - **Linux surface is narrow** (Hyprland-only). Broader Wayland + X11 is planned.
@@ -326,11 +325,11 @@ failures degrade silently and recover automatically.)
 | **`WT(class, title)`** | Firmware macro building a `class\x1Dtitle` pattern. |
 | **device filter** | Resolved `{vid?, pid?, usage_page, usage}` used to match HID interfaces. |
 | **burst-write** | Sending all 32-byte reports of a long message back-to-back without per-report ack. |
-| **board layer / board rules** *(planned)* | The layer/callback state driven by the keyboard's own `DEFINE_SERIAL_LAYERS`/`DEFINE_SERIAL_COMMANDS` matcher against the string QMKonnect sends. See `HOST_RULES.md`. |
-| **host layer / host rules** *(planned)* | The layer/callback state driven by QMKonnect matching `rules.toml` on the host and sending `APPLY_HOST_CONTEXT`; stacks **on top of** the board layer. See `HOST_RULES.md`. |
-| **callback registry** *(planned)* | The firmware's named, ordered list of host-invokable callbacks (`DEFINE_HOST_CALLBACKS`); the host resolves names→IDs via `QUERY_CALLBACK`. See `HOST_RULES.md` §6. |
-| **typed command** *(planned)* | A Raw HID command in the `0x81 0x9F 0xF0` namespace (vs. the legacy string path). See `HOST_RULES.md` §5. |
-| **`APPLY_HOST_CONTEXT`** *(planned)* | The typed command carrying the host's desired layer + enabled-callback set; the firmware diffs and applies it. See `HOST_RULES.md` §5. |
+| **board layer / board rules** | The layer/callback state driven by the keyboard's own `DEFINE_SERIAL_LAYERS`/`DEFINE_SERIAL_COMMANDS` matcher against the string QMKonnect sends. See `HOST_RULES.md`. |
+| **host layer / host rules** | The layer/callback state driven by QMKonnect matching `rules.toml` on the host and sending `APPLY_HOST_CONTEXT`; stacks **on top of** the board layer. See `HOST_RULES.md`. |
+| **callback registry** | The firmware's named, ordered list of host-invokable callbacks (`DEFINE_HOST_CALLBACKS`); the host resolves names→IDs via `QUERY_CALLBACK`. See `HOST_RULES.md` §6. |
+| **typed command** | A Raw HID command in the `0x81 0x9F 0xF0` namespace (vs. the legacy string path). See `HOST_RULES.md` §5. |
+| **`APPLY_HOST_CONTEXT`** | The typed command carrying the host's desired layer + enabled-callback set; the firmware diffs and applies it. See `HOST_RULES.md` §5. |
 
 ---
 
@@ -351,7 +350,7 @@ PRD.
 | @CONFIG.md | TOML schema, defaults, render body, config paths per OS, CLI flag reference. |
 | @PACKAGING.md | Cargo build profile, per-platform installers (Inno/PKGBUILD/DMG), CI release workflow, code signing, the dev test loop. |
 | @FIRMWARE.md | The `qmk-notifier` firmware module contract, keymap integration steps, pattern-matching syntax, the user's reference keymap. |
-| @HOST_RULES.md | **Round B (v0.3.0), specified — not yet implemented:** host-side `rules.toml` (no-reflash layer/callback rules, per-rule `disable_firmware_config`), the typed-command wire mirror (canonical: firmware `PRD.md` §4.6), named callback registry, three-repo rollout. |
+| @HOST_RULES.md | **Host-side `rules.toml`** (no-reflash layer/callback rules, per-rule `disable_firmware_config`), the typed-command wire mirror (canonical: firmware `PRD.md` §4.6), named callback registry, three-repo rollout. |
 
 > **Living source of truth:** the production codebase itself
 > (`src/`, `Cargo.toml`, `packaging/`). Where a spec and the code disagree, the

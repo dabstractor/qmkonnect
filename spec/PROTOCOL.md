@@ -107,7 +107,7 @@ response size from the header-stripped `30` to the full `32`. The older "ack is
 silently dropped by QMK because `length == RAW_EPSIZE`" wording was stale
 carryover from the pre-fix firmware. The crate drains pending IN-side reports
 after each burst, bounded, so accumulated replies can't wedge the device; the
-v0.3.0 typed-command path reads and parses them — see §8.)
+typed-command path reads and parses them — see §8.)
 
 ---
 
@@ -273,12 +273,12 @@ changes or a write fails (stale handle after replug).
 | Firmware buffer | 256 | `MSG_BUFFER_SIZE` |
 | Default usage page | `0xFF60` | `DEFAULT_USAGE_PAGE` |
 | Default usage | `0x61` | `DEFAULT_USAGE` |
-| Typed discriminator (round B) | `0xF0` | `data[2]` after `0x81 0x9F` ⇒ typed cmd (§8) |
-| Typed response marker (round B) | `0x51` | vs legacy `0`/`1` match-bool (§8) |
+| Typed discriminator | `0xF0` | `data[2]` after `0x81 0x9F` ⇒ typed cmd (§8) |
+| Typed response marker | `0x51` | vs legacy `0`/`1` match-bool (§8) |
 
 ---
 
-## 8. Typed-Command Namespace (round B / v0.3.0)
+## 8. Typed-Command Namespace
 
 > **Canonical owner: the firmware spec** (`dabstractor/qmk-notifier`, `PRD.md`
 > §4.6). This section mirrors the transport-relevant summary for desktop work; if
@@ -308,7 +308,7 @@ stays in string-only mode.
 | `0x04` | *(reserved — VIA, Phase E)* | — | — |
 | `0x05` | `APPLY_HOST_CONTEXT` | `[layer][flags][count][id…]` | `[ack]` |
 
-- `proto_ver`: `1` = legacy/multi-OS firmware (today); `2` = round-B firmware.
+- `proto_ver`: `1` = legacy string-only firmware; `2` = typed-command capable.
   Firmware-owned.
 - `feature_flags`: `0x01` `APPLY_HOST_CONTEXT`; `0x02` callback registry; `0x04`
   *(reserved)* VIA.
@@ -330,7 +330,7 @@ timeout) ⇒ legacy ⇒ string-only. The firmware sets `has_been_queried` on the
 first `QUERY_INFO` to keep a mid-session reconnect from clearing an active board
 layer against legacy firmware.
 
-The `qmk_notifier` crate (v0.3.0) frames these and returns a parsed
+The `qmk_notifier` crate frames these and returns a parsed
 `CommandResponse`; see the crate `PRD.md` §10.
 
 ---

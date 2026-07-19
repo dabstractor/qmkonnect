@@ -31,8 +31,8 @@ magic bytes `0x81 0x9F` and ignores everything else, so other Raw HID modules
 > **Canonical firmware spec.** This document is the *desktop-facing* view of the
 firmware contract. The firmware repo's `PRD.md`
 ([`dabstractor/qmk-notifier`](https://github.com/dabstractor/qmk-notifier)) is
-**authoritative** — including **round A** (per-OS `DEFINE_SERIAL_*_OS` maps
-selected by the detected host OS) and **round B** (the typed-command namespace
+**authoritative** — including per-OS `DEFINE_SERIAL_*_OS` maps (selected by the
+detected host OS) and the typed-command namespace
 §4.6: `QUERY_INFO` / `QUERY_CALLBACK` / `SET_OS` / `APPLY_HOST_CONTEXT` with the
 `clear_board` flag, the `host_layer` tracker, and `DEFINE_HOST_CALLBACKS`).
 Where this file and the firmware `PRD.md` disagree, the firmware wins.
