@@ -42,6 +42,25 @@ Verified by reading the `SendMessage` arm: it uses only `message.as_bytes()` and
 `params.*` Copy fields — nothing needs an owned `String`. So the borrow-match is
 a one-token change with no body fallout.
 
+### 1a. The `core::` qualification trap (E0425) — discovered mid-research
+
+`build_typed_payload` is `pub(crate)` in `core.rs` (private `mod core;` in
+lib.rs) but is **NOT** in the `pub use core::{ … }` re-export at the crate root
+(only `send_raw_report` / `list_hid_devices` / `parse_hex_or_decimal` / the
+`DEFAULT_*` consts are re-exported). So from `run()` in `lib.rs` it MUST be
+called as **`core::build_typed_payload(&params.command)`** — a BARE
+`build_typed_payload(…)` fails with **E0425** "cannot find function
+`build_typed_payload` in this scope" (confirmed: there is no
+`use core::build_typed_payload;` import). Contrast `send_raw_report`, which IS
+re-exported and so is callable bare (as the existing `SendMessage` arm does).
+
+This was caught by observing the concurrent in-progress implementation, which
+correctly used `core::build_typed_payload(&params.command)`. It is the SECOND
+compile trap (after the move-vs-borrow match) and is called out in the PRP's
+gotchas, Level-1 diagnostics, and anti-patterns. Do NOT "fix" it by making the
+fn `pub` or adding a re-export — qualifying the call is the minimal intended
+change.
+
 ## 2. Collapse the 4 typed arms into ONE or-pattern arm (no per-variant helper)
 
 The build+send is IDENTICAL across all 4 typed variants (build payload →
@@ -53,7 +72,7 @@ RunCommand::QueryInfo
 | RunCommand::QueryCallback(_)
 | RunCommand::SetOs(_)
 | RunCommand::ApplyHostContext { .. } => {
-    let payload = build_typed_payload(&params.command);
+    let payload = core::build_typed_payload(&params.command);
     send_raw_report(&payload, params.vendor_id, params.product_id,
                      params.usage_page, params.usage, params.verbose)?;
     Ok(CommandResponse::Timeout)   // placeholder

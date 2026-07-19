@@ -56,7 +56,7 @@
               "type": "Task",
               "id": "P1.M1.T2",
               "title": "Typed-Command Framing (multi-report chunking with 0xF0 discriminator)",
-              "status": "Complete",
+              "status": "Ready",
               "description": "Frame typed commands using [0x81, 0x9F, 0xF0, cmd_id, args...] with the same ETX-framed, multi-report chunking as strings. APPLY_HOST_CONTEXT may span reports (uncapped callback-id list).",
               "subtasks": [
                 {
@@ -79,7 +79,7 @@
                   "type": "Subtask",
                   "id": "P1.M1.T2.S2",
                   "title": "Wire typed commands into run() dispatch and send path",
-                  "status": "Complete",
+                  "status": "Ready",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M1.T2.S1"
@@ -96,14 +96,14 @@
               "type": "Task",
               "id": "P1.M1.T3",
               "title": "Response Parsing & run() Return Type Change",
-              "status": "Planned",
+              "status": "Researching",
               "description": "Parse the 32-byte IN report after a typed burst into CommandResponse. Change run() to return Result<CommandResponse, QmkError>.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M1.T3.S1",
                   "title": "Implement response reader and parser (0x51 typed vs 0/1 legacy vs timeout)",
-                  "status": "Planned",
+                  "status": "Complete",
                   "story_points": 2,
                   "dependencies": [
                     "P1.M1.T2.S2"
@@ -118,7 +118,7 @@
                   "type": "Subtask",
                   "id": "P1.M1.T3.S2",
                   "title": "Change run() signature to return CommandResponse and wire response parsing",
-                  "status": "Planned",
+                  "status": "Researching",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M1.T3.S1"

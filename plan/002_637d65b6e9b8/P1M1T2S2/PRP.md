@@ -26,7 +26,7 @@ only reply capture/parsing (P1.M1.T3) as the remaining gap.
 
 **Deliverable**: `src/lib.rs` whose `run()` has NO `todo!()` arms: the 4 typed
 variants dispatch through one collapsed or-pattern match arm that does
-`build_typed_payload(&params.command)` → `send_raw_report(...)` → returns a
+`core::build_typed_payload(&params.command)` → `send_raw_report(...)` → returns a
 documented `CommandResponse::Timeout` placeholder; plus `run()`'s rustdoc updated
 to describe the typed dispatch (not "stubbed with todo!()"); plus 4 new unit
 tests proving each typed variant reaches `send_raw_report`. AND `src/core.rs`
@@ -148,7 +148,7 @@ REPLACE WITH:
         | RunCommand::QueryCallback(_)
         | RunCommand::SetOs(_)
         | RunCommand::ApplyHostContext { .. } => {
-            let payload = build_typed_payload(&params.command);
+            let payload = core::build_typed_payload(&params.command);
             send_raw_report(
                 &payload,
                 params.vendor_id,
@@ -340,7 +340,7 @@ block in `src/lib.rs` (after the last existing test, before the closing `}`):
 - [ ] `run()` contains NO `todo!()`; all 6 `RunCommand` variants dispatch
       (`ListDevices`/`SendMessage` unchanged; the 4 typed variants via the
       collapsed or-pattern arm).
-- [ ] The typed arm calls `build_typed_payload(&params.command)` then
+- [ ] The typed arm calls `core::build_typed_payload(&params.command)` then
       `send_raw_report(&payload, params.vendor_id, params.product_id,
       params.usage_page, params.usage, params.verbose)?` and returns
       `Ok(CommandResponse::Timeout)` (documented placeholder).
@@ -518,12 +518,15 @@ src/
 //   commands are unreachable from the CLI; the P4 caller lands after P1.M1.T3
 //   replaces this placeholder). Document it in the arm comment + run() rustdoc.
 
-// GOTCHA: build_typed_payload is `pub(crate)` in core.rs (private module
-//   `mod core;`). It is NOT re-exported at the crate root. From run() in lib.rs,
-//   call it by its bare name `build_typed_payload(...)` — it is in scope because
-//   `mod core;` is a private sibling module and `pub(crate)` makes it visible
-//   crate-wide. (send_raw_report IS re-exported, so it is also callable bare.)
-//   Confirmed: the existing SendMessage arm calls `send_raw_report(...)` bare.
+// CRITICAL: build_typed_payload is `pub(crate)` in core.rs (private module
+//   `mod core;`) and is NOT in the `pub use core::{ … }` re-export at the crate
+//   root (only send_raw_report / list_hid_devices / parse_hex_or_decimal / the
+//   DEFAULT_* consts are re-exported). So from run() in lib.rs you MUST call it
+//   as `core::build_typed_payload(&params.command)` — a BARE `build_typed_payload(…)`
+//   fails with E0425 "cannot find function `build_typed_payload` in this scope"
+//   (verified: there is NO `use core::build_typed_payload;` import). Contrast
+//   send_raw_report, which IS re-exported and so is callable bare (as the
+//   existing SendMessage arm does). This is the #1 compile trap in this task.
 
 // GOTCHA: the tests must use a BOGUS VID/PID (e.g. Some(0xDEAD), Some(0xBEEF))
 //   so the device filter matches nothing and send_raw_report returns
@@ -591,7 +594,7 @@ Task 2: EDIT src/lib.rs — switch the match to a borrow (Edit 1a)
 Task 3: EDIT src/lib.rs — replace the todo!() arms with the collapsed dispatch (Edit 1b)
   - REPLACE the 4 todo!() arms + header comment (exact FIND text in "What") with
           the collapsed or-pattern arm (exact REPLACE text in "What").
-  - CHECK: the arm calls build_typed_payload(&params.command) then send_raw_report(...)
+  - CHECK: the arm calls core::build_typed_payload(&params.command) then send_raw_report(...)
           then returns Ok(CommandResponse::Timeout). The `?` propagates transport
           errors (DeviceNotFound etc.) exactly like the SendMessage arm.
 
@@ -631,7 +634,7 @@ Task 7: VALIDATE (do not skip)
           fmt --check exit 0; all tests pass (existing incl. S1's 7 + the 4 new).
   - IF "function build_typed_payload is never used": the typed arm isn't calling
           it — check Edit 1b landed and the arm body references
-          build_typed_payload(&params.command).
+          core::build_typed_payload(&params.command).
   - IF E0500 "cannot move out of ... in pattern": you forgot Edit 1a (the match
           is still `match params.command` move, but the typed arm borrows
           &params.command). Apply Edit 1a.
@@ -739,12 +742,17 @@ cargo build 2>&1 | tee /tmp/build.log
 # Expected: "Finished `dev` profile ..." and NO "warning:" lines.
 #   - If "function `build_typed_payload` is never used": the typed arm didn't
 #     land (Edit 1b) OR you forgot to remove its #[allow(dead_code)] is fine but
-#     the call is missing — check the arm calls build_typed_payload(&params.command).
+#     the call is missing — check the arm calls core::build_typed_payload(&params.command).
 #     (If you LEFT the allow on by mistake, build still passes but clippy may
 #      flag a redundant attribute — remove it per Edit 2a.)
 #   - If E0500 "cannot move out of `params.command`": you forgot Edit 1a — the
 #     match is still `match params.command` (move) but the arm borrows
 #     &params.command. Change to `match &params.command`.
+#   - If E0425 "cannot find function `build_typed_payload` in this scope": you
+#     called it BARE. build_typed_payload is pub(crate) in `mod core` but is NOT
+#     re-exported at the crate root, so it must be called as
+#     `core::build_typed_payload(&params.command)` (or add a `use core::build_typed_payload;`).
+#     Do NOT change the function to pub — qualify the call.
 
 # Lint (default clippy — no .clippy.toml exists).
 cargo clippy --lib 2>&1 | tee /tmp/clippy.log
@@ -827,7 +835,7 @@ grep -n "todo!" src/lib.rs || echo "no todo!() in lib.rs (good)"
 
 # Confirm the typed arm actually calls build_typed_payload (the S1→S2 handoff).
 grep -n "build_typed_payload" src/lib.rs
-# Expected: one hit — the `let payload = build_typed_payload(&params.command);` line.
+# Expected: one hit — the `let payload = core::build_typed_payload(&params.command);` line.
 
 # Confirm build_typed_payload no longer carries #[allow(dead_code)] (it has a
 # real consumer now), while RESPONSE_MARKER / REPLY_READ_TIMEOUT_MS still do.
@@ -856,7 +864,7 @@ cargo build 2>&1 | grep -iE "never used|warning" || echo "zero dead-code warning
 ### Feature Validation
 
 - [ ] `run()` contains NO `todo!()` (`grep -n "todo!" src/lib.rs` → empty).
-- [ ] The collapsed typed arm calls `build_typed_payload(&params.command)` then
+- [ ] The collapsed typed arm calls `core::build_typed_payload(&params.command)` then
       `send_raw_report(&payload, params.vendor_id, params.product_id,
       params.usage_page, params.usage, params.verbose)?` and returns
       `Ok(CommandResponse::Timeout)`.
@@ -902,6 +910,13 @@ cargo build 2>&1 | grep -iE "never used|warning" || echo "zero dead-code warning
   `RunCommand::ApplyHostContext{ layer, callbacks, clear_board }`) just to pass
   it to the builder — that's a symptom of forgetting the borrow-match. With
   `match &params.command`, `&params.command` is directly available.
+- ❌ Don't call `build_typed_payload(…)` BARE from `run()` — it is `pub(crate)`
+  in the private `mod core` and is NOT in the `pub use core::{ … }` re-export at
+  the crate root (only `send_raw_report`/`list_hid_devices`/… are). A bare call
+  fails with E0425 "cannot find function". Call it as
+  `core::build_typed_payload(&params.command)`. Do NOT "fix" this by making the
+  fn `pub` or adding a re-export — qualifying the call is the intended minimal
+  change. (Verified: no `use core::build_typed_payload;` import exists.)
 - ❌ Don't append ETX (`0x03`) or prepend `0x81 0x9F` in the typed arm —
   `build_typed_payload` ALREADY returns the ETX-terminated payload starting with
   `0xF0`. `burst_to_one` prepends `[0x00,0x81,0x9F]` per report. Double-framing
@@ -949,5 +964,8 @@ the borrow-check reasoning verified (the `SendMessage` arm only auto-derefs
 semantics proven safe (no consumer reads it yet), and the test determinism
 guaranteed by a bogus VID/PID. The dispatch reuses the unchanged `send_raw_report`
 path, so there is zero risk of regressing the legacy string/cache/retry/drain
-logic. The one real trap (the move-vs-borrow match) is called out explicitly and
-its fix is a single token.
+logic. The two real compile traps are both called out explicitly with their
+exact error codes and one-token / one-prefix fixes: (1) the move-vs-borrow
+match (E0500 → `match &params.command`); (2) the `core::` qualification of
+`build_typed_payload` (E0425 — it is `pub(crate)` but NOT re-exported, so it
+must be `core::build_typed_payload(…)`, NOT bare).
