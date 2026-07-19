@@ -80,29 +80,50 @@ Because the wire protocol is shared, this feature touches **all three repos**:
 
 ## 3. Locked Design Decisions
 
-- **B1 — Coexistence = stack, not replace.** Board rules always run; host rules
-  apply on top. **Board layer first, then host layer on top. Board callbacks
-  first, then host callbacks.**
+> **Round-B revision (authoritative).** This section supersedes the earlier
+> stack-only design. The wire contract is owned by the firmware spec
+> (`dabstractor/qmk-notifier`, `PRD.md` §4.6 — **canonical**); the transport by
+> the `qmk_notifier` crate (`SPEC.md` §10); the host-side orchestration by this
+> document. Implementation-detail sections §6–§8 and §10–§14 below reflect the
+> pre-revision draft and are reconciled against §3–§5 + §9 where they conflict.
+
+- **B1 — Coexistence = per-window stack-or-replace, host-chosen via
+  `clear_board`.** The firmware offers **both**: with `clear_board=0` the board
+  runs its rules (board layer first → host layer on top; board callbacks first →
+  host callbacks after); with `clear_board=1` the firmware clears its board
+  layer/command first and the host context drives the board. The host selects per
+  window from `disable_firmware_config` (C10). Board rules are never silently
+  discarded — the host decides whether they run.
 - **B2 — Callback identity = firmware registry + startup name query.** Firmware
   declares named callbacks (`DEFINE_HOST_CALLBACKS`); IDs are declaration order;
-  QMKonnect queries names at connect and the rules file references callbacks by
-  **name**.
+  QMKonnect queries names at (re)connect and the rules file references callbacks
+  by **name**. Re-querying on every reconnect makes cross-flash renumbering
+  harmless.
 - **B3 — "Arbitrary callback" = firmware-registered C functions only** (the
   existing `on_enable`/`on_disable` pattern). Host-side actions (shell/launch)
-  and host-driven keyboard macros are **out of scope** for this feature.
-- **C1 — Format: TOML.** C2 — separate `rules.toml` next to `config.toml`.
-  C3 — hot-reload (fs watch + tray "Reload rules"). C4 — port the firmware
-  matcher to Rust for 1:1 parity, **stable subset only** in v1 (`*`, `^`, `$`,
-  two-part `WT`); regex classes (`\d \w \s \b .`) deferred. C5 — protocol
-  version/capability handshake with graceful fallback. C6 — VIA coexistence
-  included as a **future phase**, not core. C7 — no-match ⇒ clear host
-  contributions (configurable `keep`). C8 — **all matching callbacks fire**;
-  layers are exclusive (first-match-wins, one host layer on top). C9 — one global
-  ruleset for v1 (per-keyboard overrides later).
+  and host-driven keyboard macros are **out of scope**.
+- **C1 — Format: TOML.** C2 — separate `rules.toml` next to `config.toml`. C3 —
+  hot-reload (fs watch + tray "Reload rules"). **C4 — full matcher parity**: port
+  the firmware `pattern_match.c` to Rust **including** `+` and the classes
+  (`\d \D \w \W \s \S \b \B .`) — they are linear-time in the firmware NFA, so
+  there is no perf reason to subset. C5 — capability handshake with graceful
+  fallback (gated on `proto_ver == 2`). C6 — VIA coexistence is a future phase
+  (feature_flags bit `0x04` reserved). **C7 — no-match ⇒ always clear** (the
+  `on_no_match = "keep"` option is dropped; the host layer is cleared and host
+  callbacks' `on_disable` fires via the desired-set diff). C8 — **all matching
+  callbacks fire**; layers are exclusive (first-match-wins, one host layer). C9 —
+  one global ruleset for v1 (per-keyboard overrides later). **C10 —
+  `disable_firmware_config` per-rule** (default `false`, global default under
+  `[host]`, per-rule override on `[[layer_rules]]`/`[[callback_rules]]`): a
+  matched rule with it `true` contributes to a **replace** decision for that
+  window. **C11 — host layers reserved ≥ 224** so they resolve above board layers
+  under QMK's highest-layer-wins rule (`255 = LAYER_UNSET`/clear). **C12 — host is
+  the OS source of truth** while connected: `SET_OS` once at connect
+  (host-authoritative; firmware `OS_DETECTION` is the offline fallback).
 
 ## 4. Architecture & Coexistence Model
 
-Per-window-change data flow:
+Per-window-change data flow (the `disable_firmware_config` / `clear_board` model):
 
 ```
 window focus changes
@@ -113,110 +134,96 @@ debounce (existing, configurable ms)
         ▼
 build string  s = "{app_class}\x1D{title}"        (existing)
         │
-        ▼  ① Send STRING_MATCH(s)  ──►  firmware runs BOARD rules:
-        │                                 disable prev board cmd, deactivate
-        │                                 prev board layer, enable matched
-        │                                 board cmd, activate matched board layer
-        │  ◄── response[0] = matched(bool)
         ▼
 (if host-capable AND rules.toml present)
 evaluate host rules against s
    • layer_rules   : first match → L_h  (else none)
-   • callback_rules: ALL matches  → desired callback id set
+   • callback_rules: ALL matches → desired callback id set
+   • window is "replace" iff EVERY matched rule has disable_firmware_config=true
         │
-        ▼  ② Send APPLY_HOST_CONTEXT{layer=L_h, callbacks=set}  ──►  firmware:
-        │                                 set host_layer (on top of board's),
-        │                                 sync host callbacks (enable in-set,
-        │                                 disable not-in-set)
-        │  ◄── response[0]=0x51 (typed), ack
+   ┌──── replace, OR board has no rules ────┐   ┌── stack (>=1 rule non-disabling) AND board has rules ──┐
+   ▼                                        ▼   ▼                                                         ▼
+ ② APPLY_HOST_CONTEXT{L_h, set,            ① Send STRING_MATCH(s) ──► firmware runs BOARD rules
+      clear_board=1}  (NO string sent)         (disable prev cmd/layer, enable matched) ◄─ response[0]=matched
+   ──► firmware clears board layer/cmd,    ② APPLY_HOST_CONTEXT{L_h, set, clear_board=0}
+       then applies host layer + callbacks   ──► firmware applies host layer on top, syncs host callbacks
+   ◄── response[0]=0x51 ack                  ◄── response[0]=0x51 ack
+        │
         ▼
+on no match ⇒ APPLY_HOST_CONTEXT{layer=0xFF, set=empty}  (clear host layer + disable all host callbacks)
 update host state for next diff/logging
 ```
 
-**Ordering guarantee (B1):** the legacy string is always sent **first** and the
-host context **after** its round-trip completes, so board callbacks finish
-before host callbacks run, and the host layer stacks above the board layer.
-
 **Coexistence semantics (precise):**
 
-- The **string is always sent**, even when host rules exist, so board `DEFINE_*`
-  rules keep firing exactly as today.
+- The host decides, per window, whether the board runs: send the **string first**
+  iff the board has rules **and** ≥1 matched rule is non-disabling (stack);
+  otherwise send **only** `APPLY_HOST_CONTEXT` with `clear_board=1` (replace).
+  The string is shared by both board lanes, so it is sent at most once.
 - Firmware maintains **two independent layer trackers**: `activated_layer`
-  (board, unchanged) and `host_layer` (new, driven by `APPLY_HOST_CONTEXT`). They
-  never touch each other's state, so board deactivate/activate and host
-  set/clear are orthogonal — the host layer sits above the board layer.
-- Callbacks: board callbacks fire during string processing; host callbacks fire
-  during `APPLY_HOST_CONTEXT`. Both run; board first.
-- If `rules.toml` is absent or the keyboard is legacy (no host support), only ①
-  runs — i.e., today's behavior, bit-for-bit.
+  (board, selected per-OS via round-A multi-OS) and `host_layer` (driven by
+  `APPLY_HOST_CONTEXT`). They are orthogonal; host layers sit ≥ 224 so they
+  resolve above board layers. In **replace** mode the board tracker is cleared
+  for that window (the host's `clear_board` flag) and re-engages on the next
+  string send.
+- Callbacks: in stack mode board callbacks fire during string processing, then
+  host callbacks during `APPLY_HOST_CONTEXT`. In replace mode only host callbacks
+  fire. The `disable` field in a callback rule is an **explicit-exclusion**
+  override; the natural focus-out `on_disable` comes free from the desired-set
+  diff (a callback leaving the desired set is disabled by the firmware).
+- If `rules.toml` is absent or the keyboard is legacy (`proto_ver != 2`), only ①
+  the legacy string runs — today's behavior, bit-for-bit. Host rules are gated on
+  `proto_ver == 2`.
 
 ## 5. Wire Protocol (typed commands)
 
-All messages live in the `0x81 0x9F` qmk-notifier namespace (see `PROTOCOL.md`
-§2). The byte immediately after the header is a discriminator:
+> **Canonical: firmware `PRD.md` §4.6.** This section summarizes the
+> transport-relevant detail; the firmware owns the byte layout and this document
+> defers to it on disagreement. See `PROTOCOL.md` §8 for the desktop mirror and
+> the `qmk_notifier` crate `SPEC.md` §10 for the transport API.
 
-- **`0xF0`** ⇒ **typed command** (new). Single 32-byte report for v1:
-  `[0x81][0x9F][0xF0][cmd_id][ args… ][0x03]`
-- **anything else** ⇒ **legacy string** (unchanged): bytes are string chars until
-  `0x03` (ETX), chunked across reports by the crate.
+- **Discriminator:** `data[2] == 0xF0` ⇒ typed command; else legacy string
+  (unchanged). `0xF0` can never begin a real matched string (sanitizer allows
+  only `0x20–0x7E`), so **legacy firmware safely ignores typed commands**.
+- **Framing:** `[0x81][0x9F][0xF0][cmd_id][ args… ][0x03]`, **ETX-framed and
+  multi-report** like strings (chunked at 30 payload bytes/report). This removes
+  the earlier "≤26 callbacks per report" cap — `APPLY_HOST_CONTEXT` may span
+  reports. (The old v1 single-report/≤26 limit is withdrawn.)
+- **Responses:** legacy `[matched(0|1)]…`; typed `[0x51][cmd_id_echo][payload]…`;
+  no reply ⇒ `Timeout` ⇒ host stays string-only.
 
-`0xF0` is chosen because the firmware sanitizer only allows bytes `0x20–0x7E`
-plus `0x09/0x0A/0x0D/0x1D/0x03`; `0xF0` can never begin a real matched string, so
-the discriminator is unambiguous and **legacy firmware safely ignores typed
-commands** (it walks them as string chars, finds no pattern match, replies
-`response[0]=0`).
+**Command table** (firmware §4.6 is authoritative for field definitions):
 
-**Responses (32-byte reports):**
-
-- **Legacy string response (unchanged):** `[matched(0|1)][padding…]`.
-- **Typed response:** `[0x51][cmd_id_echo][payload…][padding]`.
-
-Typed responses use marker `0x51` (never `0`/`1`), so the host distinguishes a
-typed ack from a legacy match bool without ambiguity. (Request marker `0xF0`,
-response marker `0x51` — distinct on purpose to avoid confusion; any value `≥2`
-works since legacy responses are constrained to `0`/`1`.)
-
-**Command table:**
-
-| `cmd_id` | Name | Request args | Response payload (`[0x51][cmd_echo]` then:) |
+| `cmd_id` | Name | Request args | Response payload |
 | --- | --- | --- | --- |
 | `0x01` | `QUERY_INFO` | none | `[proto_ver][feature_flags][callback_count][board_rules_present]` |
-| `0x02` | `QUERY_CALLBACK` | `[index]` | `[index][name bytes, NUL-padded]` (name absent ⇒ `[index][0x00]`) |
-| `0x05` | `APPLY_HOST_CONTEXT` | `[layer][count][id0][id1]…` | `[ack]` (`1`=applied) |
+| `0x02` | `QUERY_CALLBACK` | `[index]` | `[index][name, NUL-padded]` |
+| `0x03` | `SET_OS` | `[os_byte]` | `[ack]` |
+| `0x04` | *(reserved — VIA, Phase E)* | — | — |
+| `0x05` | `APPLY_HOST_CONTEXT` | `[layer][flags][count][id…]` | `[ack]` |
 
-Where:
+- `proto_ver`: `1` = legacy/multi-OS firmware; `2` = round-B. Firmware-owned.
+- `feature_flags`: `0x01` `APPLY_HOST_CONTEXT`; `0x02` callback registry; `0x04`
+  *(reserved)* VIA.
+- `os_byte`: `0 UNSURE · 1 LINUX · 2 WINDOWS · 3 MACOS · 4 IOS`. The host sends
+  `SET_OS` once at connect; while connected the host OS is **authoritative** for
+  `current_os` (firmware `OS_DETECTION` is the offline fallback).
+- `APPLY_HOST_CONTEXT.layer`: desired host-layer number (`≥ 224`), or `0xFF`
+  (clear). `flags` bit 0 = **`clear_board`** ⇒ firmware clears its board
+  `activated_layer` + current command before applying the host context (the
+  per-window "replace"). `id…` = the full desired enabled set; firmware diffs
+  (disable-before-enable).
 
-- `proto_ver` = `2` for this release (`1` = legacy string-only firmware).
-- `feature_flags` bitmask: `0x01` = `APPLY_HOST_CONTEXT` supported; `0x02` =
-  callback registry present; `0x04` = (reserved) VIA-coexist dispatch.
-- `callback_count` = number of entries in the firmware registry (0 if none).
-- `board_rules_present` = `1` if the keymap defined `DEFINE_SERIAL_LAYERS`/`…COMMANDS`.
-- `APPLY_HOST_CONTEXT.layer`: `0xFF` ⇒ clear host layer; else the layer number.
-  `callbacks` = the **full desired enabled set** (ids to ENABLE); the firmware
-  diffs against its current enabled set and calls `on_enable`/`on_disable`
-  accordingly. (v1 cap: `count ≤ 26` to fit one report — see §13, R2.)
-
-**Handshake & graceful fallback:**
-
-1. On device connect, QMKonnect sends `QUERY_INFO`.
-2. **New firmware** replies `[0x51][0x01][proto=2][flags][count][…]`.
-3. **Legacy firmware** walks the typed bytes as a string, matches nothing,
-   replies `[0x00…]` (or times out). QMKonnect treats `response[0] != 0x51` (or
-   timeout) as **legacy ⇒ string-only mode**: it keeps sending ① the string (so
-   board rules still work) and **never sends host commands**.
-4. If new + `flags & APPLY_HOST_CONTEXT`: for `i in 0..count` send
-   `QUERY_CALLBACK(i)` and build the **name→id** map; validate `rules.toml`
-   callback names against it (warn + skip unknown).
-
-> **Handshake timing constraint (correctness gotcha — see §13, R6).** Against
-> **legacy** firmware, `QUERY_INFO` is walked as a no-match string, and
-> `process_full_message` *always* calls `deactivate_layer()`/`disable_command()`
-> before failing to match. This is harmless **only when firmware state is fresh**
-> — i.e. at (re)connect, where `activated_layer == LAYER_UNSET` and
-> `current_command == NULL`, so both are no-ops. **Therefore: run the handshake
-> exclusively at (re)connect, never as a periodic poll.** New firmware has no
-> such side effect (typed commands bypass `process_full_message` entirely), so
-> this constraint only protects the legacy fallback path.
+**Handshake & `has_been_queried`:** at (re)connect the host sends `QUERY_INFO`
+**at most once per board boot** — the firmware sets `has_been_queried` on the
+first `QUERY_INFO`, so a mid-session HID re-enumeration against **legacy** firmware
+cannot clear an active board layer (legacy walks `QUERY_INFO` as a no-match
+string and `process_full_message` always disables/deactivates first — harmless
+only when board state is fresh). If `response[0]==0x51` & `proto_ver==2` &
+`flags & 0x01` ⇒ `QUERY_CALLBACK` sweep → `name→id` map → validate `rules.toml`.
+Else (`response[0] != 0x51` or timeout) ⇒ legacy ⇒ string-only; **never send typed
+commands**. (Round-B typed commands bypass `process_full_message`, so they have no
+board side effect on `proto_ver==2` firmware.)
 
 ## 6. Firmware Spec (`qmk-notifier`)
 
@@ -474,34 +481,39 @@ arrive.
 
 ```toml
 # rules.toml — host-side window rules.
-# Board (DEFINE_*) rules ALWAYS run; these stack on top (layers) and
-# additionally (callbacks). Run `qmkonnect --validate-rules` after editing.
+# disable_firmware_config chooses, per window, whether the board runs its own
+# rules (stack) or is cleared and driven solely by the host (replace). Global
+# default under [host]; per-rule override below. Host layers are >= 224.
+# Run `qmkonnect --validate-rules` after editing.
 
 [host]
-on_no_match = "clear"        # "clear" (default) | "keep"
-# default_layer = 2          # optional; only meaningful with future "default" mode
+disable_firmware_config = false   # global default: false = stack (board runs), true = replace
+# On no match the host layer is always cleared and all host callbacks disabled.
 
-# Layer rules: FIRST match wins. One host layer active at a time, on top of the
-# board's layer.
+# Layer rules: FIRST match wins. One host layer active at a time (>= 224).
 [[layer_rules]]
 match = "alacritty"                       # class-only pattern
-layer = 2
+layer = 224
+disable_firmware_config = true           # optional override (default inherits [host])
 
 [[layer_rules]]
 match = ["*chrome*", "*youtube*"]         # [class_pattern, title_pattern] (== WT())
-layer = 4
+layer = 225
 case_sensitive = false                    # optional, default false
 
 # Callback rules: ALL matches fire. Names come from the keyboard's registry
-# (run `qmkonnect --list-callbacks` to see them).
+# (run `qmkonnect --list-callbacks` to see them). The disable list is an
+# explicit-exclusion override; focus-out on_disable fires automatically via the
+# desired-set diff.
 [[callback_rules]]
 match = "neovide"
 enable = ["vim_lazy", "disable_vim"]      # run on focus-in
-disable = ["vim_lazy"]                    # optional: run on focus-out
+disable = ["vim_lazy"]                    # optional: force-off override
 
 [[callback_rules]]
 match = ["*chrome*", "*claude*"]
 enable = ["vim_lazy", "disable_vim"]
+disable_firmware_config = true           # for this window, skip the string -> board can't match
 ```
 
 Rust model (`src/core/rules.rs`):
@@ -518,19 +530,16 @@ pub struct RuleSet {
 
 #[derive(Debug, Deserialize)]
 pub struct HostDefaults {
-    #[serde(default)] pub on_no_match: OnNoMatch,   // default Clear
+    #[serde(default)] pub disable_firmware_config: bool,   // default false (stack)
 }
-impl Default for HostDefaults { fn default() -> Self { Self { on_no_match: OnNoMatch::Clear } } }
-
-#[derive(Debug, Deserialize, Clone, Copy)]
-#[serde(rename_all = "lowercase")]
-pub enum OnNoMatch { Clear, Keep }
+impl Default for HostDefaults { fn default() -> Self { Self { disable_firmware_config: false } } }
 
 #[derive(Debug, Deserialize)]
 pub struct LayerRule {
     #[serde(rename = "match")] pub pattern: Pattern,
     pub layer: u8,
     #[serde(default)] pub case_sensitive: bool,
+    #[serde(default)] pub disable_firmware_config: Option<bool>,  // None => inherit [host]
 }
 
 #[derive(Debug, Deserialize)]
@@ -539,6 +548,7 @@ pub struct CallbackRule {
     #[serde(default)] pub enable: Vec<String>,
     #[serde(default)] pub disable: Vec<String>,
     #[serde(default)] pub case_sensitive: bool,
+    #[serde(default)] pub disable_firmware_config: Option<bool>,  // None => inherit [host]
 }
 
 #[derive(Debug, Deserialize)]
@@ -549,11 +559,13 @@ pub enum Pattern {
 }
 ```
 
-Match semantics ported from firmware (`qmk_notifier::pattern`): `Pattern::Single`
-against a `{class}{GS}{title}` message matches the **class** part only
-(firmware parity); `Pattern::Parts` requires both halves. `case_sensitive` per
-rule (default `false`). **Deferred (not v1):** `\d \D \w \W \s \S \b \B` and `.`
-regex classes.
+A rule's effective `disable_firmware_config` = its override if `Some`, else the
+`[host]` default. The window is **replace** iff every matched rule's effective
+flag is `true` (the string is shared by both board lanes, so it is sent iff the
+board has rules **and** ≥1 matched rule is non-disabling). Match semantics are a
+**full-parity port** of the firmware `pattern_match.c` (incl. `+` and
+`\d \D \w \W \s \S \b \B .` — all linear-time in the NFA). `case_sensitive` per
+rule (default `false`).
 
 ## 10. Migration from `DEFINE_*`
 

@@ -3,9 +3,14 @@
 **Product Requirements Document & Master Specification**
 Version: 0.2.4 · Status: Beta · Owner: Mulletware · License: MIT
 
-> **Planned feature (v0.3.0):** Host-side window rules — edit layer/callback
-> rules in `rules.toml` with no reflash. Fully specified in the companion
-> `HOST_RULES.md`; see F11/F12 below and the Document Map.
+> **Planned feature (v0.3.0, "round B"):** Host-side window rules — edit
+> layer/callback rules in `rules.toml` with no reflash. Fully specified in the
+> companion `HOST_RULES.md`; the **typed-command wire contract is owned by the
+> firmware spec** ([`dabstractor/qmk-notifier` `PRD.md`
+> §4.6](https://github.com/dabstractor/qmk-notifier/blob/main/PRD.md)), transported
+> by the `qmk_notifier` crate ([`SPEC.md`
+> §10](https://github.com/dabstractor/qmk_notifier/blob/main/SPEC.md)). See F11/F12
+> below and the Document Map.
 
 > This is the **master** document for the QMKonnect desktop application. It
 > defines the product, its goals, its users, and its feature set, and it
@@ -346,7 +351,7 @@ PRD.
 | @CONFIG.md | TOML schema, defaults, render body, config paths per OS, CLI flag reference. |
 | @PACKAGING.md | Cargo build profile, per-platform installers (Inno/PKGBUILD/DMG), CI release workflow, code signing, the dev test loop. |
 | @FIRMWARE.md | The `qmk-notifier` firmware module contract, keymap integration steps, pattern-matching syntax, the user's reference keymap. |
-| @HOST_RULES.md | **Planned (v0.3.0):** host-side `rules.toml` (no-reflash layer/callback rules), typed Raw HID protocol, named callback registry, three-repo rollout. Not yet implemented. |
+| @HOST_RULES.md | **Round B (v0.3.0), specified — not yet implemented:** host-side `rules.toml` (no-reflash layer/callback rules, per-rule `disable_firmware_config`), the typed-command wire mirror (canonical: firmware `PRD.md` §4.6), named callback registry, three-repo rollout. |
 
 > **Living source of truth:** the production codebase itself
 > (`src/`, `Cargo.toml`, `packaging/`). Where a spec and the code disagree, the

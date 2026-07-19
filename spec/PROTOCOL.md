@@ -273,6 +273,65 @@ changes or a write fails (stale handle after replug).
 | Firmware buffer | 256 | `MSG_BUFFER_SIZE` |
 | Default usage page | `0xFF60` | `DEFAULT_USAGE_PAGE` |
 | Default usage | `0x61` | `DEFAULT_USAGE` |
+| Typed discriminator (round B) | `0xF0` | `data[2]` after `0x81 0x9F` ⇒ typed cmd (§8) |
+| Typed response marker (round B) | `0x51` | vs legacy `0`/`1` match-bool (§8) |
+
+---
+
+## 8. Typed-Command Namespace (round B / v0.3.0)
+
+> **Canonical owner: the firmware spec** (`dabstractor/qmk-notifier`, `PRD.md`
+> §4.6). This section mirrors the transport-relevant summary for desktop work; if
+> the two disagree, **the firmware PRD §4.6 wins**. The desktop orchestration
+> (handshake, per-window send logic, `rules.toml`) is in `HOST_RULES.md`; the
+> transport API is in the `qmk_notifier` crate `SPEC.md` §10.
+
+**Discriminator:** `data[2] == 0xF0` ⇒ typed command; anything else ⇒ legacy
+string (unchanged). `0xF0` can never begin a real matched string (sanitizer
+allows only `0x20–0x7E`), so legacy firmware safely ignores typed commands.
+
+**Framing:** `[0x81][0x9F][0xF0][cmd_id][ args… ][0x03]`, **ETX-framed and
+multi-report** like strings (chunked at 30 payload bytes/report). Multi-report
+framing removes any fixed cap on `APPLY_HOST_CONTEXT`'s callback-id list.
+
+**Responses (32-byte):** legacy string ⇒ `[matched(0|1)]…`; typed ⇒
+`[0x51][cmd_id_echo][payload]…`; no reply within timeout ⇒ `Timeout` ⇒ host
+stays in string-only mode.
+
+**Command table:**
+
+| `cmd_id` | Name | Request args | Response payload |
+| --- | --- | --- | --- |
+| `0x01` | `QUERY_INFO` | none | `[proto_ver][feature_flags][callback_count][board_rules_present]` |
+| `0x02` | `QUERY_CALLBACK` | `[index]` | `[index][name, NUL-padded]` |
+| `0x03` | `SET_OS` | `[os_byte]` | `[ack]` |
+| `0x04` | *(reserved — VIA, Phase E)* | — | — |
+| `0x05` | `APPLY_HOST_CONTEXT` | `[layer][flags][count][id…]` | `[ack]` |
+
+- `proto_ver`: `1` = legacy/multi-OS firmware (today); `2` = round-B firmware.
+  Firmware-owned.
+- `feature_flags`: `0x01` `APPLY_HOST_CONTEXT`; `0x02` callback registry; `0x04`
+  *(reserved)* VIA.
+- `os_byte`: `0 UNSURE · 1 LINUX · 2 WINDOWS · 3 MACOS · 4 IOS` (mirrors QMK
+  `os_variant_t`). The host sends `SET_OS` once at connect; while connected the
+  host's OS is **authoritative** for `current_os`.
+- `layer`: desired host-layer number, or `0xFF` (clear). **Host layers reserved ≥
+  224** so they resolve above board layers.
+- `flags` bit 0 = **`clear_board`**: firmware clears its board `activated_layer` +
+  current command before applying the host context — the per-window "replace"
+  semantics (`disable_firmware_config` in `rules.toml`).
+- `id…`: the full desired enabled callback-id set; firmware diffs
+  (disable-before-enable).
+
+**Handshake (at (re)connect, once per board boot):** `QUERY_INFO` → if
+`response[0]==0x51` & `proto_ver==2` & `flags & 0x01` → `QUERY_CALLBACK` sweep →
+`name→id` map → validate `rules.toml` names. Else (`response[0] != 0x51` or
+timeout) ⇒ legacy ⇒ string-only. The firmware sets `has_been_queried` on the
+first `QUERY_INFO` to keep a mid-session reconnect from clearing an active board
+layer against legacy firmware.
+
+The `qmk_notifier` crate (v0.3.0) frames these and returns a parsed
+`CommandResponse`; see the crate `SPEC.md` §10.
 
 ---
 
