@@ -18,7 +18,7 @@
               "type": "Task",
               "id": "P1.M1.T1",
               "title": "Typed-Command Types (HostOs, RunCommand variants, CommandResponse)",
-              "status": "Researching",
+              "status": "Complete",
               "description": "Add the new public types to the crate: HostOs enum, new RunCommand variants, and CommandResponse enum.",
               "subtasks": [
                 {
@@ -39,7 +39,7 @@
                   "type": "Subtask",
                   "id": "P1.M1.T1.S2",
                   "title": "Add CommandResponse enum",
-                  "status": "Researching",
+                  "status": "Complete",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M1.T1.S1"
@@ -63,7 +63,7 @@
                   "type": "Subtask",
                   "id": "P1.M1.T2.S1",
                   "title": "Implement typed-command payload builder and multi-report framing",
-                  "status": "Planned",
+                  "status": "Researching",
                   "story_points": 2,
                   "dependencies": [
                     "P1.M1.T1.S2"
