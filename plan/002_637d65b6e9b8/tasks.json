@@ -280,14 +280,14 @@
       "type": "Phase",
       "id": "P2",
       "title": "QMKonnect Pattern Matcher — Full-Parity Port",
-      "status": "Planned",
+      "status": "Researching",
       "description": "Port the firmware pattern_match.c Thompson-NFA matcher to Rust at src/core/pattern.rs. This is a full-parity port (not a subset) including *, ^, $, WT(), +, and all character classes (\\d \\D \\w \\W \\s \\S \\b \\B .). All constructs are linear-time in the NFA. The port is the foundation for host-side rule evaluation and must produce identical results to the firmware matcher for every pattern/string pair.",
       "milestones": [
         {
           "type": "Milestone",
           "id": "P2.M1",
           "title": "Pattern Matcher Port (src/core/pattern.rs)",
-          "status": "Planned",
+          "status": "Researching",
           "description": "Create the new src/core/pattern.rs module, register it in src/core/mod.rs, and port the complete firmware matcher with parity tests against the firmware test corpus.",
           "tasks": [
             {
@@ -370,7 +370,7 @@
               "type": "Task",
               "id": "P2.M1.T3",
               "title": "Public API, Anchor Strategy & Delimiter-Aware Matcher",
-              "status": "Researching",
+              "status": "Complete",
               "description": "Port match_with_anchors() (anchor strategy), the public pattern_match() entry point, and the delimiter-aware match_pattern() from notifier.c.",
               "subtasks": [
                 {
@@ -392,7 +392,7 @@
                   "type": "Subtask",
                   "id": "P2.M1.T3.S2",
                   "title": "Port delimiter-aware match_pattern() and Pattern enum (Single/Parts)",
-                  "status": "Researching",
+                  "status": "Complete",
                   "story_points": 1,
                   "dependencies": [
                     "P2.M1.T3.S1"
@@ -410,14 +410,14 @@
               "type": "Task",
               "id": "P2.M1.T4",
               "title": "Port Firmware Test Corpus as Parity Tests",
-              "status": "Planned",
+              "status": "Researching",
               "description": "Port the firmware pattern matcher test corpus into Rust unit tests to validate full parity.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P2.M1.T4.S1",
                   "title": "Port firmware test cases as Rust parity tests",
-                  "status": "Planned",
+                  "status": "Researching",
                   "story_points": 2,
                   "dependencies": [
                     "P2.M1.T3.S2"

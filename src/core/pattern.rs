@@ -14,6 +14,8 @@
 // (`src/platforms/mod.rs:18`, `src/platforms/hyprland.rs:523`).
 #![allow(dead_code)]
 
+use serde::Deserialize;
+
 // Processed-pattern placeholder bytes — the contract between `process_escapes`
 // and the Thompson NFA compiler (P2.M1.T2.S1). Mirrors the firmware
 // `pattern_match.c` byte contract (see architecture `external_deps.md` §3 and
@@ -1062,6 +1064,118 @@ pub fn pattern_match(pattern: &str, s: &str, case_sensitive: bool) -> bool {
     let parsed = parse_pattern(pattern); // T1.S2 (GOTCHA-J: reuse, do NOT reimplement)
     match_with_anchors(&parsed, s, case_sensitive)
     // `parsed` drops here automatically — NO free_parsed_pattern analog (GOTCHA-D).
+}
+
+// ============================================================================
+// P2.M1.T3.S2 — delimiter-aware `match_pattern` + `Pattern` enum
+// (full-parity port of firmware `notifier.c::match_pattern`, lines 425–530)
+// ============================================================================
+
+/// A host-side rule pattern — the typed form of the `match` field in
+/// `rules.toml`'s `[layer_rules]` / `[callback_rules]`.
+///
+/// The firmware `match_pattern` receives its pattern as a raw C string that may
+/// embed a Group Separator byte (`GS`, `0x1D`, ASCII 29) — the
+/// `WT(class, title)` / `WINDOW_TITLE` macro (`notifier.h:36-39`) expands
+/// `WT("Firefox", "*youtube*")` to the C literal `"Firefox\x1D*youtube*"`.
+/// The matcher must then scan the pattern for the GS at runtime to decide
+/// whether to treat it as class-only or class+title.
+///
+/// On the Rust host this is **structural, not textual**: `serde(untagged)`
+/// resolves the variant at *deserialization* time, so the enum variant IS the
+/// answer to "does the pattern have a GS?":
+///
+/// | TOML form                              | `Pattern` variant          | Meaning                       |
+/// | -------------------------------------- | -------------------------- | ----------------------------- |
+/// | `match = "alacritty"`                  | [`Pattern::Single(String)`] | class only (no GS)            |
+/// | `match = ["*chrome*", "*youtube*"]`    | [`Pattern::Parts(String,String)`] | class + title (has GS, == `WT`) |
+///
+/// `WT("Firefox", "*youtube*")` thus corresponds to `match = ["Firefox", "*youtube*"]`.
+///
+/// serde `untagged` tries variants in declaration order: a scalar string →
+/// `Single`; a 2-element array → `Parts`; a 1/3-element array, an integer, or a
+/// table matches neither and **errors** (desired strictness for
+/// `--validate-rules`). No custom visitor is needed.
+///
+/// See `spec/HOST_RULES.md` §8(2) + §9 and `notifier.h` for the contract.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(untagged)]
+pub enum Pattern {
+    /// Class-only pattern. Deserialized from a bare TOML string:
+    /// `match = "Firefox"`. Matches `app_class` only — firmware parity for a
+    /// delimiter-less pattern (the window title is never consulted).
+    Single(String),
+    /// Class + title pattern. Deserialized from a 2-element TOML array:
+    /// `match = ["*chrome*", "*youtube*"]` (== firmware `WT(class, title)`).
+    /// **Both** halves must match.
+    Parts(String, String),
+}
+
+/// Delimiter-aware top-level rule matcher — a full-parity port of firmware
+/// `notifier.c::match_pattern` (lines 425–530), the GS-delimiter-aware wrapper
+/// around the leaf [`pattern_match`] NFA matcher.
+///
+/// # Firmware-parity mapping
+///
+/// The firmware function is a 2×2 dispatch on (pattern has GS?) × (message has
+/// GS?). Because the qmkonnect host **always** joins `app_class` + GS + `title`
+/// when emitting a window notification (`src/core/notifier.rs:309`), the
+/// message column is effectively constant = "has GS" for real traffic, so the
+/// 2×2 matrix collapses onto the two `Pattern` variants:
+///
+/// | firmware case | pattern GS? | msg GS? | `Pattern`     | Rust action                                              |
+/// | ------------- | ----------- | ------- | ------------- | -------------------------------------------------------- |
+/// | A1 / A2       | no          | any     | [`Single`]    | `pattern_match(p, app_class, cs)` (title NOT consulted)  |
+/// | B1 / B2       | yes         | any     | [`Parts`]     | `pattern_match(c, app_class, cs) && pattern_match(t, title, cs)` |
+///
+/// The firmware `B1` branch ("pattern has GS, message has no GS → match only
+/// the left half") is **withdrawn** by the item spec: on the host we always know
+/// both halves, so [`Parts`] always evaluates `t` against `title`.
+///
+/// # Design note (REFINEMENT G)
+///
+/// The firmware's `find_first_delimiter` / `split_by_delimiter` helpers and the
+/// 256-byte stack-buffer overflow guards are not ported: on the host the GS
+/// split is already resolved structurally (the `Pattern` variant encodes
+/// "does the pattern have a GS?" and `app_class` / `title` are the message's two
+/// halves). The whole if/else cascade reduces to the `match pattern` below.
+///
+/// # Examples
+///
+/// ```
+/// use qmkonnect::core::pattern::{Pattern, match_pattern};
+/// // class-only rule (TOML `match = "alacritty"`):
+/// assert!(match_pattern(&Pattern::Single("alacritty".into()), "Alacritty", "vim", false));
+/// // class+title rule (TOML `match = ["*chrome*","*youtube*"]`, == WT):
+/// assert!(match_pattern(&Pattern::Parts("*chrome*".into(), "*youtube*".into()),
+///                       "Google Chrome", "cat - YouTube", false));
+/// ```
+///
+/// See firmware `notifier.c:425-530` + PRD §4.1 + §14 for the contract.
+pub fn match_pattern(
+    pattern: &Pattern,
+    app_class: &str,
+    title: &str,
+    case_sensitive: bool,
+) -> bool {
+    match pattern {
+        // Firmware cases A1 + A2: pattern has no GS. The message's left half
+        // (app_class) is matched; `title` is deliberately NOT consulted — a
+        // class-only rule never matches on the window title (firmware parity).
+        // (When `title` is empty the message is class-only, so "whole message"
+        // and "msg_left" both reduce to `app_class`.)
+        Pattern::Single(p) => pattern_match(p, app_class, case_sensitive),
+
+        // Firmware case B2: pattern has GS, message has GS (always, on the
+        // host) → split both, BOTH halves must match. The item spec mandates
+        // "both halves must match" (it does NOT reproduce firmware B1's
+        // "message has no GS → match only the left half" branch, because the
+        // host always knows both halves).
+        Pattern::Parts(c, t) => {
+            pattern_match(c, app_class, case_sensitive)
+                && pattern_match(t, title, case_sensitive)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -2446,5 +2560,289 @@ mod tests {
         assert!(parsed.start_anchored && parsed.end_anchored);
         assert!(match_with_anchors(&parsed, "abc", true));
         assert!(!match_with_anchors(&parsed, "xabc", true));
+    }
+
+    // --- Pattern::Single: always matches app_class (title ignored) ---
+
+    #[test]
+    fn test_mp_single_matches_app_class_no_title() {
+        // class exact, no title → whole-msg match
+        assert!(match_pattern(
+            &Pattern::Single("Firefox".into()),
+            "Firefox",
+            "",
+            false
+        ));
+    }
+
+    #[test]
+    fn test_mp_single_matches_app_class_title_present_ignored() {
+        // class exact, title PRESENT but ignored (firmware parity)
+        assert!(match_pattern(
+            &Pattern::Single("Firefox".into()),
+            "Firefox",
+            "Google",
+            false
+        ));
+    }
+
+    #[test]
+    fn test_mp_single_case_insensitive_default() {
+        assert!(match_pattern(
+            &Pattern::Single("firefox".into()),
+            "Firefox",
+            "",
+            false
+        ));
+    }
+
+    #[test]
+    fn test_mp_single_case_sensitive() {
+        assert!(!match_pattern(
+            &Pattern::Single("firefox".into()),
+            "Firefox",
+            "",
+            true
+        ));
+    }
+
+    #[test]
+    fn test_mp_single_class_mismatch() {
+        assert!(!match_pattern(
+            &Pattern::Single("Firefox".into()),
+            "Chrome",
+            "",
+            false
+        ));
+    }
+
+    #[test]
+    fn test_mp_single_ignores_title_linchpin() {
+        // THE linchpin (G1): title matches the PATTERN but Single ignores title.
+        // An implementer who joined "class\x1Dtitle" and matched Single against
+        // it would wrongly return true here.
+        assert!(!match_pattern(
+            &Pattern::Single("Firefox".into()),
+            "Chrome",
+            "Firefox",
+            false
+        ));
+    }
+
+    #[test]
+    fn test_mp_single_glob_any_class() {
+        assert!(match_pattern(
+            &Pattern::Single("*".into()),
+            "anything",
+            "",
+            false
+        ));
+    }
+
+    #[test]
+    fn test_mp_single_glob_substring() {
+        assert!(match_pattern(
+            &Pattern::Single("*ire*".into()),
+            "Firefox",
+            "",
+            false
+        ));
+    }
+
+    #[test]
+    fn test_mp_single_case_sensitive_mismatch() {
+        // cs mismatch (only ASCII-folds A–Z)
+        assert!(!match_pattern(
+            &Pattern::Single("Firefox".into()),
+            "firefox",
+            "",
+            true
+        ));
+    }
+
+    #[test]
+    fn test_mp_single_empty_pattern_non_empty_core() {
+        // empty pattern, non-empty class → empty-core special case (T3.S1)
+        assert!(!match_pattern(&Pattern::Single("".into()), "Firefox", "", false));
+    }
+
+    #[test]
+    fn test_mp_single_empty_pattern_empty_core() {
+        // empty pattern, empty class → empty-core matches
+        assert!(match_pattern(&Pattern::Single("".into()), "", "", false));
+    }
+
+    #[test]
+    fn test_mp_single_anchors_end_to_end() {
+        assert!(match_pattern(
+            &Pattern::Single("^Firefox$".into()),
+            "Firefox",
+            "",
+            false
+        ));
+    }
+
+    // --- Pattern::Parts: both halves must match ---
+
+    #[test]
+    fn test_mp_parts_both_halves_match() {
+        assert!(match_pattern(
+            &Pattern::Parts("Firefox".into(), "*youtube*".into()),
+            "Firefox",
+            "Youtube - X",
+            false
+        ));
+    }
+
+    #[test]
+    fn test_mp_parts_title_half_fails() {
+        // title half fails (substring "youtube" ∉ "Google")
+        assert!(!match_pattern(
+            &Pattern::Parts("Firefox".into(), "youtube".into()),
+            "Firefox",
+            "Google",
+            false
+        ));
+    }
+
+    #[test]
+    fn test_mp_parts_title_glob_matches_anything() {
+        assert!(match_pattern(
+            &Pattern::Parts("Chrome".into(), "*".into()),
+            "Chrome",
+            "anything",
+            false
+        ));
+    }
+
+    #[test]
+    fn test_mp_parts_class_half_fails() {
+        assert!(!match_pattern(
+            &Pattern::Parts("Chrome".into(), "*".into()),
+            "Firefox",
+            "anything",
+            false
+        ));
+    }
+
+    #[test]
+    fn test_mp_parts_empty_title_composes() {
+        // G8: empty title-pattern matches empty title (T3.S1 empty-core:
+        // pattern_match("", "") == true)
+        assert!(match_pattern(
+            &Pattern::Parts("Firefox".into(), "".into()),
+            "Firefox",
+            "",
+            false
+        ));
+    }
+
+    #[test]
+    fn test_mp_parts_empty_title_vs_non_empty_core() {
+        // G8: empty title-pattern vs non-empty title → empty-core:
+        // pattern_match("", "Google") == false
+        assert!(!match_pattern(
+            &Pattern::Parts("Firefox".into(), "".into()),
+            "Firefox",
+            "Google",
+            false
+        ));
+    }
+
+    #[test]
+    fn test_mp_parts_glob_title_matches_empty() {
+        // glob `*` matches empty title
+        assert!(match_pattern(
+            &Pattern::Parts("Firefox".into(), "*".into()),
+            "Firefox",
+            "",
+            false
+        ));
+    }
+
+    #[test]
+    fn test_mp_parts_case_insensitive_both_halves() {
+        assert!(match_pattern(
+            &Pattern::Parts("firefox".into(), "*youtube*".into()),
+            "Firefox",
+            "MYoutube",
+            false
+        ));
+    }
+
+    #[test]
+    fn test_mp_parts_case_sensitive_both_halves() {
+        assert!(!match_pattern(
+            &Pattern::Parts("firefox".into(), "*youtube*".into()),
+            "Firefox",
+            "MYoutube",
+            true
+        ));
+    }
+
+    #[test]
+    fn test_mp_parts_anchors_both_halves_end_to_end() {
+        assert!(match_pattern(
+            &Pattern::Parts("^Firefox$".into(), "^*youtube*$".into()),
+            "Firefox",
+            "youtube",
+            false
+        ));
+    }
+
+    // --- serde untagged deserialization (rules.toml -> Pattern) ---
+
+    #[derive(serde::Deserialize)]
+    struct Wrap {
+        #[serde(rename = "match")]
+        pattern: Pattern,
+    }
+
+    #[test]
+    fn test_pattern_serde_string_to_single() {
+        assert_eq!(
+            toml::from_str::<Wrap>(r#"match = "alacritty""#)
+                .unwrap()
+                .pattern,
+            Pattern::Single("alacritty".into())
+        );
+    }
+
+    #[test]
+    fn test_pattern_serde_glob_string_to_single() {
+        assert_eq!(
+            toml::from_str::<Wrap>(r#"match = "*chrome*""#)
+                .unwrap()
+                .pattern,
+            Pattern::Single("*chrome*".into())
+        );
+    }
+
+    #[test]
+    fn test_pattern_serde_two_array_to_parts() {
+        assert_eq!(
+            toml::from_str::<Wrap>(r#"match = ["*chrome*", "*youtube*"]"#)
+                .unwrap()
+                .pattern,
+            Pattern::Parts("*chrome*".into(), "*youtube*".into())
+        );
+    }
+
+    #[test]
+    fn test_pattern_serde_three_array_errors() {
+        // G5: 3-array → Parts needs exactly 2 → error
+        assert!(toml::from_str::<Wrap>(r#"match = ["a", "b", "c"]"#).is_err());
+    }
+
+    #[test]
+    fn test_pattern_serde_one_array_errors() {
+        // G5: 1-array → Parts needs exactly 2 → error
+        assert!(toml::from_str::<Wrap>(r#"match = ["solo"]"#).is_err());
+    }
+
+    #[test]
+    fn test_pattern_serde_int_errors() {
+        // G5: int matches no variant → error
+        assert!(toml::from_str::<Wrap>(r#"match = 42"#).is_err());
     }
 }
