@@ -21,11 +21,12 @@
 // allow that here rather than at each call site (same idiom as pattern.rs:15).
 #![allow(dead_code)]
 
+use std::collections::{BTreeSet, HashMap};
 use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::core::pattern::Pattern; // P2.M1.T3.S2 — Single/Parts, #[serde(untagged)]
+use crate::core::pattern::{match_pattern, Pattern}; // P2.M1.T3.S2 — Single/Parts, #[serde(untagged)]
 use serde::Deserialize;
 
 /// The top-level `rules.toml` model — a `[host]` defaults table plus two
@@ -249,6 +250,141 @@ pub fn get_rules_paths() -> Vec<PathBuf> {
         .into_iter()
         .map(|p| p.with_file_name("rules.toml"))
         .collect()
+}
+
+// ============================================================================
+// Evaluation engine: HostContext + evaluate() (P3.M1.T2.S1)
+// ============================================================================
+// The pure per-window evaluator: given a parsed `RuleSet` + the window
+// (app_class, title) + the handshake name→id map + whether the board has its
+// own rules, decide the host layer, the desired enabled callback id set, the
+// `clear_board` (stack-vs-replace) flag, and whether any rule matched.
+// Consumes `RuleSet`/`HostDefaults`/`LayerRule`/`CallbackRule` (S1), the private
+// `effective_disable_firmware_config` primitive (S2), and `match_pattern` (P2).
+
+/// The result of evaluating host `rules.toml` against one window — the single
+/// packet the `notify_qmk` send logic (P4.M3.T1.S1) consumes.
+///
+/// Fields (HOST_RULES.md §8(3) / §4):
+/// - `layer`: the first matching `layer_rule`'s layer number (`L_h`, `>= 224`),
+///   or `None` when no layer rule matched (firmware maps `None` to `0xFF`).
+/// - `callback_ids`: the **desired enabled** callback id set — the union of every
+///   matching callback rule's `enable` names (resolved through the handshake
+///   `name_to_id` map) MINUS each rule's `disable` names (explicit exclusion).
+///   Sorted (built from a `BTreeSet`); empty when no callback matched.
+/// - `clear_board`: the stack-vs-replace bit. `true` (replace) iff every matched
+///   rule's effective `disable_firmware_config` is `true` **or** the board has no
+///   rules of its own; `false` (stack) otherwise. Always `false` on no-match.
+/// - `any_match`: `true` iff at least one rule (layer or callback) matched.
+///
+/// Downstream: `send_string = board_has_rules && any_match && !clear_board`;
+/// the wire payload is `ApplyHostContext { layer, callbacks: callback_ids, clear_board }`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HostContext {
+    pub layer: Option<u8>,
+    pub callback_ids: Vec<u8>,
+    pub clear_board: bool,
+    pub any_match: bool,
+}
+
+/// Evaluate host `rules.toml` against one window and produce a [`HostContext`].
+///
+/// Three-stage evaluation (HOST_RULES.md §8(3)):
+///
+/// 1. **Layer — first match wins.** Scan `layer_rules` in order; the first whose
+///    [`match_pattern`] succeeds sets `layer = Some(rule.layer)`. Subsequent layer
+///    rules are not consulted.
+/// 2. **Callbacks — all match.** Scan every `callback_rule`; for each match, add
+///    its `enable` names (resolved via `name_to_id`) to the desired set and remove
+///    its `disable` names (explicit exclusion). Unknown names are skipped
+///    silently — validation/warning is the handshake's job (P4.M2).
+/// 3. **Stack-vs-replace.** `clear_board = true` iff every matched rule's
+///    effective `disable_firmware_config` is `true` **or** `board_has_rules` is
+///    `false` (HOST_RULES.md §4: "replace = all-disabling OR board-has-no-rules").
+///
+/// **No match** (no layer rule and no callback rule matched) short-circuits to
+/// `{ layer: None, callback_ids: vec![], clear_board: false, any_match: false }`.
+///
+/// This function is **pure** — no IO, no logging, no global state.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use std::collections::HashMap;
+/// use qmkonnect::core::rules::{evaluate, parse_rules, get_rules_paths};
+///
+/// let rules = parse_rules(&get_rules_paths().into_iter().find(|p| p.exists()).unwrap()).unwrap();
+/// let mut name_to_id = HashMap::new();
+/// name_to_id.insert("vim_lazy".to_string(), 0u8);
+/// let ctx = evaluate(&rules, "Alacritty", "vim", &name_to_id, /* board_has_rules */ true);
+/// // ctx.clear_board => send only ApplyHostContext; !ctx.clear_board => send string first.
+/// ```
+pub fn evaluate(
+    rules: &RuleSet,
+    app_class: &str,
+    title: &str,
+    name_to_id: &HashMap<String, u8>,
+    board_has_rules: bool,
+) -> HostContext {
+    let host_default = rules.host.disable_firmware_config;
+
+    // Stage 1: Layer — first match wins.
+    let mut layer: Option<u8> = None;
+    // One effective flag per matched rule (layer + callback), for the AND decision.
+    let mut matched_effective: Vec<bool> = Vec::new();
+    for rule in &rules.layer_rules {
+        if match_pattern(&rule.pattern, app_class, title, rule.case_sensitive) {
+            layer = Some(rule.layer);
+            matched_effective.push(effective_disable_firmware_config(
+                rule.disable_firmware_config,
+                host_default,
+            ));
+            break; // first match wins
+        }
+    }
+
+    // Stage 2: Callbacks — all matches fire. desired set = enable-union minus disable.
+    let mut desired: BTreeSet<u8> = BTreeSet::new();
+    for rule in &rules.callback_rules {
+        if match_pattern(&rule.pattern, app_class, title, rule.case_sensitive) {
+            matched_effective.push(effective_disable_firmware_config(
+                rule.disable_firmware_config,
+                host_default,
+            ));
+            for name in &rule.enable {
+                if let Some(&id) = name_to_id.get(name) {
+                    desired.insert(id);
+                } // else: unknown name -> skip silently (G4)
+            }
+            for name in &rule.disable {
+                if let Some(&id) = name_to_id.get(name) {
+                    desired.remove(&id);
+                }
+            }
+        }
+    }
+
+    // No match -> short-circuit BEFORE the formula (G2: all() is vacuously true
+    // on an empty Vec, which would wrongly yield clear_board=true).
+    if matched_effective.is_empty() {
+        return HostContext {
+            layer: None,
+            callback_ids: vec![],
+            clear_board: false,
+            any_match: false,
+        };
+    }
+
+    // Stage 3: stack-vs-replace. replace = all matched rules disabling OR no board rules.
+    let all_disabling = matched_effective.iter().all(|&f| f);
+    let clear_board = all_disabling || !board_has_rules;
+
+    HostContext {
+        layer,
+        callback_ids: desired.into_iter().collect(), // sorted (BTreeSet)
+        clear_board,
+        any_match: true,
+    }
 }
 
 #[cfg(test)]
@@ -578,5 +714,341 @@ match = "x"
             get_rules_paths().len() >= 1,
             "supported platform should return at least one rules.toml candidate"
         );
+    }
+
+    // ========================================================================
+    // P3.M1.T2.S1 — evaluate() + HostContext
+    // ========================================================================
+    // The three-stage per-window evaluator: layer first-match → L_h; callbacks
+    // all-match → desired id set (enable-union / disable-exclusion); stack-vs-
+    // replace → clear_board. ~14 tests below cover each stage + the truth table.
+
+    /// Helper: build a name→id map from (&str, u8) pairs.
+    fn name_map(pairs: &[(&str, u8)]) -> HashMap<String, u8> {
+        pairs
+            .iter()
+            .map(|(n, id)| (n.to_string(), *id))
+            .collect()
+    }
+
+    // ---- A. Basic / no-match (G2 no-match early-return) ----
+
+    #[test]
+    fn test_evaluate_empty_ruleset_no_match() {
+        // RuleSet::default() against any window -> { None, vec![], false, false }.
+        let rules = RuleSet::default();
+        let n2i = name_map(&[("vim_lazy", 0)]);
+        let ctx = evaluate(&rules, "Alacritty", "vim", &n2i, true);
+        assert_eq!(
+            ctx,
+            HostContext {
+                layer: None,
+                callback_ids: vec![],
+                clear_board: false,
+                any_match: false,
+            }
+        );
+    }
+
+    #[test]
+    fn test_evaluate_no_layer_no_callback_match() {
+        // Rules present but no pattern matches the window -> no-match early-return.
+        let toml = r#"
+[[layer_rules]]
+match = "firefox"
+layer = 224
+
+[[callback_rules]]
+match = "neovide"
+enable = ["vim_lazy"]
+"#;
+        let rules: RuleSet = toml::from_str(toml).unwrap();
+        let n2i = name_map(&[("vim_lazy", 0)]);
+        let ctx = evaluate(&rules, "Alacritty", "vim", &n2i, true);
+        assert_eq!(
+            ctx,
+            HostContext {
+                layer: None,
+                callback_ids: vec![],
+                clear_board: false,
+                any_match: false,
+            }
+        );
+    }
+
+    // ---- B. Layer (first-match-wins, break) ----
+
+    #[test]
+    fn test_evaluate_layer_first_match_wins() {
+        // Two layer rules both match (Single "a"); the first's layer wins and
+        // the second is never consulted. Give them DIFFERENT layers to prove it.
+        let toml = r#"
+[[layer_rules]]
+match = "a"
+layer = 224
+
+[[layer_rules]]
+match = "a"
+layer = 225
+"#;
+        let rules: RuleSet = toml::from_str(toml).unwrap();
+        let n2i = HashMap::new();
+        let ctx = evaluate(&rules, "a", "anything", &n2i, true);
+        assert_eq!(ctx.layer, Some(224));
+        assert!(ctx.any_match);
+    }
+
+    #[test]
+    fn test_evaluate_layer_second_when_first_misses() {
+        // First pattern misses ("zzz"), second ("a") matches -> second.layer wins.
+        let toml = r#"
+[[layer_rules]]
+match = "zzz"
+layer = 224
+
+[[layer_rules]]
+match = "a"
+layer = 230
+"#;
+        let rules: RuleSet = toml::from_str(toml).unwrap();
+        let n2i = HashMap::new();
+        let ctx = evaluate(&rules, "a", "anything", &n2i, true);
+        assert_eq!(ctx.layer, Some(230));
+        assert!(ctx.any_match);
+    }
+
+    #[test]
+    fn test_evaluate_layer_parts_requires_both_halves() {
+        // Pattern::Parts(["a","b"]) with app_class "a" but title "x" -> the
+        // title half fails, so NO match (layer stays None, any_match false).
+        let toml = r#"
+[[layer_rules]]
+match = ["a", "b"]
+layer = 224
+"#;
+        let rules: RuleSet = toml::from_str(toml).unwrap();
+        let n2i = HashMap::new();
+        let ctx = evaluate(&rules, "a", "x", &n2i, true);
+        assert_eq!(ctx.layer, None);
+        assert!(!ctx.any_match);
+    }
+
+    // ---- C. Callbacks (all-match + enable/disable) ----
+
+    #[test]
+    fn test_evaluate_callback_all_matches_union() {
+        // Two callback rules both match, each enabling a disjoint name -> the
+        // desired set is the UNION of both.
+        let toml = r#"
+[[callback_rules]]
+match = "a"
+enable = ["x"]
+
+[[callback_rules]]
+match = "a"
+enable = ["y"]
+"#;
+        let rules: RuleSet = toml::from_str(toml).unwrap();
+        let n2i = name_map(&[("x", 1), ("y", 2)]);
+        let ctx = evaluate(&rules, "a", "t", &n2i, true);
+        assert_eq!(ctx.callback_ids, vec![1, 2]);
+        assert!(ctx.any_match);
+    }
+
+    #[test]
+    fn test_evaluate_callback_disable_is_exclusion() {
+        // Rule A enables "x", rule B (also matches) disables "x" -> x is absent
+        // from callback_ids (explicit-exclusion override).
+        let toml = r#"
+[[callback_rules]]
+match = "a"
+enable = ["x"]
+
+[[callback_rules]]
+match = "a"
+disable = ["x"]
+"#;
+        let rules: RuleSet = toml::from_str(toml).unwrap();
+        let n2i = name_map(&[("x", 1)]);
+        let ctx = evaluate(&rules, "a", "t", &n2i, true);
+        assert_eq!(ctx.callback_ids, vec![] as Vec<u8>);
+        assert!(ctx.any_match);
+    }
+
+    #[test]
+    fn test_evaluate_unknown_name_skipped() {
+        // A rule enables a name NOT in name_to_id ("ghost") alongside a known
+        // one ("x"). No panic; "ghost" contributes nothing, "x" still resolves.
+        let toml = r#"
+[[callback_rules]]
+match = "a"
+enable = ["x", "ghost"]
+"#;
+        let rules: RuleSet = toml::from_str(toml).unwrap();
+        let n2i = name_map(&[("x", 1)]);
+        let ctx = evaluate(&rules, "a", "t", &n2i, true);
+        assert_eq!(ctx.callback_ids, vec![1]);
+        assert!(ctx.any_match);
+    }
+
+    #[test]
+    fn test_evaluate_callback_ids_sorted() {
+        // Insert ids {3,1,2} across rules in a deliberately non-sorted order ->
+        // callback_ids == vec![1,2,3] (BTreeSet determinism, G3).
+        let toml = r#"
+[[callback_rules]]
+match = "a"
+enable = ["c"]
+
+[[callback_rules]]
+match = "a"
+enable = ["a"]
+
+[[callback_rules]]
+match = "a"
+enable = ["b"]
+"#;
+        let rules: RuleSet = toml::from_str(toml).unwrap();
+        let n2i = name_map(&[("a", 1), ("b", 2), ("c", 3)]);
+        let ctx = evaluate(&rules, "a", "t", &n2i, true);
+        assert_eq!(ctx.callback_ids, vec![1, 2, 3]);
+    }
+
+    // ---- D. clear_board truth table (G1 formula + G2 no-match guard) ----
+
+    #[test]
+    fn test_evaluate_clear_board_all_disabling() {
+        // Sole matched rule effective=true (override Some(true)) -> clear_board=true
+        // even with board_has_rules=true (replace: all-disabling).
+        let toml = r#"
+[[layer_rules]]
+match = "a"
+layer = 224
+disable_firmware_config = true
+"#;
+        let rules: RuleSet = toml::from_str(toml).unwrap();
+        let n2i = HashMap::new();
+        let ctx = evaluate(&rules, "a", "t", &n2i, true);
+        assert_eq!(ctx.layer, Some(224));
+        assert!(ctx.clear_board); // all-disabling
+        assert!(ctx.any_match);
+    }
+
+    #[test]
+    fn test_evaluate_clear_board_one_nondisabling_is_false() {
+        // One matched rule effective=false (override Some(false), host default
+        // true) -> clear_board=false (stack), board_has_rules=true.
+        let toml = r#"
+[host]
+disable_firmware_config = true
+
+[[layer_rules]]
+match = "a"
+layer = 224
+disable_firmware_config = false
+"#;
+        let rules: RuleSet = toml::from_str(toml).unwrap();
+        let n2i = HashMap::new();
+        let ctx = evaluate(&rules, "a", "t", &n2i, true);
+        assert!(!ctx.clear_board); // NOT all-disabling -> stack
+        assert!(ctx.any_match);
+    }
+
+    #[test]
+    fn test_evaluate_clear_board_no_board_rules() {
+        // board_has_rules=false -> clear_board=true even if the matched rule is
+        // non-disabling (effective=false): replace because nothing to stack onto.
+        let toml = r#"
+[[layer_rules]]
+match = "a"
+layer = 224
+disable_firmware_config = false
+"#;
+        let rules: RuleSet = toml::from_str(toml).unwrap();
+        let n2i = HashMap::new();
+        let ctx = evaluate(&rules, "a", "t", &n2i, /* board_has_rules */ false);
+        assert!(ctx.clear_board); // !board_has_rules -> replace
+        assert!(ctx.any_match);
+    }
+
+    #[test]
+    fn test_evaluate_effective_inherits_host_default() {
+        // rule.disable_firmware_config=None -> effective = host_default.
+        //  (a) host=false -> effective false -> clear_board=false (stack).
+        //  (b) host=true  -> effective true  -> clear_board=true  (replace).
+        // (RuleSet isn't Clone, so parse two fresh copies with the [host] bit flipped.)
+        let toml_a = r#"
+[host]
+disable_firmware_config = false
+
+[[layer_rules]]
+match = "a"
+layer = 224
+"#;
+        let toml_b = r#"
+[host]
+disable_firmware_config = true
+
+[[layer_rules]]
+match = "a"
+layer = 224
+"#;
+        let n2i = HashMap::new();
+
+        // (a) host=false
+        let rules_a: RuleSet = toml::from_str(toml_a).unwrap();
+        let ctx_a = evaluate(&rules_a, "a", "t", &n2i, true);
+        assert!(!ctx_a.clear_board);
+
+        // (b) host=true
+        let rules_b: RuleSet = toml::from_str(toml_b).unwrap();
+        let ctx_b = evaluate(&rules_b, "a", "t", &n2i, true);
+        assert!(ctx_b.clear_board);
+    }
+
+    // ---- E. Cross-stage ----
+
+    #[test]
+    fn test_evaluate_layer_match_callback_miss() {
+        // Layer matches, no callback matches -> layer set, callback_ids empty,
+        // any_match=true (and, board_has_rules=true + non-disabling default,
+        // clear_board=false).
+        let toml = r#"
+[[layer_rules]]
+match = "a"
+layer = 224
+
+[[callback_rules]]
+match = "zzz"
+enable = ["x"]
+"#;
+        let rules: RuleSet = toml::from_str(toml).unwrap();
+        let n2i = name_map(&[("x", 1)]);
+        let ctx = evaluate(&rules, "a", "t", &n2i, true);
+        assert_eq!(ctx.layer, Some(224));
+        assert_eq!(ctx.callback_ids, vec![] as Vec<u8>);
+        assert!(ctx.any_match);
+        assert!(!ctx.clear_board); // default host=false, rule None -> effective false
+    }
+
+    #[test]
+    fn test_evaluate_callback_match_layer_miss() {
+        // Mirror of the above: callback matches, layer misses -> layer None,
+        // callback_ids populated, any_match=true.
+        let toml = r#"
+[[layer_rules]]
+match = "zzz"
+layer = 224
+
+[[callback_rules]]
+match = "a"
+enable = ["x"]
+"#;
+        let rules: RuleSet = toml::from_str(toml).unwrap();
+        let n2i = name_map(&[("x", 1)]);
+        let ctx = evaluate(&rules, "a", "t", &n2i, true);
+        assert_eq!(ctx.layer, None);
+        assert_eq!(ctx.callback_ids, vec![1]);
+        assert!(ctx.any_match);
     }
 }

@@ -439,14 +439,14 @@
       "type": "Phase",
       "id": "P3",
       "title": "QMKonnect Rules System — rules.toml Schema & Evaluation",
-      "status": "Researching",
+      "status": "Complete",
       "description": "Create src/core/rules.rs with the rules.toml data model, TOML deserialization, and the rule evaluation logic (layer first-match, callback all-match, stack-vs-replace decision). This module consumes the pattern matcher from P2 and is consumed by the notification pipeline in P4.",
       "milestones": [
         {
           "type": "Milestone",
           "id": "P3.M1",
           "title": "rules.toml Data Model & Evaluation (src/core/rules.rs)",
-          "status": "Researching",
+          "status": "Complete",
           "description": "Create the rules module with the RuleSet/HostDefaults/LayerRule/CallbackRule structs, serde deserialization, and the evaluate() function that produces a HostContext (layer + callback set + stack/replace decision).",
           "tasks": [
             {
@@ -493,14 +493,14 @@
               "type": "Task",
               "id": "P3.M1.T2",
               "title": "Rule Evaluation — Layer/Callback Matching & Stack/Replace Decision",
-              "status": "Researching",
+              "status": "Complete",
               "description": "Implement the evaluate() function that takes a RuleSet and a window string, matches layer rules (first-match) and callback rules (all-match), resolves callback names to IDs, and determines stack vs replace.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P3.M1.T2.S1",
                   "title": "Implement evaluate() with layer first-match, callback all-match, and HostContext output",
-                  "status": "Researching",
+                  "status": "Complete",
                   "story_points": 2,
                   "dependencies": [
                     "P3.M1.T1.S2"
@@ -536,14 +536,14 @@
               "type": "Task",
               "id": "P4.M1.T1",
               "title": "Extend Notifier Trait for Typed Commands",
-              "status": "Planned",
+              "status": "Researching",
               "description": "Add methods to the Notifier trait for sending typed commands and receiving CommandResponse, with mock support for ordering assertions.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P4.M1.T1.S1",
                   "title": "Add send_command() to Notifier trait and QmkNotifier impl",
-                  "status": "Planned",
+                  "status": "Researching",
                   "story_points": 2,
                   "dependencies": [
                     "P1.M1.T4.S1"
