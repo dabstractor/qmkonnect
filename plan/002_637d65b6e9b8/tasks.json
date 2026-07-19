@@ -4,14 +4,14 @@
       "type": "Phase",
       "id": "P1",
       "title": "External Transport & Firmware Layer",
-      "status": "Planned",
+      "status": "Complete",
       "description": "Typed-command support in the qmk_notifier Rust crate (v0.3.0) and typed-command dispatch in the qmk-notifier firmware. These are prerequisite external-repo changes that unblock QMKonnect's host-side rules feature. The crate gains new RunCommand variants, CommandResponse, and multi-report typed framing; the firmware gains the 0xF0 discriminator, handle_typed_command dispatcher, and the QUERY_INFO/QUERY_CALLBACK/SET_OS/APPLY_HOST_CONTEXT handlers that use the already-scaffolded host_layer/host_cb_enabled/has_been_queried state.",
       "milestones": [
         {
           "type": "Milestone",
           "id": "P1.M1",
           "title": "qmk_notifier Crate v0.3.0 — Typed-Command Transport",
-          "status": "Ready",
+          "status": "Complete",
           "description": "Add typed-command RunCommand variants, HostOs enum, CommandResponse enum, typed-command framing (0x81 0x9F 0xF0 prefix, multi-report chunking), response parsing (0x51 typed vs 0/1 legacy vs timeout), and change run() to return CommandResponse. Tag release v0.3.0.",
           "tasks": [
             {
@@ -56,7 +56,7 @@
               "type": "Task",
               "id": "P1.M1.T2",
               "title": "Typed-Command Framing (multi-report chunking with 0xF0 discriminator)",
-              "status": "Ready",
+              "status": "Complete",
               "description": "Frame typed commands using [0x81, 0x9F, 0xF0, cmd_id, args...] with the same ETX-framed, multi-report chunking as strings. APPLY_HOST_CONTEXT may span reports (uncapped callback-id list).",
               "subtasks": [
                 {
@@ -79,7 +79,7 @@
                   "type": "Subtask",
                   "id": "P1.M1.T2.S2",
                   "title": "Wire typed commands into run() dispatch and send path",
-                  "status": "Ready",
+                  "status": "Complete",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M1.T2.S1"
@@ -135,14 +135,14 @@
               "type": "Task",
               "id": "P1.M1.T4",
               "title": "Tag Crate Release v0.3.0",
-              "status": "Ready",
+              "status": "Complete",
               "description": "Tag the qmk_notifier crate as v0.3.0 so qmkonnect can pin the git dependency.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M1.T4.S1",
                   "title": "Bump version, update Cargo.toml, tag v0.3.0",
-                  "status": "Ready",
+                  "status": "Complete",
                   "story_points": 0.5,
                   "dependencies": [
                     "P1.M1.T3.S2"
@@ -160,14 +160,14 @@
           "type": "Milestone",
           "id": "P1.M2",
           "title": "qmk-notifier Firmware — Typed-Command Dispatch",
-          "status": "Planned",
+          "status": "Complete",
           "description": "Add the 0xF0 discriminator check, handle_typed_command() dispatcher, and QUERY_INFO/QUERY_CALLBACK/SET_OS/APPLY_HOST_CONTEXT handlers. The state variables (host_layer, host_cb_enabled, has_been_queried) and callback registry are already scaffolded.",
           "tasks": [
             {
               "type": "Task",
               "id": "P1.M2.T1",
               "title": "Typed-Command Dispatch Infrastructure",
-              "status": "Researching",
+              "status": "Complete",
               "description": "Add the 0xF0 discriminator check at the top of hid_notify() and implement the handle_typed_command() dispatcher.",
               "subtasks": [
                 {
@@ -188,7 +188,7 @@
                   "type": "Subtask",
                   "id": "P1.M2.T1.S2",
                   "title": "Implement set_host_layer() and apply_host_callbacks() helper functions",
-                  "status": "Researching",
+                  "status": "Complete",
                   "story_points": 2,
                   "dependencies": [
                     "P1.M2.T1.S1"
@@ -205,14 +205,14 @@
               "type": "Task",
               "id": "P1.M2.T2",
               "title": "Typed-Command Handlers (QUERY_INFO, QUERY_CALLBACK, SET_OS, APPLY_HOST_CONTEXT)",
-              "status": "Planned",
+              "status": "Complete",
               "description": "Implement the four typed-command response builders and the APPLY_HOST_CONTEXT clear_board logic.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M2.T2.S1",
                   "title": "QUERY_INFO handler: proto_ver, feature_flags, callback_count, board_rules_present",
-                  "status": "Planned",
+                  "status": "Complete",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M2.T1.S1"
@@ -227,7 +227,7 @@
                   "type": "Subtask",
                   "id": "P1.M2.T2.S2",
                   "title": "QUERY_CALLBACK handler: return callback name by index",
-                  "status": "Planned",
+                  "status": "Complete",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M2.T1.S1"
@@ -242,7 +242,7 @@
                   "type": "Subtask",
                   "id": "P1.M2.T2.S3",
                   "title": "SET_OS handler: update current_os",
-                  "status": "Planned",
+                  "status": "Complete",
                   "story_points": 0.5,
                   "dependencies": [
                     "P1.M2.T1.S1"
@@ -257,7 +257,7 @@
                   "type": "Subtask",
                   "id": "P1.M2.T2.S4",
                   "title": "APPLY_HOST_CONTEXT handler: clear_board, set_host_layer, apply_host_callbacks",
-                  "status": "Planned",
+                  "status": "Complete",
                   "story_points": 2,
                   "dependencies": [
                     "P1.M2.T1.S2",
@@ -280,7 +280,7 @@
       "type": "Phase",
       "id": "P2",
       "title": "QMKonnect Pattern Matcher — Full-Parity Port",
-      "status": "Researching",
+      "status": "Planned",
       "description": "Port the firmware pattern_match.c Thompson-NFA matcher to Rust at src/core/pattern.rs. This is a full-parity port (not a subset) including *, ^, $, WT(), +, and all character classes (\\d \\D \\w \\W \\s \\S \\b \\B .). All constructs are linear-time in the NFA. The port is the foundation for host-side rule evaluation and must produce identical results to the firmware matcher for every pattern/string pair.",
       "milestones": [
         {
@@ -301,7 +301,7 @@
                   "type": "Subtask",
                   "id": "P2.M1.T1.S1",
                   "title": "Port process_escapes() to Rust — escape/class/quantifier byte transform",
-                  "status": "Planned",
+                  "status": "Researching",
                   "story_points": 2,
                   "dependencies": [],
                   "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: The firmware process_escapes() (pattern_match.c:15-75) transforms a pattern string into processed bytes: \\x01-\\x04 = escaped literals ^$*\\, \\x05-\\x0A = classes \\d\\D\\w\\W\\s\\S, \\x0B-\\x0C = assertions \\b\\B, \\x0D = dot, \\x0E = + quantifier marker, 0x2A = glob * (wildcard). Literal . and + (when not after a consumable element) are emitted as ordinary ASCII 0x2E/0x2B. The `last_consumable` flag tracks whether the previous element consumed a char (determines whether + is quantifier or literal). See architecture/external_deps.md §3 for the full byte contract.\n2. INPUT: None (greenfield module).\n3. LOGIC: Create src/core/pattern.rs. Implement `fn process_escapes(pattern: &str) -> Vec<u8>` that mirrors the C function exactly. Track `last_consumable: bool`. For each byte: if backslash + next char, emit the appropriate placeholder byte. If bare *, emit 0x2A and set last_consumable=false. If bare + after consumable, emit 0x0E and set last_consumable=false; if + after non-consumable, emit literal 0x2B. If bare ., emit 0x0D. Otherwise emit the byte literally. Register the module in src/core/mod.rs with `pub mod pattern;`.\n4. OUTPUT: process_escapes() function for consumption by P2.M1.T1.S2 (parse_pattern).\n5. DOCS: [Mode A] Add rustdoc on process_escapes explaining the placeholder byte contract. No external docs changed yet.",
@@ -568,7 +568,7 @@
                   "type": "Subtask",
                   "id": "P4.M1.T2.S1",
                   "title": "Pin qmk_notifier crate to v0.3.0 tag in Cargo.toml",
-                  "status": "Planned",
+                  "status": "Researching",
                   "story_points": 0.5,
                   "dependencies": [
                     "P1.M1.T4.S1"
