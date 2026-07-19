@@ -439,21 +439,21 @@
       "type": "Phase",
       "id": "P3",
       "title": "QMKonnect Rules System — rules.toml Schema & Evaluation",
-      "status": "Planned",
+      "status": "Researching",
       "description": "Create src/core/rules.rs with the rules.toml data model, TOML deserialization, and the rule evaluation logic (layer first-match, callback all-match, stack-vs-replace decision). This module consumes the pattern matcher from P2 and is consumed by the notification pipeline in P4.",
       "milestones": [
         {
           "type": "Milestone",
           "id": "P3.M1",
           "title": "rules.toml Data Model & Evaluation (src/core/rules.rs)",
-          "status": "Planned",
+          "status": "Researching",
           "description": "Create the rules module with the RuleSet/HostDefaults/LayerRule/CallbackRule structs, serde deserialization, and the evaluate() function that produces a HostContext (layer + callback set + stack/replace decision).",
           "tasks": [
             {
               "type": "Task",
               "id": "P3.M1.T1",
               "title": "rules.toml Data Model & Deserialization",
-              "status": "Researching",
+              "status": "Complete",
               "description": "Define the Rust structs that deserialize rules.toml and the effective disable_firmware_config resolution.",
               "subtasks": [
                 {
@@ -476,7 +476,7 @@
                   "type": "Subtask",
                   "id": "P3.M1.T1.S2",
                   "title": "Implement effective disable_firmware_config resolution and parse_rules()",
-                  "status": "Researching",
+                  "status": "Complete",
                   "story_points": 1,
                   "dependencies": [
                     "P3.M1.T1.S1"
@@ -493,14 +493,14 @@
               "type": "Task",
               "id": "P3.M1.T2",
               "title": "Rule Evaluation — Layer/Callback Matching & Stack/Replace Decision",
-              "status": "Planned",
+              "status": "Researching",
               "description": "Implement the evaluate() function that takes a RuleSet and a window string, matches layer rules (first-match) and callback rules (all-match), resolves callback names to IDs, and determines stack vs replace.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P3.M1.T2.S1",
                   "title": "Implement evaluate() with layer first-match, callback all-match, and HostContext output",
-                  "status": "Planned",
+                  "status": "Researching",
                   "story_points": 2,
                   "dependencies": [
                     "P3.M1.T1.S2"

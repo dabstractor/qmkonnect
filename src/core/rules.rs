@@ -21,6 +21,10 @@
 // allow that here rather than at each call site (same idiom as pattern.rs:15).
 #![allow(dead_code)]
 
+use std::error::Error;
+use std::fs;
+use std::path::{Path, PathBuf};
+
 use crate::core::pattern::Pattern; // P2.M1.T3.S2 — Single/Parts, #[serde(untagged)]
 use serde::Deserialize;
 
@@ -178,6 +182,73 @@ pub struct CallbackRule {
     /// (resolved by P3.M1.T1.S2).
     #[serde(default)]
     pub disable_firmware_config: Option<bool>, // None => inherit [host]
+}
+
+// ============================================================================
+// File-IO + path-resolution + per-rule primitive (P3.M1.T1.S2)
+// ============================================================================
+// These three functions are the layer between the data model above (S1) and the
+// evaluator `evaluate()` (P3.M1.T2.S1): resolve each candidate `rules.toml` path
+// (`get_rules_paths`), read + deserialize one into a typed `RuleSet` (`parse_rules`),
+// and resolve a single rule's effective `disable_firmware_config` (the primitive).
+
+/// Resolve a single rule's effective `disable_firmware_config`.
+///
+/// A rule's effective flag is its per-rule override when `Some`, otherwise the
+/// `[host]` global default. This is the per-rule input to the stack-vs-replace
+/// decision computed by `evaluate()` (P3.M1.T2): the window is "replace" iff
+/// EVERY matched rule's effective flag is `true` (HOST_RULES.md §9).
+fn effective_disable_firmware_config(rule_override: Option<bool>, host_default: bool) -> bool {
+    rule_override.unwrap_or(host_default)
+}
+
+/// Read and deserialize a `rules.toml` file into a [`RuleSet`].
+///
+/// This is the host-side-rules counterpart to [`crate::parse_config`]: it reads
+/// the file at `path` (via [`fs::read_to_string`]) and deserializes it with
+/// [`toml::from_str`]. A missing/unreadable file yields an [`io::Error`](std::io::Error);
+/// malformed TOML, or a `[[layer_rules]]`/`[[callback_rules]]` table missing the
+/// required `match` or `layer` key, yields a [`toml::de::Error`]. Both propagate
+/// as `Box<dyn Error>` — which is exactly the strict failure `--validate-rules`
+/// (P5.M1) reports.
+///
+/// `path` is a SINGLE candidate (typically the first existing entry of
+/// [`get_rules_paths`]); resolving the candidate list is the caller's job, mirroring
+/// how `parse_config` is fed by `configured_timing()`'s `.find(|p| p.exists())`.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use qmkonnect::core::rules::{get_rules_paths, parse_rules};
+///
+/// if let Some(path) = get_rules_paths().into_iter().find(|p| p.exists()) {
+///     let rules = parse_rules(&path)?;   // Err on malformed rules.toml
+///     // ... evaluate(rules, window) ...
+/// }
+/// ```
+pub fn parse_rules(path: &Path) -> Result<RuleSet, Box<dyn Error>> {
+    let text = fs::read_to_string(path)?;
+    let rules: RuleSet = toml::from_str(&text)?;
+    Ok(rules)
+}
+
+/// Return the candidate `rules.toml` paths, in platform preference order.
+///
+/// `rules.toml` lives **alongside `config.toml`** (HOST_RULES.md §8): same
+/// directory, swapped filename. This function derives the list by delegating to
+/// [`crate::platforms::get_config_paths`] and swapping each entry's final
+/// filename component to `rules.toml` (via [`PathBuf::with_file_name`]).
+///
+/// On Linux this is `$XDG_CONFIG_HOME/qmk-notifier/rules.toml`,
+/// `~/.config/qmk-notifier/rules.toml`, `/etc/qmk-notifier/rules.toml`; on
+/// macOS `~/Library/Application Support/QMKonnect/rules.toml` (+ fallbacks); on
+/// Windows `%APPDATA%\QMKonnect\rules.toml` (+ fallbacks). An absent file at
+/// every candidate ⇒ the caller disables host rules (string-only, legacy path).
+pub fn get_rules_paths() -> Vec<PathBuf> {
+    crate::platforms::get_config_paths()
+        .into_iter()
+        .map(|p| p.with_file_name("rules.toml"))
+        .collect()
 }
 
 #[cfg(test)]
@@ -380,5 +451,132 @@ layer = 224
         assert_eq!(rs.host.disable_firmware_config, false);
         assert!(rs.layer_rules.is_empty());
         assert!(rs.callback_rules.is_empty());
+    }
+
+    // ========================================================================
+    // P3.M1.T1.S2 — effective_disable_firmware_config + parse_rules + get_rules_paths
+    // ========================================================================
+
+    // ---- effective_disable_firmware_config: the 4-row truth table (G5) ----
+
+    #[test]
+    fn test_rules_effective_some_true_wins() {
+        // Some(true) overrides host_default=false.
+        assert_eq!(effective_disable_firmware_config(Some(true), false), true);
+    }
+
+    #[test]
+    fn test_rules_effective_some_false_wins() {
+        // Some(false) overrides host_default=true.
+        assert_eq!(effective_disable_firmware_config(Some(false), true), false);
+    }
+
+    #[test]
+    fn test_rules_effective_none_inherits_false() {
+        // None inherits host_default=false.
+        assert_eq!(effective_disable_firmware_config(None, false), false);
+    }
+
+    #[test]
+    fn test_rules_effective_none_inherits_true() {
+        // None inherits host_default=true.
+        assert_eq!(effective_disable_firmware_config(None, true), true);
+    }
+
+    // ---- parse_rules: end-to-end file IO (tempfile, G9 single-threaded) ----
+
+    #[test]
+    fn test_rules_parse_valid_section9() {
+        // The verbatim HOST_RULES.md §9 example round-trips through a real file:
+        // fs::read_to_string -> toml::from_str -> RuleSet (G3 single path, G4 err type).
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("rules.toml");
+        std::fs::write(&path, SECTION_9_TOML).unwrap();
+
+        let rs = parse_rules(&path).unwrap();
+
+        // [host] default
+        assert_eq!(rs.host.disable_firmware_config, false);
+
+        // layer_rules[0]: class-only Single + explicit override.
+        assert_eq!(rs.layer_rules.len(), 2);
+        assert_eq!(rs.layer_rules[0].layer, 224);
+        assert_eq!(rs.layer_rules[0].disable_firmware_config, Some(true));
+
+        // callback_rules: all-match ordering preserved.
+        assert_eq!(rs.callback_rules.len(), 2);
+    }
+
+    #[test]
+    fn test_rules_parse_missing_file_errors() {
+        // A nonexistent path => fs::read_to_string io::Error propagates as Err.
+        let p = Path::new("/nonexistent/qmk-rules-xyz-9f8e7.toml");
+        assert!(parse_rules(p).is_err());
+    }
+
+    #[test]
+    fn test_rules_parse_malformed_toml_errors() {
+        // Genuinely malformed TOML => toml::de::Error propagates as Err.
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("rules.toml");
+        std::fs::write(&path, "not = valid = toml = =").unwrap();
+
+        assert!(parse_rules(&path).is_err());
+    }
+
+    #[test]
+    fn test_rules_parse_missing_required_field_errors() {
+        // A [[layer_rules]] with `match` but no required `layer` surfaces S1's
+        // required-field strictness through the file path — the contract that
+        // `--validate-rules` (P5.M1) will report.
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("rules.toml");
+        std::fs::write(
+            &path,
+            r#"
+[[layer_rules]]
+match = "x"
+"#,
+        )
+        .unwrap();
+
+        assert!(parse_rules(&path).is_err());
+    }
+
+    // ---- get_rules_paths: transformation invariant (G10 env-independent) ----
+
+    #[test]
+    fn test_rules_paths_swap_filename() {
+        // The core contract: every rules path is the config path with the
+        // filename swapped to `rules.toml` in the SAME directory. Asserted
+        // against the real platform resolver output — no env mutation (G10).
+        // Robust on every platform, including the empty-Vec unknown-platform
+        // case (zip of two empty iterators runs zero iterations, len==len==0).
+        let cfg = crate::platforms::get_config_paths();
+        let rul = get_rules_paths();
+
+        assert_eq!(cfg.len(), rul.len(), "delegate must preserve path count");
+        for (c, r) in cfg.iter().zip(rul.iter()) {
+            assert_eq!(
+                c.parent(),
+                r.parent(),
+                "rules.toml must be in the SAME dir as config.toml"
+            );
+            assert_eq!(r.file_name(), Some(std::ffi::OsStr::new("rules.toml")));
+            assert_eq!(c.file_name(), Some(std::ffi::OsStr::new("config.toml")));
+        }
+    }
+
+    #[test]
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+    fn test_rules_paths_delegate_count() {
+        // Sanity that delegation returned real paths on supported platforms.
+        // (test_rules_paths_swap_filename's len-equality already implies this;
+        // this is an explicit positive assertion behind a cfg guard so it never
+        // falsely fails on a future non-Linux/macOS/Windows CI target.)
+        assert!(
+            get_rules_paths().len() >= 1,
+            "supported platform should return at least one rules.toml candidate"
+        );
     }
 }
