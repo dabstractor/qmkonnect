@@ -56,14 +56,14 @@
               "type": "Task",
               "id": "P1.M1.T2",
               "title": "Typed-Command Framing (multi-report chunking with 0xF0 discriminator)",
-              "status": "Planned",
+              "status": "Researching",
               "description": "Frame typed commands using [0x81, 0x9F, 0xF0, cmd_id, args...] with the same ETX-framed, multi-report chunking as strings. APPLY_HOST_CONTEXT may span reports (uncapped callback-id list).",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M1.T2.S1",
                   "title": "Implement typed-command payload builder and multi-report framing",
-                  "status": "Researching",
+                  "status": "Complete",
                   "story_points": 2,
                   "dependencies": [
                     "P1.M1.T1.S2"
@@ -79,7 +79,7 @@
                   "type": "Subtask",
                   "id": "P1.M1.T2.S2",
                   "title": "Wire typed commands into run() dispatch and send path",
-                  "status": "Planned",
+                  "status": "Researching",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M1.T2.S1"
