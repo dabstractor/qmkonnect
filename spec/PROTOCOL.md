@@ -101,10 +101,13 @@ device buffer is full it NAKs the transfer and the host's `write()` blocks until
 space frees. **Reports are never dropped**, so burst-write is safe for ANY title
 length.
 
-(The firmware's `raw_hid_send()` ack is silently dropped by QMK because it
-requires `length == RAW_EPSIZE`; the crate nonetheless drains pending IN-side
-reports after each burst, bounded, so a future firmware ack fix can't wedge the
-device.)
+(The firmware sends a 32-byte reply per report via `raw_hid_send(response,
+RAW_REPORT_SIZE)` — fixed in qmk-notifier commit `01a51935`, which corrected the
+response size from the header-stripped `30` to the full `32`. The older "ack is
+silently dropped by QMK because `length == RAW_EPSIZE`" wording was stale
+carryover from the pre-fix firmware. The crate drains pending IN-side reports
+after each burst, bounded, so accumulated replies can't wedge the device; the
+v0.3.0 typed-command path reads and parses them — see §8.)
 
 ---
 
@@ -241,9 +244,10 @@ changes or a write fails (stale handle after replug).
 4. `process_full_message` always: `disable_command()` first, then scan
    `command_map` (first match) and `layer_map` (first match); `deactivate_layer`
    then `activate_layer(layer_found)` / `enable_command(cmd_found)`.
-5. **Ack:** `raw_hid_send(response[32], 32)` where `response[0] = match` (1 if
-   something matched, else 0). (Note: QMK silently drops this ack today because
-   of the `length == RAW_EPSIZE` guard — see §2.5.)
+5. **Ack:** `raw_hid_send(response, RAW_REPORT_SIZE)` where `response[0] =
+   match` (1 if something matched, else 0). The host receives this 32-byte reply
+   (fixed in qmk-notifier `01a51935`; see §2.5). The legacy `0`/`1` match-bool
+   reply is distinct from the typed `0x51`-marked reply (§8).
 
 ---
 
