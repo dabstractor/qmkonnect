@@ -167,14 +167,14 @@
               "type": "Task",
               "id": "P1.M2.T1",
               "title": "Typed-Command Dispatch Infrastructure",
-              "status": "Planned",
+              "status": "Researching",
               "description": "Add the 0xF0 discriminator check at the top of hid_notify() and implement the handle_typed_command() dispatcher.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M2.T1.S1",
                   "title": "Add 0xF0 discriminator check and handle_typed_command() skeleton in hid_notify()",
-                  "status": "Planned",
+                  "status": "Complete",
                   "story_points": 1,
                   "dependencies": [],
                   "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: notifier.c hid_notify() (lines 543-577) currently checks data[0]==0x81 && data[1]==0x9F, strips the 2-byte header, then processes legacy bytes. The 0xF0 discriminator must be checked AFTER stripping the 2-byte header: if data[0]==0xF0 (which is now the first byte after stripping), route to handle_typed_command(). The constants NOTIFY_CMD_DISCRIMINATOR=0xF0, NOTIFY_CMD_QUERY_INFO=0x01, etc. are already defined in notifier.h. The host state variables (host_layer, host_cb_enabled, has_been_queried) are already declared at notifier.c:137-139.\n2. INPUT: None (the constants and state are already defined in notifier.h and notifier.c).\n3. LOGIC: In hid_notify(), after `data += 2; length -= 2;`, add: `if (length >= 1 && data[0] == NOTIFY_CMD_DISCRIMINATOR) { handle_typed_command(data + 1, length - 1); return; }`. Implement `static void handle_typed_command(uint8_t *data, uint8_t length)` that switches on data[0] (cmd_id) to QUERY_INFO(0x01), QUERY_CALLBACK(0x02), SET_OS(0x03), APPLY_HOST_CONTEXT(0x05). Each handler builds a 32-byte response and calls raw_hid_send. has_been_queried is set to true on the first QUERY_INFO.\n4. OUTPUT: The dispatch skeleton for consumption by P1.M2.T2.S1-S4 (individual handlers).\n5. DOCS: none — firmware C code has no user-facing doc surface.",
@@ -188,7 +188,7 @@
                   "type": "Subtask",
                   "id": "P1.M2.T1.S2",
                   "title": "Implement set_host_layer() and apply_host_callbacks() helper functions",
-                  "status": "Planned",
+                  "status": "Researching",
                   "story_points": 2,
                   "dependencies": [
                     "P1.M2.T1.S1"
