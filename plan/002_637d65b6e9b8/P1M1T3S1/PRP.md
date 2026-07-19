@@ -3,198 +3,155 @@
 > **Crate:** `qmk_notifier` (v0.2.1) at `/home/dustin/projects/qmk_notifier`
 > (separate repo, git-tagged, pinned by QMKonnect per PRD §7/§4). Work in
 > `/home/dustin/projects/qmk_notifier`.
-> **Files:** `src/core.rs` (PRIMARY & ONLY). No other file touched.
-> **Scope line:** Add the READ layer above the (already-existing, already-tested)
-> `parse_reply`: a pure `classify_response` (expected_cmd echo guard), an I/O
-> `read_typed_response` (bounded single-report read + classify), and a
-> `burst_and_read_one` (write-burst + read-one, the typed counterpart to
-> `burst_to_one`). Drop the now-redundant `#[allow(dead_code)]` on
-> `REPLY_READ_TIMEOUT_MS`. Wire-up into `run()` is **out of scope** (P1.M1.T3.S2).
+> **Files:** `src/core.rs` (PRIMARY & ONLY). Do NOT touch `lib.rs`/`run()` (S2 owns it).
+> **Scope line:** Add the PARSE layer above the (already-existing, already-tested)
+> `parse_reply`: `classify_response(buf, expected_cmd)` (pure, testable — the
+> expected_cmd echo guard; **the pipeline-critical deliverable S2 applies to
+> `send_raw_report`'s captured reply**) + `read_typed_response(interface, expected_cmd,
+> verbose)` (the item's explicit standalone read+parse primitive). Remove `parse_reply`'s
+> now-redundant `#[allow(dead_code)]`. **Do NOT add `burst_and_read_one`** — it is
+> redundant with the committed `burst_to_one`-captures refactor. Wire-up into `run()`
+> is **out of scope** (P1.M1.T3.S2).
+
+> ⚠️ **BASELINE RECONCILIATION — read before implementing.** This task was specified
+> against an older baseline (the item assumed `burst_to_one` *drains* and
+> `send_raw_report` returns `Result<(),_>`). That baseline is **gone**. Committed
+> `71248cd` already took the item's *other* option (b): `burst_to_one` now **captures**
+> the first reply (`-> (bool, Option<Vec<u8>>)`), `send_raw_report` now returns
+> `Result<Option<Vec<u8>>, _>`, and `try_send_once` threads the first device's reply.
+> `run()` ignores those bytes (returns the `Timeout` placeholder). **Consequence:** the
+> genuinely-needed deliverable is `classify_response` (the parse that S2 applies to the
+> already-captured bytes); `read_typed_response` is the item's requested standalone
+> primitive; and `burst_and_read_one` is **redundant** (the capture already happens in
+> `burst_to_one`). See "Baseline Reconciliation" below.
 
 ---
 
 ## Goal
 
-**Feature Goal**: Give the crate the ability to **READ** (not drain-and-discard)
-the firmware's 32-byte IN reply after a typed-command burst, and decode it into a
-`CommandResponse` — closing the gap between "we sent the bytes" (P1.M1.T2.S2, done
-in parallel) and "we have a typed reply to act on" (P4 handshake). The parser
-half (`parse_reply`/`parse_typed_reply`/`parse_callback_name`) **already exists
-and is tested**; this task adds the reader + the command-echo validation guard on
-top of it, staged `#[allow(dead_code)]` for the `run()` wiring (P1.M1.T3.S2).
+**Feature Goal**: Give the crate the PARSE step that turns the firmware's captured
+32-byte IN reply into a `CommandResponse` — closing the gap between "send_raw_report
+captured the bytes" (committed `71248cd`) and "we have a typed reply to act on" (P4
+handshake). The parser half (`parse_reply`/`parse_typed_reply`/`parse_callback_name`)
+**already exists and is tested**; this task adds the command-echo validation guard on
+top of it (`classify_response`) plus the item's standalone read+parse primitive
+(`read_typed_response`), both staged `#[allow(dead_code)]` for the `run()` wiring
+(P1.M1.T3.S2).
 
-**Deliverable**: `src/core.rs` with THREE new functions, ONE allow removed, ONE
-allow-bearing comment corrected, and ~5 new unit tests:
+**Deliverable**: `src/core.rs` with TWO new functions, ONE allow removed, and ~5 new
+unit tests:
 1. `classify_response(buf: &[u8], expected_cmd: u8) -> CommandResponse` — **pure**,
-   the testable core. Adds the NEW logic: a typed reply (`buf[0]==0x51`) whose echo
-   (`buf[1]`) ≠ `expected_cmd` ⇒ `Timeout` (stale-reply guard); everything else
-   delegates to the existing `parse_reply`.
+   the testable, pipeline-critical core. Adds the NEW logic: a typed reply
+   (`buf[0]==0x51`) whose echo (`buf[1]`) ≠ `expected_cmd` ⇒ `Timeout` (stale-reply
+   guard); everything else delegates to the existing `parse_reply`. **This is what
+   `run()` (S2) applies to `send_raw_report`'s captured `Option<Vec<u8>>`.**
 2. `read_typed_response(interface, expected_cmd, verbose) -> Result<CommandResponse, QmkError>`
-   — bounded single-report read (`read_timeout(buf, REPLY_READ_TIMEOUT_MS)`) +
-   `classify_response`. `Ok(0)`/timeout ⇒ `Ok(Timeout)` (**not** an error); HID
-   error ⇒ `Err(HidReadError)`.
-3. `burst_and_read_one(interface, data, batch_count, expected_cmd, verbose) -> Result<CommandResponse, QmkError>`
-   — byte-for-byte the SAME write loop as `burst_to_one`, then calls
-   `read_typed_response` (reads ONE reply instead of draining all). Write failure ⇒
-   `Err(SendReportError)`.
-4. `#[allow(dead_code)]` **removed** from `REPLY_READ_TIMEOUT_MS` (now referenced by
-   allow-dead `read_typed_response` — one-hop, proven safe by the `build_typed_payload`→
-   5-constants precedent documented in the code).
-5. The stale "RESPONSE_MARKER and REPLY_READ_TIMEOUT_MS still carry
-   `#[allow(dead_code)]`" comment corrected.
-6. ~5 new `classify_response_*` tests in `src/core.rs`'s `#[cfg(test)] mod tests`
-   (the pure echo-guard is the only new *testable* surface; the two I/O functions
-   are hardware-bound, like `burst_to_one`/`send_raw_report`, and have no unit test).
+   — the item's explicit standalone primitive: bounded single-report read
+   (`read_timeout(buf, REPLY_READ_TIMEOUT_MS)`) + `classify_response`. `Ok(0)`/timeout
+   ⇒ `Ok(Timeout)` (**not** an error); HID error ⇒ `Err(HidReadError)`. allow-dead.
+3. `#[allow(dead_code)]` **removed** from `parse_reply` (now called by allow-dead
+   `classify_response` — one-hop, proven safe) + its doc updated.
+4. **`burst_and_read_one` MUST NOT be present** — it is redundant with the committed
+   capturing `burst_to_one`. If a parallel attempt added it, **remove it**.
+5. ~5 new `classify_response_*` tests in `src/core.rs`'s `#[cfg(test)] mod tests`.
 
-**Success Definition**: `cargo build` compiles with **zero warnings** (incl. no
-"never used" for `REPLY_READ_TIMEOUT_MS` — its allow is gone because
-`read_typed_response` references it); `cargo clippy --lib` introduces none;
-`cargo fmt --check` exits 0; `cargo test --lib` passes with all 62+ existing tests
-+ the new `classify_response_*` tests green; `parse_reply`/`parse_typed_reply`/
-`parse_callback_name`/`burst_to_one`/`send_raw_report`/`batches_for`/`build_typed_payload`/
-`run()`/`lib.rs`/`error.rs`/`Cargo.toml` all **unchanged** except the documented
-`REPLY_READ_TIMEOUT_MS` allow-removal + comment + the parse_reply doc tweak.
+**Success Definition**: `cargo build` compiles with **zero warnings**; `cargo clippy
+--lib` introduces none; `cargo fmt --check` exits 0; `cargo test --lib` passes with all
+existing tests + the new `classify_response_*` tests green; `burst_to_one`/
+`send_raw_report`/`try_send_once`/`parse_reply` body/`parse_typed_reply`/
+`parse_callback_name`/`build_typed_payload`/`run()`/`lib.rs`/`error.rs`/`Cargo.toml`
+all **unchanged** except the documented `parse_reply` allow-removal + doc tweak; **no
+`burst_and_read_one` function exists** in `src/core.rs`.
+
+## Baseline Reconciliation (the committed architecture — authoritative)
+
+The CURRENT committed state of `src/core.rs` (verify with
+`grep -n "fn burst_to_one\|fn send_raw_report\|fn try_send_once" src/core.rs`):
+
+```rust
+// burst_to_one: writes the burst, CAPTURES the first reply (bounded read), drains surplus.
+fn burst_to_one(interface: &HidDevice, data: &[u8], batch_count: usize, verbose: bool)
+    -> (bool, Option<Vec<u8>>);   // (write_success, captured_first_reply)
+
+// try_send_once threads the reply: "first successful device wins".
+fn try_send_once(key, data, batch_count, verbose)
+    -> Result<(SendOutcome, Option<Vec<u8>>), QmkError>;
+
+// send_raw_report returns the captured reply bytes (or None on timeout).
+pub fn send_raw_report(data, vendor_id, product_id, usage_page, usage, verbose)
+    -> Result<Option<Vec<u8>>, QmkError>;
+```
+
+So the **READ already happens inside `burst_to_one`**; `send_raw_report` hands the raw
+bytes to its caller. `run()` currently calls `send_raw_report`, **ignores** the
+`Option<Vec<u8>>`, and returns the `Timeout` placeholder (its doc at `lib.rs:~332` is
+stale — "send_raw_report STILL returns Result<(), _>" — but fixing `lib.rs` is **S2's**
+job, NOT this task).
+
+**This reframes the item's two options:**
+- Item (a) `read_typed_response(device, expected_cmd, verbose)` — KEEP (item's explicit
+  contract). It's the standalone read+parse primitive. NOTE: the MAIN send flow already
+  read inside `burst_to_one`, so S2 will parse via `send_raw_report`'s captured bytes +
+  `classify_response` rather than re-reading through `read_typed_response`. Keep
+  `read_typed_response` allow-dead (the item requested it; S2 uses it only if it chooses
+  a direct-read path).
+- Item (b) "modify `burst_to_one` **OR** add `burst_and_read_one`" — the **first**
+  alternative ("modify burst_to_one") is **already DONE** (committed `71248cd`). The
+  second alternative (`burst_and_read_one`) is therefore **REDUNDANT — do not add it**.
+  (If present from a parallel attempt: remove it; wiring it into `run()` would
+  double-read the kernel IN buffer.)
+
+**The genuinely-new, pipeline-critical deliverable is `classify_response`** — the PARSE
+that S2 applies to `send_raw_report`'s already-captured `Option<Vec<u8>>`.
 
 ## User Persona (if applicable)
 
-**Target User**: The downstream implementer of **P1.M1.T3.S2** (wire reply parsing
-into `run()` — replaces the `Ok(CommandResponse::Timeout)` placeholder with a real
-typed reply) and ultimately the QMKonnect **P4.M2.T1.S1** handshake
-(`QUERY_INFO` → `QUERY_CALLBACK` sweep → name→id map, pattern-matching on
-`Info`/`Ack`/`Timeout`).
+**Target User**: The downstream implementer of **P1.M1.T3.S2** (wire reply parsing into
+`run()` — replaces the `Ok(CommandResponse::Timeout)` placeholder) and ultimately the
+QMKonnect **P4.M2.T1.S1** handshake (`QUERY_INFO` → `QUERY_CALLBACK` sweep → name→id map).
 
-**Use Case**: P4 handshake calls `run(QueryInfo)` → (S2) the typed arm burst-writes
-`[0xF0,0x01,0x03]` via `burst_and_read_one` → the firmware replies
-`[0x51,0x01,proto_ver,feature_flags,callback_count,board_rules_present]` →
-`read_typed_response` reads it → `classify_response` validates echo==0x01 and
-`parse_reply` decodes `CommandResponse::Info{…}` → run() returns it → the handshake
-checks `proto_ver==2 && flags & 0x01`. A legacy (non-capable) device sends no typed
-reply → `read_typed_response` returns `Ok(Timeout)` → handshake stays string-only.
-
-**User Journey**: Today (P1.M1.T2.S2) typed bytes hit the wire but the reply is
-drained & discarded (`Ok(Timeout)` placeholder). After THIS task, the read+classify
-primitives EXIST (staged). After S2, `run()` calls them end-to-end. After P4, the
-handshake consumes the `CommandResponse`.
-
-**Pain Points Addressed**: Removes the "we can send but can't hear back" gap. The
-`expected_cmd` echo guard defends against a stale reply left in the IN buffer from a
-prior command being mis-decoded into the wrong `CommandResponse` variant.
+**Use Case**: P4 handshake calls `run(QueryInfo)` → (S2) the typed arm calls
+`send_raw_report(&payload, …)` → `Ok(Some([0x51,0x01,proto_ver,feature_flags,
+callback_count,board_rules_present]))` → `classify_response(&bytes, CMD_QUERY_INFO)`
+validates echo==0x01 and `parse_reply` decodes `CommandResponse::Info{…}` → run() returns
+it → handshake checks `proto_ver==2 && flags & 0x01`. A legacy device sends no typed
+reply → `send_raw_report` returns `Ok(None)` → S2 maps `None` ⇒ `CommandResponse::Timeout`
+→ handshake stays string-only.
 
 ## Why
 
-- This is the **READ half** of the M1.T3 "Response Parsing & run() Return Type
-  Change" task. The parser (`parse_reply` family) landed earlier (with the
-  `CommandResponse` enum, P1.M1.T1.S2) and is fully tested; this task adds the I/O
-  reader that feeds it real bytes, plus the command-echo validation the parser alone
-  can't enforce.
-- It is **purely additive in `core.rs`**: three new functions + one allow removed +
-  one comment fixed. `burst_to_one` is **untouched** (the legacy `SendMessage` drain
-  path is byte-for-byte preserved — backward compat, as the item demands). `run()` is
-  **untouched** (wiring is S2).
-- It follows the **exact S1→S2 staging pattern** established by `build_typed_payload`
-  (P1.M1.T2.S1 staged it `#[allow(dead_code)]`; P1.M1.T2.S2 removed the allow when
-  `run()` called it). Here `read_typed_response`/`burst_and_read_one`/
-  `classify_response` are staged allow-dead; S2 wires them into `run()` and lifts all
-  remaining allows.
+- This is the **PARSE half** of the M1.T3 task. The parser (`parse_reply` family) landed
+  earlier and is fully tested; this task adds the command-echo validation the parser alone
+  can't enforce (`classify_response`) and the item's standalone reader
+  (`read_typed_response`).
+- It is **purely additive in `core.rs`** (two functions + one allow removed + tests).
+  `burst_to_one`/`send_raw_report`/`try_send_once`/`parse_reply` body are **untouched**.
+  `run()` is **untouched** (wiring is S2).
+- It follows the **S1→S2 staging pattern** established by `build_typed_payload`
+  (P1.M1.T2.S1 staged allow-dead; P1.M1.T2.S2 removed the allow when `run()` called it).
+  Here `classify_response`/`read_typed_response` are staged allow-dead; S2 wires
+  `classify_response` into `run()` and lifts its allow.
 
 ## What
 
-All edits are in `/home/dustin/projects/qmk_notifier/src/core.rs`.
-
-### Change 1 — Correct the stale `#[allow(dead_code)]` summary comment (lines ~14-25)
-
-The module-level comment currently claims "Only RESPONSE_MARKER and
-REPLY_READ_TIMEOUT_MS still carry `#[allow(dead_code)]`" — but RESPONSE_MARKER has
-**no** allow (grep-confirmed: it's referenced by `parse_reply`), and after this task
-REPLY_READ_TIMEOUT_MS loses its allow too. FIND this exact comment block:
-
-```rust
-// The 5 command constants (CMD_DISCRIMINATOR, CMD_QUERY_INFO, CMD_QUERY_CALLBACK,
-// CMD_SET_OS, CMD_APPLY_HOST_CONTEXT) now have a real consumer:
-// `build_typed_payload` (P1.M1.T2.S1) references them in compiled code, so they
-// no longer need an `#[allow(dead_code)]` (verified: a const referenced by an
-// allow-dead fn's body does NOT warn). Only RESPONSE_MARKER and
-// REPLY_READ_TIMEOUT_MS still carry `#[allow(dead_code)]` — their consumers land
-// in P1.M1.T3 (parse_reply + the reply reader).
+All edits are in `/home/dustin/projects/qmk_notifier/src/core.rs`. **The file is under
+concurrent edit** — locate every target by its **signature / doc text** (stable), NOT by
+line number. Run this first to see what already exists:
+```bash
+grep -n "fn classify_response\|fn read_typed_response\|fn burst_and_read_one\|fn parse_reply\|fn parse_callback_name" src/core.rs
 ```
+- If `classify_response`/`read_typed_response` already match the spec below and the build
+  is clean, the parallel attempt may have already done the work — make only the DELTA
+  edits (ensure `burst_and_read_one` is absent, `parse_reply`'s allow removed, tests present).
+- If `burst_and_read_one` is present → **remove it** (redundant).
 
-REPLACE WITH:
+### Change 1 — Add `classify_response` (pure, testable) after `parse_callback_name`
 
-```rust
-// The 5 command constants (CMD_DISCRIMINATOR, CMD_QUERY_INFO, CMD_QUERY_CALLBACK,
-// CMD_SET_OS, CMD_APPLY_HOST_CONTEXT) now have a real consumer:
-// `build_typed_payload` (P1.M1.T2.S1) references them in compiled code, so they
-// no longer need an `#[allow(dead_code)]` (verified: a const referenced by an
-// allow-dead fn's body does NOT warn). RESPONSE_MARKER is referenced by
-// `parse_reply`; REPLY_READ_TIMEOUT_MS by `read_typed_response` (P1.M1.T3.S1) —
-// so neither carries an allow either. The remaining allow-dead items are the
-// read/parse FUNCTIONS themselves (parse_reply, classify_response,
-// read_typed_response, burst_and_read_one), whose consumer is `run()`
-// (P1.M1.T3.S2); they drop their allows when run() goes live.
-```
-
-### Change 2 — Remove `REPLY_READ_TIMEOUT_MS`'s `#[allow(dead_code)]` (lines ~35-38)
-
-FIND:
+Locate `parse_callback_name` (signature `fn parse_callback_name(bytes: &[u8]) -> Option<String>`).
+Insert `classify_response` immediately AFTER its closing `}` and BEFORE the
+`/// Match parameters a cached handle set was opened for.` doc on `MatchKey`:
 
 ```rust
-/// Bounded timeout (ms) for reading the first reply after a burst.
-/// Must be > 0 (unlike the drain's non-blocking timeout=0).
-#[allow(dead_code)]
-const REPLY_READ_TIMEOUT_MS: i32 = 1000;
-```
-
-REPLACE WITH:
-
-```rust
-/// Bounded timeout (ms) for reading the first typed reply after a burst
-/// ([`read_typed_response`]). Must be > 0 (unlike the drain's non-blocking
-/// timeout=0) so the read BLOCKS for a real reply rather than polling. 1000 ms is
-/// a conservative bound; P4's QUERY_CALLBACK sweep against a non-capable device may
-/// want to lower it (each query against a silent device waits up to this long).
-const REPLY_READ_TIMEOUT_MS: i32 = 1000;
-```
-
-> **Safe to de-allow:** `read_typed_response` (added in Change 4, staged
-> `#[allow(dead_code)]`) references this constant. A const referenced by an
-> allow-dead fn's body does NOT warn — this is the IDENTICAL one-hop pattern that let
-> the 5 command constants drop their allows once `build_typed_payload` (then
-> allow-dead) referenced them (see the comment in Change 1). **Verify** with
-> `cargo build` after Change 4: zero "never used" for `REPLY_READ_TIMEOUT_MS`. (The
-> existing `typed_command_constants_match_firmware_contract` test also asserts
-> `REPLY_READ_TIMEOUT_MS > 0`, so it stays live in test builds regardless.)
-
-### Change 3 — Add `classify_response` (pure, testable) after `parse_callback_name`
-
-Insert this function immediately after `parse_callback_name`'s closing brace and
-before the `/// Match parameters a cached handle set was opened for.` doc on
-`MatchKey`. FIND:
-
-```rust
-fn parse_callback_name(bytes: &[u8]) -> Option<String> {
-    let end = bytes.iter().position(|&b| b == 0x00).unwrap_or(bytes.len());
-    let name_bytes = &bytes[..end];
-    if name_bytes.is_empty() {
-        return None;
-    }
-    String::from_utf8(name_bytes.to_vec()).ok()
-}
-
-/// Match parameters a cached handle set was opened for. The cache is rebuilt
-```
-
-REPLACE WITH (the new function is inserted between the two):
-
-```rust
-fn parse_callback_name(bytes: &[u8]) -> Option<String> {
-    let end = bytes.iter().position(|&b| b == 0x00).unwrap_or(bytes.len());
-    let name_bytes = &bytes[..end];
-    if name_bytes.is_empty() {
-        return None;
-    }
-    String::from_utf8(name_bytes.to_vec()).ok()
-}
-
 /// Classify a captured reply, validating the typed command-echo against
 /// `expected_cmd`.
 ///
@@ -214,10 +171,12 @@ fn parse_callback_name(bytes: &[u8]) -> Option<String> {
 ///       variant — Info / CallbackName / Ack).
 ///     - `buf[1] != expected_cmd` ⇒ [`CommandResponse::Timeout`] (stale echo).
 ///
-/// Pure (no I/O) — the unit-testable core of [`read_typed_response`].
+/// Pure (no I/O) — the unit-testable core. **This is what the `run()` typed dispatch
+/// (P1.M1.T3.S2) applies to [`send_raw_report`]'s captured `Option<Vec<u8>>`:**
+/// `reply.map_or(CommandResponse::Timeout, |b| classify_response(&b, expected_cmd))`.
 ///
-/// Consumer: [`read_typed_response`] (P1.M1.T3.S1) → [`burst_and_read_one`] → the
-/// `run()` typed dispatch (P1.M1.T3.S2).
+/// Consumer: `run()` via the typed dispatch (P1.M1.T3.S2); also
+/// [`read_typed_response`] (this task).
 #[allow(dead_code)]
 pub(crate) fn classify_response(buf: &[u8], expected_cmd: u8) -> crate::CommandResponse {
     use crate::CommandResponse;
@@ -232,68 +191,40 @@ pub(crate) fn classify_response(buf: &[u8], expected_cmd: u8) -> crate::CommandR
     }
     parse_reply(buf)
 }
-
-/// Match parameters a cached handle set was opened for. The cache is rebuilt
 ```
 
-### Change 4 — Add `read_typed_response` + `burst_and_read_one` after `burst_to_one`
+### Change 2 — Add `read_typed_response` (item contract, standalone) after `burst_to_one`
 
-Insert both functions immediately after `burst_to_one`'s closing brace and before
-the `/// Number of reports needed to carry` doc on `batches_for`. FIND:
-
-```rust
-    let mut drain_buf = [0u8; REPORT_LENGTH + 1];
-    for _ in 0..IN_DRAIN_MAX {
-        match interface.read_timeout(&mut drain_buf, 0) {
-            Ok(n) if n > 0 => continue,
-            _ => break,
-        }
-    }
-
-    true
-}
-
-/// Number of reports needed to carry `data.len()` payload bytes (0 when empty).
-fn batches_for(data: &[u8]) -> usize {
-```
-
-REPLACE WITH (the two new functions are inserted between):
+Locate `burst_to_one` (signature `fn burst_to_one(interface: &HidDevice, data: &[u8], batch_count: usize, verbose: bool) -> (bool, Option<Vec<u8>>)`). Insert `read_typed_response`
+immediately AFTER its closing `}` and BEFORE the `/// Number of reports needed to carry`
+doc on `batches_for`:
 
 ```rust
-    let mut drain_buf = [0u8; REPORT_LENGTH + 1];
-    for _ in 0..IN_DRAIN_MAX {
-        match interface.read_timeout(&mut drain_buf, 0) {
-            Ok(n) if n > 0 => continue,
-            _ => break,
-        }
-    }
-
-    true
-}
-
-/// Read ONE typed reply from `interface` after a command burst, then classify it.
+/// Read ONE typed reply from `interface`, then classify it.
 ///
-/// The bounded read primitive for the typed-command path. It blocks up to
-/// [`REPLY_READ_TIMEOUT_MS`] for a single 32-byte IN report (the firmware sends
-/// exactly one reply per report, `RAW_REPORT_SIZE = 32`), then:
+/// The item's standalone read+parse primitive for the typed-command path (PRD §10.2).
+/// It blocks up to [`REPLY_READ_TIMEOUT_MS`] for a single 32-byte IN report (the
+/// firmware sends exactly one reply per report, `RAW_REPORT_SIZE = 32`), then:
 /// - `Ok(n)` with `n > 0` ⇒ [`classify_response`] decodes it (typed if
 ///   `buf[0] == 0x51` & echo matches `expected_cmd`; legacy `0`/`1`; else Timeout).
 /// - `Ok(0)` (poll timed out — no reply) ⇒ `Ok(CommandResponse::Timeout)`. This is
 ///   **not an error**: a non-capable (legacy) device never replies to a typed
-///   command, and the caller (the run() handshake, P4.M2.T1) treats Timeout as
-///   "stay in string-only mode" (PRD §8, §10.2).
+///   command, and the caller treats Timeout as "stay in string-only mode" (PRD §8).
 /// - `Err` ⇒ `Err(QmkError::HidReadError)` (a real HID transport failure).
 ///
-/// Unlike [`burst_to_one`]'s drain loop, this reads EXACTLY ONE report (not a
-/// bounded drain) — that one report IS the typed reply. `expected_cmd` is the
-/// command-ID byte we sent (e.g. [`CMD_QUERY_INFO`]); it guards against decoding a
-/// stale reply left in the IN buffer from a prior command. The 33-byte buffer
-/// matches the drain loop's sizing; QMK raw HID uses report ID 0, so `read_timeout`
-/// returns report DATA at `buf[0]` (no report-ID prefix on read), i.e. `buf[0] ==
-/// 0x51` for a typed reply.
+/// `expected_cmd` is the command-ID byte we sent (e.g. [`CMD_QUERY_INFO`]); it guards
+/// against decoding a stale reply left in the IN buffer. The 33-byte buffer matches
+/// [`burst_to_one`]'s sizing; QMK raw HID uses report ID 0, so `read_timeout` returns
+/// report DATA at `buf[0]` (no report-ID prefix on read), i.e. `buf[0] == 0x51` for a
+/// typed reply.
 ///
-/// Consumer: [`burst_and_read_one`] (P1.M1.T3.S1); the `run()` typed dispatch via
-/// the send path (P1.M1.T3.S2).
+/// **Note on the main send flow:** [`send_raw_report`] ALREADY captures the first
+/// reply inside [`burst_to_one`] (committed `71248cd`) and returns it as
+/// `Option<Vec<u8>>`. The `run()` typed dispatch (P1.M1.T3.S2) therefore parses via
+/// `send_raw_report(...)? + classify_response`, NOT by re-reading through this
+/// function (which would double-drain the kernel IN buffer). This function is the
+/// item-requested standalone primitive for callers holding a handle without going
+/// through [`send_raw_report`]; it is `#[allow(dead_code)]` until such a caller exists.
 #[allow(dead_code)]
 fn read_typed_response(
     interface: &HidDevice,
@@ -301,7 +232,7 @@ fn read_typed_response(
     verbose: bool,
 ) -> Result<crate::CommandResponse, QmkError> {
     use crate::CommandResponse;
-    let mut buf = [0u8; REPORT_LENGTH + 1]; // 33 bytes — matches the drain loop
+    let mut buf = [0u8; REPORT_LENGTH + 1]; // 33 bytes — matches burst_to_one
     match interface.read_timeout(&mut buf, REPLY_READ_TIMEOUT_MS) {
         Ok(n) if n > 0 => {
             if verbose {
@@ -329,102 +260,44 @@ fn read_typed_response(
         }
     }
 }
-
-/// Burst-write `data` to `interface` as `batch_count` reports, then read ONE typed
-/// reply (instead of draining all). The typed-command counterpart to
-/// [`burst_to_one`].
-///
-/// The write half is byte-for-byte identical to [`burst_to_one`]'s write loop (same
-/// `[0x00][0x81][0x9F]` per-report header, same 30-byte chunking). The read half
-/// differs: where [`burst_to_one`] drains up to [`IN_DRAIN_MAX`] reports and
-/// discards them, this reads **exactly one** reply via [`read_typed_response`] and
-/// returns the parsed [`CommandResponse`].
-///
-/// Backward compatibility: the legacy [`crate::RunCommand::SendMessage`] path keeps
-/// using [`burst_to_one`] (drain-discard) unchanged. Only typed commands route
-/// through this capture-and-parse path — wired in P1.M1.T3.S2.
-///
-/// Returns the parsed reply, or [`QmkError::SendReportError`] on a write failure
-/// (mirrors [`burst_to_one`]'s `false`-on-write-error, surfaced as an error here
-/// since the caller can't proceed without a successful send). A read timeout is
-/// **not** an error — it surfaces as `Ok(CommandResponse::Timeout)`.
-///
-/// Consumer: the `run()` typed dispatch (P1.M1.T3.S2).
-#[allow(dead_code)]
-fn burst_and_read_one(
-    interface: &HidDevice,
-    data: &[u8],
-    batch_count: usize,
-    expected_cmd: u8,
-    verbose: bool,
-) -> Result<crate::CommandResponse, QmkError> {
-    // --- Write half: identical to burst_to_one's write loop. ---
-    let mut request_data = [0u8; REPORT_LENGTH + 1];
-    request_data[1] = 0x81;
-    request_data[2] = 0x9F;
-
-    for batch in 0..batch_count {
-        let start_idx = batch * PAYLOAD_PER_REPORT;
-        let end_idx = (start_idx + PAYLOAD_PER_REPORT).min(data.len());
-        let batch_data = &data[start_idx..end_idx];
-
-        request_data[3..].fill(0); // clear reused payload tail
-        if !batch_data.is_empty() {
-            request_data[3..3 + batch_data.len()].copy_from_slice(batch_data);
-        }
-
-        if verbose {
-            println!("Sending batch {}/{}", batch + 1, batch_count);
-            println!("{:?}", request_data);
-        }
-
-        if let Err(e) = interface.write(&request_data) {
-            if verbose {
-                println!("Error on batch {}: {}", batch + 1, e);
-            }
-            return Err(QmkError::SendReportError(e));
-        }
-    }
-
-    // --- Read half: ONE typed reply (bounded timeout, NOT a drain loop). ---
-    read_typed_response(interface, expected_cmd, verbose)
-}
-
-/// Number of reports needed to carry `data.len()` payload bytes (0 when empty).
-fn batches_for(data: &[u8]) -> usize {
 ```
 
-### Change 5 — Update `parse_reply`'s trailing doc sentence (lines ~404-407)
+### Change 3 — Remove `parse_reply`'s `#[allow(dead_code)]` + update its doc
 
-`parse_reply`'s doc still references the stale plan numbering "P1.M3.T3" and claims
-it's "referenced only by tests". Its real consumer chain now includes
-`classify_response`. The `#[allow(dead_code)]` STAYS (conservative — see Known
-Gotchas) but the doc should be accurate. FIND:
+Locate `parse_reply` (signature `pub(crate) fn parse_reply(response: &[u8]) -> crate::CommandResponse`).
+It currently has `#[allow(dead_code)]` directly above it and a trailing doc sentence
+saying it's "referenced only by tests" / "remove it in P1.M3.T3". FIND that attribute +
+trailing doc sentence and:
+
+- **DELETE** the `#[allow(dead_code)]` line above `parse_reply`. (Now safe: `classify_response` (allow-dead) calls it — one-hop, proven by the `build_typed_payload`→5-constants precedent documented in the module comment. **Verify** with `cargo build` after all edits: zero "never used" for `parse_reply`. If one unexpectedly appears, re-add the allow — but the precedent says it won't.)
+- **REPLACE** the trailing doc sentence with:
 
 ```rust
-/// Every field access in the typed path uses defensive `.get(...)` indexing —
-/// firmware replies may be truncated, so missing bytes default to `0` rather
-/// than panicking. Consumer: the `run()` typed dispatch (P1.M3.T3.S1). Until then
-/// this is referenced only by tests, hence `#[allow(dead_code)]` — remove it in
-/// P1.M3.T3 once `run()` calls it (same lifecycle as [`build_typed_payload`]).
+/// Consumer: [`classify_response`] (P1.M1.T3.S1), which the `run()` typed dispatch
+/// (P1.M1.T3.S2) applies to [`send_raw_report`]'s captured reply. `#[allow(dead_code)]`
+/// was removed once `classify_response` (allow-dead) became its caller — a const/fn
+/// referenced by an allow-dead fn's body does NOT warn (same rule that dropped the
+/// command constants' allows once `build_typed_payload` referenced them).
 ```
 
-REPLACE WITH:
+(Keep the rest of `parse_reply`'s rustdoc and its body UNCHANGED.)
 
-```rust
-/// Every field access in the typed path uses defensive `.get(...)` indexing —
-/// firmware replies may be truncated, so missing bytes default to `0` rather
-/// than panicking. Consumer chain: [`classify_response`] (P1.M1.T3.S1) →
-/// [`read_typed_response`] → [`burst_and_read_one`] → the `run()` typed dispatch
-/// (P1.M1.T3.S2). The `#[allow(dead_code)]` stays until `run()` goes live (S2
-/// lifts it together with the read/classify functions' allows); it is cosmetic
-/// now since `classify_response` (allow-dead) calls this.
+### Change 4 — Ensure NO `burst_and_read_one` exists
+
+Locate any `fn burst_and_read_one`. If present (from a parallel attempt using an older
+draft of this task), **DELETE the entire function** (signature, doc, body). It is
+redundant with the committed capturing `burst_to_one`: `burst_to_one` already writes +
+captures the first reply + drains surplus (`-> (bool, Option<Vec<u8>>)`), and
+`send_raw_report` already returns those bytes. A `burst_and_read_one` would re-read the
+kernel IN buffer (double-drain) if ever wired in. **Do not add it; remove it if present.**
+Confirm with:
+```bash
+grep -n "burst_and_read_one" src/core.rs   # MUST print nothing
 ```
 
-### Change 6 — Add ~5 `classify_response` tests to the existing `mod tests`
+### Change 5 — Add ~5 `classify_response` tests to the existing `mod tests`
 
-Append these inside the existing `#[cfg(test)] mod tests { use super::*; … }` block
-in `src/core.rs` (after the last `parse_reply_*` test, before the closing `}`):
+Append these inside the existing `#[cfg(test)] mod tests { use super::*; … use crate::{CommandResponse, HostOs, RunCommand}; … }` block, before its closing `}`:
 
 ```rust
     #[test]
@@ -502,47 +375,36 @@ in `src/core.rs` (after the last `parse_reply_*` test, before the closing `}`):
     }
 ```
 
-> The tests use `classify_response`, `CMD_QUERY_INFO`/`CMD_QUERY_CALLBACK`/
-> `CMD_SET_OS`/`CMD_APPLY_HOST_CONTEXT`, and `CommandResponse` — ALL in scope via
-> the existing `use super::*;` + `use crate::{CommandResponse, HostOs, RunCommand};`
-> at the top of `mod tests` (the command-ID consts are `pub(crate)` in `super`).
-> No new imports needed.
+> `classify_response`, the `CMD_*` consts, and `CommandResponse` are all in scope via
+> the test module's existing `use super::*;` + `use crate::{CommandResponse, …};`. No
+> new imports needed.
 
 ### Success Criteria
 
-- [ ] `classify_response(buf, expected_cmd)` exists, is `pub(crate)`, pure, and:
-      typed reply with `buf[1]==expected_cmd` ⇒ delegates to `parse_reply`;
-      typed reply with `buf[1]!=expected_cmd` ⇒ `Timeout`; legacy `0/1` ⇒ `Legacy`;
-      empty/unknown ⇒ `Timeout`.
+- [ ] `classify_response(buf, expected_cmd)` exists, is `pub(crate)`, pure, and: typed
+      reply with `buf[1]==expected_cmd` ⇒ delegates to `parse_reply`; typed reply with
+      `buf[1]!=expected_cmd` ⇒ `Timeout`; legacy `0/1` ⇒ `Legacy`; empty/unknown ⇒ `Timeout`.
 - [ ] `read_typed_response(interface, expected_cmd, verbose)` exists, staged
       `#[allow(dead_code)]`, returns `Ok(classify_response(..))` on `Ok(n>0)`,
       `Ok(Timeout)` on `Ok(0)`, `Err(HidReadError)` on `Err`.
-- [ ] `burst_and_read_one(interface, data, batch_count, expected_cmd, verbose)`
-      exists, staged `#[allow(dead_code)]`; its write loop is byte-identical to
-      `burst_to_one`'s; write failure ⇒ `Err(SendReportError)`; otherwise calls
-      `read_typed_response`.
-- [ ] `#[allow(dead_code)]` removed from `REPLY_READ_TIMEOUT_MS`; its doc explains
-      the timeout + the P4 tuning note.
-- [ ] The stale "RESPONSE_MARKER and REPLY_READ_TIMEOUT_MS still carry allow"
-      comment corrected; `parse_reply`'s doc updated (consumer chain + allow note).
+- [ ] **NO `burst_and_read_one` function exists** in `src/core.rs`.
+- [ ] `parse_reply`'s `#[allow(dead_code)]` removed; its doc updated.
 - [ ] ~5 `classify_response_*` tests added; all pass.
-- [ ] `burst_to_one`/`send_raw_report`/`parse_reply` body/`run()`/`lib.rs`/
-      `error.rs`/`Cargo.toml` unchanged except the documented doc/allow tweaks.
-- [ ] `cargo build` → zero warnings (no "never used" for `REPLY_READ_TIMEOUT_MS`).
+- [ ] `burst_to_one`/`send_raw_report`/`try_send_once`/`parse_reply` body/`run()`/
+      `lib.rs`/`error.rs`/`Cargo.toml` unchanged except the documented `parse_reply`
+      allow-removal + doc.
+- [ ] `cargo build` → zero warnings (no "never used" for `parse_reply`).
 
 ## All Needed Context
 
 ### Context Completeness Check
 
-> _"If someone knew nothing about this codebase, would they have everything needed
-> to implement this successfully?"_ — **Yes.** Exact FIND/REPLACE anchors for every
-> edit (the comment, the `REPLY_READ_TIMEOUT_MS` block, the two insertion seams, the
-> `parse_reply` doc), verbatim replacement code (the three functions + the 5 tests),
-> the verified dead_code staging rationale (with the in-codebase proof), the
-> hidapi `read_timeout` semantics (with the in-codebase drain-loop precedent), and
-> verified build/clippy/fmt/test commands are all below. The implementer does not
-> need to read the firmware source — `firmware_wire_contract.md` already
-> canonicalized every reply byte, and `parse_reply` already decodes them.
+> _"If someone knew nothing about this codebase, would they have everything needed to
+> implement this successfully?"_ — **Yes.** The committed baseline (burst_to_one captures,
+> send_raw_report returns Option<Vec<u8>>) is documented above; the exact code for the two
+> new functions + 5 tests is verbatim; the parse_reply allow-removal is justified by a
+> proven in-codebase precedent; the burst_and_read_one exclusion is explained; and
+> anchor-resilient location instructions handle the concurrent-edit moving target.
 
 ### Documentation & References
 
@@ -551,287 +413,174 @@ in `src/core.rs` (after the last `parse_reply_*` test, before the closing `}`):
 - file: /home/dustin/projects/qmk_notifier/src/core.rs
   why: "(a) Contains parse_reply/parse_typed_reply/parse_callback_name — the PARSER,
         ALREADY IMPLEMENTED & TESTED (do NOT touch their bodies or tests). This task
-        adds the READER layer above them: classify_response (after parse_callback_name),
-        read_typed_response + burst_and_read_one (after burst_to_one). (b) burst_to_one
-        is the WRITE-LOOP TEMPLATE for burst_and_read_one (mirror its write half exactly).
-        (c) REPLY_READ_TIMEOUT_MS loses its allow here. (d) RESPONSE_MARKER/CMD_* are the
-        consts classify_response uses."
-  section: "REPLY_READ_TIMEOUT_MS (line ~37), burst_to_one (~258, write loop + drain
-            loop), parse_reply (~409, the parser — read-only), parse_callback_name
-            (~462, insertion seam), batches_for (doc = insertion seam)"
+        adds classify_response (after parse_callback_name) + read_typed_response
+        (after burst_to_one). (b) burst_to_one NOW CAPTURES (committed 71248cd) — the
+        baseline this task aligns to; do NOT add burst_and_read_one (redundant).
+        (c) parse_reply loses its allow here. (d) RESPONSE_MARKER/CMD_* are the consts
+        classify_response uses."
   critical: "parse_reply ALREADY EXISTS and is tested — do NOT re-implement parsing.
-             classify_response DELEGATES to parse_reply (it only adds the expected_cmd
-             echo guard). burst_and_read_one's write loop must be byte-identical to
-             burst_to_one's (copy it; only the tail differs: read_one vs drain)."
+             classify_response DELEGATES to parse_reply (adds only the expected_cmd
+             echo guard). burst_and_read_one MUST NOT exist (redundant with the
+             capturing burst_to_one)."
 
 # MUST READ — the wire contract (canonical reply byte layouts).
 - file: /home/dustin/projects/qmk_notifier/plan/001_b92a9b2b603f/architecture/firmware_wire_contract.md
   why: "§Reply Disambiguation: response[0]==0x51 ⇒ typed (decode by echo at [1]); 0/1
-        ⇒ legacy; no reply ⇒ timeout. §Field Definitions: the exact per-command reply
-        layouts parse_reply already decodes (QUERY_INFO/QUERY_CALLBACK/SET_OS/
-        APPLY_HOST_CONTEXT). §Constants: RESPONSE_MARKER=0x51, NOTIFY_CMD_* ids."
+        ⇒ legacy; no reply ⇒ timeout. §Field Definitions: the per-command reply layouts
+        parse_reply already decodes. §Constants: RESPONSE_MARKER=0x51, NOTIFY_CMD_* ids."
   section: "Reply Disambiguation, Field Definitions, Constants"
-  critical: "The expected_cmd guard in classify_response maps 1:1 to §Reply
-             Disambiguation's 'decode by response[1]'. Firmware is NOT yet implemented
-             (§Firmware Implementation Status) — typed commands time out against current
-             firmware, which is the designed fallback (Timeout)."
+  critical: "The expected_cmd guard maps 1:1 to §Reply Disambiguation. Firmware is NOT
+             yet implemented (§Firmware Implementation Status) — typed commands time
+             out against current firmware, which is the designed fallback (Timeout)."
 
-# MUST READ — the previous subtask's PRP (the CONTRACT for what run() looks like now).
+# MUST READ — the previous subtask's PRP (what run() looks like now + the S1→S2 pattern).
 - file: /home/dustin/projects/qmkonnect/plan/002_637d65b6e9b8/P1M1T2S2/PRP.md
-  why: "P1.M1.T2.S2 (in parallel) replaces the 4 todo!() typed arms in run() with a
-        collapsed or-pattern arm that does build_typed_payload → send_raw_report →
-        Ok(CommandResponse::Timeout) PLACEHOLDER. THIS task (S1) does NOT touch run();
-        it provides the read primitives that S2 will use to replace that placeholder.
-        Confirms send_raw_report still returns Result<(),_> and burst_to_one still
-        drains — both UNCHANGED here."
-  section: "What (Change 1b — the typed arm), Integration Points (DOWNSTREAM CONSUMER)"
-  critical: "Do NOT wire read_typed_response/burst_and_read_one into run() in S1 — that
-             is P1.M1.T3.S2. S1 only adds the staged primitives in core.rs."
+  why: "P1.M1.T2.S2 replaced run()'s todo!() typed arms with build_typed_payload →
+        send_raw_report → Ok(CommandResponse::Timeout) PLACEHOLDER. The committed
+        refactor went further: send_raw_report now returns Option<Vec<u8>>. THIS task
+        (S1) does NOT touch run(); it provides classify_response (the parse S2 applies
+        to those bytes) + read_typed_response (item primitive)."
+  critical: "Do NOT wire classify_response/read_typed_response into run() in S1 — that
+             is P1.M1.T3.S2. S1 only adds the core.rs primitives."
 
-# REFERENCE — the build_typed_payload S1→S2 staging precedent (the allow-dead pattern).
+# REFERENCE — the build_typed_payload S1→S2 staging precedent (allow-dead pattern).
 - file: /home/dustin/projects/qmkonnect/plan/002_637d65b6e9b8/P1M1T2S1/PRP.md
-  why: "Shows the EXACT staging pattern this task reuses: stage a new pub(crate) fn as
-        #[allow(dead_code)] with a doc note 'consumer lands in S2'; S2 then removes the
-        allow when run() calls it. The 5 command consts dropped their allows the same
-        way (a const referenced by an allow-dead fn's body does NOT warn) — that is the
-        proof REPLY_READ_TIMEOUT_MS can be de-allowed now."
-  section: "Goal, The new build_typed_payload function, Anti-Patterns (allow-dead staging)"
+  why: "The EXACT staging pattern this task reuses: stage a pub(crate) fn as
+        #[allow(dead_code)]; the consumer lands in S2. Also the proof that a const/fn
+        referenced by an allow-dead fn's body does NOT warn — the basis for removing
+        parse_reply's allow once classify_response (allow-dead) calls it."
 
-# REFERENCE — hidapi read_timeout API (the read primitive this task uses).
+# REFERENCE — hidapi read_timeout API.
 - url: https://docs.rs/hidapi/latest/hidapi/struct.HidDevice.html#method.read_timeout
-  why: "Signature: read_timeout(&mut data, timeout_ms: i32) -> Result<usize, HidError>.
-        Ok(n>0)=read n bytes; Ok(0)=timed out (no data) — with timeout_ms>0 it BLOCKS up
-        to that many ms; Err=real HID error. This is EXACTLY the behavior the existing
-        drain loop relies on (it passes 0 = non-blocking poll). read_typed_response
-        passes REPLY_READ_TIMEOUT_MS (>0) = blocking bounded read."
-  critical: "On a single-report (report-ID-0) interface like QMK raw HID, read_timeout
-             returns report DATA starting at buf[0] (no report-ID prefix on READ —
-             contrast the WRITE path which must prefix 0x00). So buf[0]==0x51 for a
-             typed reply. parse_reply(&buf[..n]) is correct."
+  why: "read_timeout(&mut data, timeout_ms) -> Result<usize, HidError>. Ok(n>0)=read n
+        bytes; Ok(0)=timed out (BLOCKS up to timeout_ms when >0); Err=HID error. Same
+        semantics the committed burst_to_one capture relies on."
+  critical: "On a report-ID-0 interface (QMK raw HID), read returns report DATA at
+             buf[0] (no report-ID prefix on READ). So buf[0]==0x51; parse_reply is correct."
 
-# REFERENCE — research notes for THIS subtask (design decisions + dead_code proof).
+# REFERENCE — research notes for THIS subtask (baseline reconciliation + decisions).
 - docfile: plan/002_637d65b6e9b8/P1M1T3S1/research/notes.md
-  why: "The 6 design decisions: separate fn (not modify burst_to_one); 3-layer
-        decomposition (classify/read/burst_and_read); dead_code staging (keep parse_reply's
-        allow, drop REPLY_READ_TIMEOUT_MS's — proven); timeout value (keep 1000ms by name);
-        buffer sizing (33 bytes, report-ID-0); read_timeout semantics."
-- docfile: plan/002_637d65b6e9b8/P1M1T3S1/research/dead_code_precedent.md
-  why: "The two in-codebase proofs that an allow-dead fn's references don't warn:
-        (1) parse_typed_reply has no allow yet builds clean (only called by allow-dead
-        parse_reply); (2) the documented build_typed_payload→5-consts precedent. ⇒
-        REPLY_READ_TIMEOUT_MS is safe to de-allow once read_typed_response references it."
+  why: "The baseline-change analysis (committed burst_to_one-captures), the deliverable
+        reconciliation (why classify_response is core, read_typed_response is the item
+        primitive, burst_and_read_one is excluded), the dead_code staging, and the
+        moving-target verification approach."
 ```
 
-### Current Codebase tree (run from the crate root `/home/dustin/projects/qmk_notifier`)
+### Current Codebase tree (crate root `/home/dustin/projects/qmk_notifier`)
 
 ```bash
 qmk_notifier/
-├── Cargo.toml          # name="qmk_notifier", version="0.2.1", edition="2021" — DO NOT TOUCH.
-├── Cargo.lock
-├── README.md
-├── PRD.md              # crate PRD (§7, §4.2) — reference only.
-├── .gitignore          # contains only: /target
-├── plan/001_b92a9b2b603f/architecture/firmware_wire_contract.md   # WIRE SOURCE OF TRUTH
-└── src
-    ├── main.rs         # binary entrypoint — only SendMessage/ListDevices. DO NOT TOUCH.
-    ├── error.rs        # QmkError (HidReadError/SendReportError/NoResponseReceived exist) — DO NOT TOUCH.
-    ├── lib.rs          # run() with the Timeout placeholder (P1.M1.T2.S2). DO NOT TOUCH (S2 owns run()).
-    └── core.rs         # <-- PRIMARY & ONLY EDIT: add classify_response/read_typed_response/
-                        #     burst_and_read_one; drop REPLY_READ_TIMEOUT_MS allow; fix comment;
-                        #     add 5 tests. parse_reply/parse_typed_reply/parse_callback_name/
-                        #     burst_to_one/send_raw_report/build_typed_payload — bodies UNCHANGED.
-```
-
-### Desired Codebase tree with files to be modified
-
-```bash
-src/
-└── core.rs  # MODIFIED: +classify_response, +read_typed_response, +burst_and_read_one;
-             #   -#[allow(dead_code)] on REPLY_READ_TIMEOUT_MS; corrected module comment;
-             #   parse_reply doc tweak; +5 classify_response_* tests in mod tests.
-# (no new files; main.rs/error.rs/lib.rs/Cargo.toml untouched)
+├── Cargo.toml          # version="0.2.1" — DO NOT TOUCH.
+├── src
+│   ├── main.rs         # binary entrypoint — DO NOT TOUCH.
+│   ├── error.rs        # QmkError (HidReadError/SendReportError exist) — DO NOT TOUCH.
+│   ├── lib.rs          # run() ignores send_raw_report's Option<Vec<u8>> (Timeout placeholder). DO NOT TOUCH (S2 owns run()).
+│   └── core.rs         # <-- PRIMARY & ONLY EDIT: +classify_response, +read_typed_response;
+│                       #     -parse_reply's allow; -burst_and_read_one if present; +5 tests.
+│                       #     burst_to_one (captures)/send_raw_report (->Option<Vec<u8>>)/
+│                       #     try_send_once/parse_reply body/build_typed_payload — UNCHANGED.
+└── plan/001_b92a9b2b603f/architecture/{firmware_wire_contract,external_deps}.md
 ```
 
 ### Known Gotchas of our codebase & Library Quirks
 
 ```rust
-// CRITICAL: parse_reply ALREADY EXISTS and is fully tested (9 parse_reply_* tests).
-//   Do NOT re-implement, rename, or move it. classify_response DELEGATES to it — it
-//   only adds the expected_cmd echo guard on the typed (0x51) path. parse_reply's
-//   OWN tests stay green untouched (they don't pass expected_cmd, which is fine —
-//   parse_reply has no such param).
+// CRITICAL: the COMMITTED baseline has burst_to_one CAPTURING the reply (-> (bool,
+//   Option<Vec<u8>>)) and send_raw_report returning Result<Option<Vec<u8>>, _>. This
+//   task was specced against the OLD baseline (burst_to_one drains, send_raw_report
+//   returns ()). ALIGN TO THE COMMITTED BASELINE: classify_response parses the
+//   captured bytes; read_typed_response is the standalone primitive; burst_and_read_one
+//   is REDUNDANT — do NOT add it.
 
-// CRITICAL: burst_and_read_one's WRITE LOOP must be byte-for-byte identical to
-//   burst_to_one's (same [0u8;REPORT_LENGTH+1] buffer, request_data[1]=0x81,[2]=0x9F,
-//   same batch math via PAYLOAD_PER_REPORT, same `if let Err(e)=write(..)` handling).
-//   The ONLY difference is the tail: burst_to_one drains (read_timeout(0) loop),
-//   burst_and_read_one calls read_typed_response (read_timeout(REPLY_READ_TIMEOUT_MS),
-//   ONE read). Copy the write loop; don't paraphrase it.
+// CRITICAL: burst_and_read_one MUST NOT exist in src/core.rs. The committed burst_to_one
+//   already writes + captures + drains; send_raw_report returns the bytes. A
+//   burst_and_read_one would re-read the kernel IN buffer (double-drain). If a parallel
+//   attempt added it, DELETE it.
 
-// CRITICAL: de-allowing REPLY_READ_TIMEOUT_MS is safe — PROVEN by two in-codebase
-//   precedents (see research/dead_code_precedent.md): (1) parse_typed_reply has NO
-//   allow yet builds clean (only called by allow-dead parse_reply); (2) the
-//   documented build_typed_payload→5-consts pattern. read_typed_response (allow-dead)
-//   references REPLY_READ_TIMEOUT_MS ⇒ same one-hop rule ⇒ no warning. VERIFY with
-//   `cargo build` after Change 4. If (unexpectedly) a "never used" warning appears,
-//   re-add the allow — but the precedent guarantees it won't.
+// CRITICAL: parse_reply ALREADY EXISTS and is tested. Do NOT re-implement/move it.
+//   classify_response DELEGATES to it (only adds the expected_cmd echo guard on the
+//   0x51 path). parse_reply's OWN tests stay green untouched.
 
-// CRITICAL: do NOT remove parse_reply's #[allow(dead_code)] in S1. Its new caller
-//   classify_response is itself only reachable via allow-dead read_typed_response
-//   (TWO hops — unproven, unlike the one-hop REPLY_READ_TIMEOUT_MS case). parse_reply
-//   is test-reachable anyway, so the allow is cosmetic. S2 removes it (and the three
-//   new functions' allows) when run() goes live. Keep it conservative.
+// CRITICAL: removing parse_reply's #[allow(dead_code)] is safe — PROVEN one-hop
+//   precedent: classify_response (allow-dead) calls parse_reply; the build_typed_payload
+//   → 5-constants pattern (documented in core.rs's module comment) shows a const/fn
+//   referenced by an allow-dead fn's body does NOT warn. VERIFY with cargo build.
 
-// CRITICAL: Ok(0) from read_timeout is NOT an error — it's "poll timed out, no data".
+// CRITICAL: Ok(0) from read_timeout is NOT an error — "poll timed out, no data".
 //   read_typed_response returns Ok(CommandResponse::Timeout) on Ok(0), NOT
-//   Err(NoResponseReceived). The item is explicit: "not an error — the caller decides".
-//   (NoResponseReceived exists in error.rs for OTHER use; do not use it here.)
+//   Err(NoResponseReceived). The item: "not an error — the caller decides".
 
-// GOTCHA: read_timeout returns report DATA at buf[0] for a report-ID-0 interface
-//   (QMK raw HID), so buf[0]==0x51 for a typed reply. Do NOT strip a leading report-ID
-//   byte. parse_reply(&buf[..n]) is correct as-is. (Contrast the WRITE path, which
-//   prefixes request_data[0]=0x00 — that asymmetry is a known hidapi quirk.)
+// GOTCHA: the file is under CONCURRENT EDIT. Locate targets by SIGNATURE/doc text,
+//   not line number. Run `grep -n "fn classify_response|fn read_typed_response|fn
+//   burst_and_read_one|fn parse_reply|fn parse_callback_name" src/core.rs` first; make
+//   only the delta edits needed if the parallel attempt already added the functions.
 
-// GOTCHA: the three new functions are hardware-bound (like burst_to_one/send_raw_report,
-//   which have NO unit tests). Only classify_response is pure and unit-testable. Do
-//   NOT try to unit-test read_typed_response/burst_and_read_one (you can't construct a
-//   HidDevice in a unit test). Their verification is `cargo build` (they compile) +
-//   future hardware integration (S2/P4). This matches the codebase's existing split:
-//   pure logic is tested; HID-I/O is not.
+// GOTCHA: read_timeout returns report DATA at buf[0] for report-ID-0 (QMK), so
+//   buf[0]==0x51 for a typed reply. Do NOT strip a leading report-ID byte. (Contrast
+//   WRITE, which prefixes request_data[0]=0x00 — known hidapi asymmetry, not a bug.)
 
-// NOTE: REPLY_READ_TIMEOUT_MS stays 1000ms (its existing value). Use it BY NAME in
-//   read_typed_response — do NOT hardcode 100 or 1000. The item's "e.g. 100ms" was
-//   illustrative; tuning is P4's job (the QUERY_CALLBACK sweep against a silent device
-//   waits up to this per query). Changing the value now would churn a tested constant
-//   (`REPLY_READ_TIMEOUT_MS > 0` in typed_command_constants_match_firmware_contract).
+// GOTCHA: read_typed_response/burst_to_one are hardware-bound (no unit test, like the
+//   existing send_raw_report/burst_to_one). Only classify_response is pure/testable.
 
-// NOTE: do NOT touch run() in lib.rs. The typed arm currently returns the
-//   Ok(CommandResponse::Timeout) PLACEHOLDER (P1.M1.T2.S2). Replacing it with a real
-//   burst_and_read_one call is P1.M1.T3.S2. S1 only adds the core.rs primitives.
+// NOTE: REPLY_READ_TIMEOUT_MS stays 1000ms (use BY NAME; don't hardcode). Already
+//   de-allowed + consumed by burst_to_one. Tuning is P4's job.
+
+// NOTE: do NOT touch run() in lib.rs (replacing the Timeout placeholder with
+//   send_raw_report+classify_response is P1.M1.T3.S2). The stale lib.rs doc
+//   ("send_raw_report STILL returns Result<(),_>") is S2's to fix.
 ```
 
 ## Implementation Blueprint
 
 ### Data models and structure
 
-No new types. S1 layers functions over the EXISTING types: `HidDevice` (hidapi),
-`CommandResponse` (lib.rs, P1.M1.T1.S2), `QmkError` (error.rs). The "structure" is
-the read pipeline: `burst_and_read_one` → `read_typed_response` → `classify_response`
-→ `parse_reply`. Only `classify_response` and `parse_reply` are pure/testable; the
-top two are I/O.
+No new types. S1 layers functions over EXISTING types: `HidDevice` (hidapi),
+`CommandResponse` (lib.rs), `QmkError` (error.rs). Pipeline:
+`send_raw_report` (captures `Option<Vec<u8>>`) → **`classify_response`** (parses) →
+`CommandResponse`. `read_typed_response` is the standalone read+parse alternative.
 
-### Implementation Tasks (ordered by dependencies)
+### Implementation Tasks (ordered by dependencies — anchor-resilient)
 
 ```yaml
-Task 1: READ current state of src/core.rs (anchors)
-  - READ: /home/dustin/projects/qmk_notifier/src/core.rs. LOCATE: (a) the
-          module comment block (~lines 14-25); (b) REPLY_READ_TIMEOUT_MS (~35-38);
-          (c) burst_to_one's body (~258-330) — the write loop you'll COPY for
-          burst_and_read_one, and the drain loop you will NOT copy; (d) parse_reply
-          (~390-417) and its doc/allow — READ-ONLY; (e) parse_callback_name's closing
-          brace (~480, insertion seam for classify_response); (f) batches_for's doc
-          (insertion seam for read_typed_response/burst_and_read_one); (g) the end of
-          mod tests (where the 5 tests append).
-  - CONFIRM: parse_reply/parse_typed_reply/parse_callback_name ALREADY EXIST with
-          passing tests (cargo test --lib parse_reply_). If they're absent, STOP —
-          this task depends on them; re-check the plan status.
-  - CONFIRM: REPLY_READ_TIMEOUT_MS currently carries #[allow(dead_code)] (line ~37);
-          RESPONSE_MARKER does NOT (line ~29).
+Task 1: INVENTORY current state (the file is a moving target)
+  - RUN: grep -n "fn classify_response\|fn read_typed_response\|fn burst_and_read_one\|
+          fn parse_reply\|fn parse_callback_name\|fn burst_to_one\|fn send_raw_report" src/core.rs
+  - DETERMINE which of Change 1/2/3/4 are already done (parallel attempt) vs. needed.
+  - CONFIRM: burst_to_one returns (bool, Option<Vec<u8>>) and send_raw_report returns
+          Result<Option<Vec<u8>>, _> (committed baseline). If NOT, the baseline differs
+          from this PRP — STOP and reconcile.
 
-Task 2: EDIT the module comment (Change 1)
-  - REPLACE the stale "Only RESPONSE_MARKER and REPLY_READ_TIMEOUT_MS still carry
-          #[allow(dead_code)]" comment with the corrected version (exact FIND/REPLACE
-          in "What"). This is a comment-only edit; no behavior change.
+Task 2: ADD classify_response after parse_callback_name (Change 1)
+  - INSERT (verbatim in "What") between parse_callback_name's closing `}` and the
+          `/// Match parameters` doc. pub(crate), #[allow(dead_code)], pure, delegates
+          to parse_reply. (If already present & matching, skip.)
 
-Task 3: EDIT REPLY_READ_TIMEOUT_MS — remove allow + update doc (Change 2)
-  - DELETE the `#[allow(dead_code)]` line above REPLY_READ_TIMEOUT_MS; REPLACE its
-          2-line doc with the 4-line version (exact text in "What").
-  - NOTE: this will produce a "never used" warning UNTIL Change 4 lands
-          (read_typed_response references it). So do Changes 3-4 before running the
-          final `cargo build`, OR accept a transient warning mid-edit. (The allow
-          removal is only clean once read_typed_response exists.)
+Task 3: ADD read_typed_response after burst_to_one (Change 2)
+  - INSERT (verbatim in "What") between burst_to_one's closing `}` and the
+          `/// Number of reports` doc. #[allow(dead_code)]; uses REPLY_READ_TIMEOUT_MS
+          + classify_response. (If already present & matching, skip.)
 
-Task 4: ADD classify_response after parse_callback_name (Change 3)
-  - INSERT the classify_response fn (verbatim in "What") between parse_callback_name's
-          closing `}` and the `/// Match parameters` doc. It is pub(crate),
-          #[allow(dead_code)], pure, delegates to parse_reply.
-  - CHECK: it reads RESPONSE_MARKER and calls parse_reply (both in scope — same module).
+Task 4: REMOVE parse_reply's #[allow(dead_code)] + update its doc (Change 3)
+  - DELETE the allow line above parse_reply; REPLACE its trailing doc sentence (exact
+          text in "What"). Body + tests UNCHANGED. Verify with cargo build (Change 6).
 
-Task 5: ADD read_typed_response + burst_and_read_one after burst_to_one (Change 4)
-  - INSERT both fns (verbatim in "What") between burst_to_one's closing `}` and the
-          `/// Number of reports` doc.
-  - CHECK: read_typed_response uses REPLY_READ_TIMEOUT_MS (now de-allowed in Task 3 —
-          this is what makes that de-allow clean) and calls classify_response.
-  - CHECK: burst_and_read_one's write loop is byte-identical to burst_to_one's; its
-          tail calls read_typed_response. Write failure ⇒ Err(SendReportError).
-  - CHECK: both are #[allow(dead_code)] (consumers land in S2).
+Task 5: REMOVE burst_and_read_one if present (Change 4)
+  - RUN: grep -n "burst_and_read_one" src/core.rs. If ANY hit: DELETE the entire fn
+          (signature, doc, body). It is redundant with the capturing burst_to_one.
+          Confirm zero hits afterward.
 
-Task 6: EDIT parse_reply's trailing doc (Change 5)
-  - REPLACE its trailing doc sentence (exact FIND in "What") with the updated text
-          naming the classify_response→read_typed_response→burst_and_read_one→run()
-          consumer chain + the allow note. parse_reply's #[allow(dead_code)] STAYS.
-          Body and tests UNCHANGED.
+Task 6: ADD the 5 classify_response tests to mod tests (Change 5)
+  - APPEND (verbatim in "What") before mod tests' closing `}`. (If already present &
+          passing, skip.)
 
-Task 7: ADD the 5 classify_response tests to mod tests (Change 6)
-  - APPEND the 5 #[test] fns (verbatim in "What") at the end of mod tests, before its
-          closing `}`.
-  - NAMES: classify_response_typed_matching_echo_decodes,
-          classify_response_typed_mismatched_echo_is_timeout,
-          classify_response_legacy_delegates_to_parse_reply,
-          classify_response_empty_and_unknown_marker_are_timeout,
-          classify_response_ack_variants_require_matching_echo.
-  - NO new imports (use super::* + the existing use crate::{CommandResponse,..} cover
-          classify_response, the CMD_* consts, and CommandResponse).
-
-Task 8: VALIDATE (do not skip)
-  - RUN (from /home/dustin/projects/qmk_notifier):
-          cargo fmt && cargo build && cargo clippy --lib &&
-          cargo fmt --check && cargo test --lib
-  - EXPECT: build ZERO warnings (NO "never used" for REPLY_READ_TIMEOUT_MS — Change 4
-          made read_typed_response reference it; NO warning for the 3 new allow-dead
-          fns — they carry allows). clippy clean. fmt --check exit 0. All tests pass
-          (existing 62 incl. 9 parse_reply_* + 5 new classify_response_*).
-  - IF "never used: REPLY_READ_TIMEOUT_MS": Change 4 didn't land or read_typed_response
-          doesn't reference it by name — fix. (Per the build_typed_payload precedent it
-          should be clean.)
-  - SANITY: `git diff --stat` shows ONLY src/core.rs changed.
-```
-
-### Implementation Patterns & Key Details
-
-```rust
-// === WHY delegate classify_response to parse_reply (not re-implement) ===
-//   parse_reply already disambiguates 0x51/0/1/other AND decodes every typed variant,
-//   with 9 passing tests. classify_response's ONLY new logic is the expected_cmd echo
-//   guard on the 0x51 path (mismatch ⇒ Timeout). Everything else delegates. This keeps
-//   the parsing logic in ONE place (parse_reply) and the echo-validation in another
-//   (classify_response) — single responsibility, no duplication.
-
-// === WHY Ok(Timeout) instead of Err(NoResponseReceived) on a read timeout ===
-//   The item is explicit: "On Ok(0) or timeout: return CommandResponse::Timeout
-//   (not an error — the caller decides what to do)." A non-capable device simply
-//   doesn't reply to typed commands; that's NORMAL (the designed legacy fallback),
-//   not a transport failure. The P4 handshake treats Timeout as "stay string-only".
-//   NoResponseReceived exists for a different (more exceptional) signaling need.
-
-// === WHY keep parse_reply's allow but drop REPLY_READ_TIMEOUT_MS's ===
-//   REPLY_READ_TIMEOUT_MS: one hop from allow-dead read_typed_response ⇒ proven safe
-//   (build_typed_payload→5-consts precedent). parse_reply: TWO hops (reachable only via
-//   classify_response ← allow-dead read_typed_response) ⇒ unproven, so keep its allow
-//   (cosmetic — it's test-reachable anyway). S2 removes all remaining allows together.
-
-// === WHY a separate burst_and_read_one (not a flag on burst_to_one) ===
-//   The item offered both options. The separate fn keeps burst_to_one byte-for-byte
-//   unchanged → zero risk to the proven legacy SendMessage drain path (backward compat).
-//   A `capture: bool` flag on burst_to_one would ripple through try_send_once/
-//   send_raw_report and risk the legacy path. Separate fn = minimal blast radius.
-
-// === The write-error surface in burst_and_read_one ===
-//   burst_to_one returns bool (false on write error) because send_raw_report counts
-//   succeeded/failed devices. burst_and_read_one returns Result<CommandResponse,_>:
-//   a write failure surfaces as Err(SendReportError(e)) — the caller (S2's send path)
-//   can't get a reply without a successful send, so an error is the honest signal.
-//   (S2 decides how to aggregate this across the multi-device cache; out of scope here.)
+Task 7: VALIDATE (do not skip)
+  - RUN: cargo fmt && cargo build && cargo clippy --lib && cargo fmt --check && cargo test --lib
+  - EXPECT: build ZERO warnings (NO "never used" for parse_reply — Change 4 safe per
+          precedent). clippy clean. fmt --check exit 0. All tests pass (existing +
+          classify_response_*).
+  - IF "never used: parse_reply": Change 4's allow-removal was premature — re-add it.
+          (Per the build_typed_payload precedent it should be clean.)
+  - SANITY: git diff --stat shows ONLY src/core.rs changed.
 ```
 
 ### Integration Points
@@ -840,251 +589,145 @@ Task 8: VALIDATE (do not skip)
 SOURCE FILES:
   - modify (ONLY): "/home/dustin/projects/qmk_notifier/src/core.rs"
       - +classify_response (after parse_callback_name)
-      - +read_typed_response, +burst_and_read_one (after burst_to_one)
-      - -#[allow(dead_code)] on REPLY_READ_TIMEOUT_MS (+ doc)
-      - corrected module comment (~line 14-25)
-      - parse_reply doc tweak (~line 404)
+      - +read_typed_response (after burst_to_one)
+      - -parse_reply's #[allow(dead_code)] (+ doc)
+      - -burst_and_read_one if present
       - +5 classify_response_* tests in mod tests
 
-DEPENDENCIES / Cargo.toml:
-  - none. No new crate deps (hidapi already present; read_timeout already used by the
-    drain loop).
+DEPENDENCIES / Cargo.toml: none new (hidapi already present).
 
-PUBLIC API SURFACE:
-  - UNCHANGED. classify_response/read_typed_response/burst_and_read_one are all
-    pub(crate) or private in the private `mod core` (NOT re-exported at the crate
-    root). run()'s signature is unchanged (Result<CommandResponse,_> — T1.S2 set it).
+PUBLIC API SURFACE: UNCHANGED. classify_response/read_typed_response are pub(crate) or
+  private in the private `mod core` (NOT re-exported). run()'s signature unchanged.
 
-CONSUMES (treat as fixed, already landed):
-  - P1.M1.T1.S2 (Complete): CommandResponse enum (Info/CallbackName/Ack/Legacy/Timeout).
-  - P1.M1.T2.S1 (Complete): build_typed_payload + the 5 command-ID consts + RESPONSE_MARKER
-    + REPLY_READ_TIMEOUT_MS.
-  - P1.M1.T2.S2 (in parallel): run() typed arm = build_typed_payload → send_raw_report →
-    Ok(CommandResponse::Timeout) PLACEHOLDER.
-  - The pre-existing parse_reply/parse_typed_reply/parse_callback_name (parser, tested).
+CONSUMES (treat as fixed):
+  - P1.M1.T1.S2 (Complete): CommandResponse enum.
+  - P1.M1.T2.S1 (Complete): build_typed_payload + CMD_* consts + RESPONSE_MARKER.
+  - Committed 71248cd: burst_to_one captures; send_raw_report -> Option<Vec<u8>>;
+    try_send_once threads first_reply. REPLY_READ_TIMEOUT_MS de-allowed.
+  - Pre-existing parse_reply/parse_typed_reply/parse_callback_name (parser, tested).
 
-DOWNSTREAM CONSUMER (do NOT implement now — listed for awareness):
-  - P1.M1.T3.S2: replace run()'s typed-arm Timeout placeholder with a real send+read.
-    Will likely add a send_typed_report wrapper (cache lookup + burst_and_read_one per
-    device) OR evolve send_raw_report to return the reply. Removes the 4 remaining
-    allows (parse_reply, classify_response, read_typed_response, burst_and_read_one).
+DOWNSTREAM CONSUMER (NOT this task):
+  - P1.M1.T3.S2: replace run()'s typed-arm Timeout placeholder with:
+        let reply = send_raw_report(&payload, …)?;            // Option<Vec<u8>>
+        let expected = expected_cmd_for(&params.command);      // QueryInfo⇒0x01, …
+        Ok(reply.map_or(CommandResponse::Timeout, |b| classify_response(&b, expected)))
+    Also fixes the stale lib.rs doc ("send_raw_report STILL returns Result<(),_>").
+    Removes classify_response's allow. read_typed_response's allow stays unless S2 uses it.
   - P4.M2.T1.S1: handshake — QUERY_INFO → (Info{proto_ver==2,flags&0x01}) →
-    QUERY_CALLBACK sweep → name→id map. Pattern-matches on Info/Ack/Timeout.
+    QUERY_CALLBACK sweep → name→id map.
 
-OUT-OF-SCOPE (later subtasks — do NOT implement here):
-  - P1.M1.T3.S2: wire read_typed_response/burst_and_read_one into run() (replaces the
-    Timeout placeholder). Touches lib.rs + send path; removes remaining allows.
+OUT-OF-SCOPE (later subtasks):
+  - P1.M1.T3.S2: wire classify_response into run() (touches lib.rs; fixes stale doc).
   - P1.M1.T4.S1: bump crate version to 0.3.0 + tag.
-  - P4.M2.T1.S1: the handshake that consumes CommandResponse.
 ```
 
 ## Validation Loop
 
-> All commands run from the crate root: `/home/dustin/projects/qmk_notifier`
+> All commands run from `/home/dustin/projects/qmk_notifier`.
 
-### Level 1: Syntax & Style (Immediate Feedback)
+### Level 1: Syntax & Style
 
 ```bash
 cd /home/dustin/projects/qmk_notifier
-
-# Format the edited file (rustfmt default — no rustfmt.toml exists).
 cargo fmt
-
-# Build the whole crate — MUST compile with ZERO warnings.
-cargo build 2>&1 | tee /tmp/build.log
-# Expected: "Finished `dev` profile ..." and NO "warning:" lines.
-#   - If "never used: const `REPLY_READ_TIMEOUT_MS`": Change 4 (read_typed_response)
-#     didn't land or doesn't reference it by name. Fix (the build_typed_payload precedent
-#     guarantees it's de-allowable once referenced).
-#   - If "never used: function `read_typed_response`/`burst_and_read_one`/
-#     `classify_response`": you forgot their #[allow(dead_code)] attributes.
-#   - If E0432/E0425 "cannot find ... in this scope": you used a bare name not in scope.
-#     classify_response/read_typed_response/burst_and_read_one are in the same `mod core`
-#     as parse_reply/burst_to_one/REPLY_READ_TIMEOUT_MS/RESPONSE_MARKER/CMD_*, so they're
-#     all in scope. CommandResponse is `crate::CommandResponse` (use the path or a local
-#     `use crate::CommandResponse;` like parse_reply does).
-
-# Lint (default clippy — no .clippy.toml exists).
-cargo clippy --lib 2>&1 | tee /tmp/clippy.log
-# Expected: no warnings/errors specific to the new functions. clippy may suggest
-#   ergonomics — accept sensible fixes but do NOT change the read/classify shape.
-
-# Formatting check (CI-style gate).
-cargo fmt --check
-# Expected: exit code 0 (no diff). If non-zero, re-run `cargo fmt`.
-
-# Sanity: confirm ONLY core.rs changed.
-git diff --stat
-# Expected: only src/core.rs listed.
+cargo build 2>&1 | tee /tmp/build.log   # MUST be zero warnings
+#   - "never used: parse_reply" ⇒ Change 4 premature; re-add its allow (but precedent says clean).
+#   - "never used: read_typed_response/classify_response" ⇒ missing their #[allow(dead_code)].
+cargo clippy --lib 2>&1 | tee /tmp/clippy.log   # no new warnings
+cargo fmt --check   # exit 0
+git diff --stat     # only src/core.rs
 ```
 
-### Level 2: Unit Tests (Component Validation)
+### Level 2: Unit Tests
 
 ```bash
 cd /home/dustin/projects/qmk_notifier
-
-# Run the 5 new classify_response tests in isolation first.
-cargo test --lib classify_response_ -- --nocapture
-# Expected: 5 passed. classify_response_typed_matching_echo_decodes,
-#   _typed_mismatched_echo_is_timeout (the NEW guard),
-#   _legacy_delegates_to_parse_reply, _empty_and_unknown_marker_are_timeout,
-#   _ack_variants_require_matching_echo.
-
-# Re-run the existing parse_reply tests (must be UNCHANGED — we only edited their doc).
-cargo test --lib parse_reply_ -- --nocapture
-# Expected: 9 passed (parse_reply_info_reply, _info_board_rules_absent,
-#   _callback_name_named, _callback_name_unnamed, _ack_set_os_applied,
-#   _ack_apply_host_context_rejected, _empty_slice_is_timeout, _legacy_zero_is_no_match,
-#   _legacy_one_is_matched, _typed_marker_only_is_timeout, _unknown_cmd_echo_is_timeout,
-#   _unknown_marker_is_timeout, _callback_name_non_utf8_is_none,
-#   _truncated_info_defaults_board_rules_false).
-
-# Full lib test suite.
-cargo test --lib
-# Expected: "test result: ok. <N> passed; 0 failed; 0 ignored; ...". N = prior 62 + 5 new
-#   = 67 (the exact count is not load-bearing; the gate is 0 failed).
+cargo test --lib classify_response_ -- --nocapture   # 5 new tests pass
+cargo test --lib parse_reply_ -- --nocapture          # existing parse_reply tests UNCHANGED
+cargo test --lib                                       # all pass, 0 failed
 ```
 
-### Level 3: Integration Testing (System Validation)
+### Level 3: Integration Testing
 
 ```text
-PARTIALLY APPLICABLE. read_typed_response/burst_and_read_one do real HID I/O
-(read_timeout/write), so a full round-trip needs a QMK keyboard with the v0.3.0
-typed-command firmware (P1.M2 — NOT implemented yet; see firmware_wire_contract.md
-§Firmware Implementation Status). WITHOUT such hardware:
-
-  - The 5 classify_response tests (Level 2) ARE the verification that the pure
-    decode+guard logic is correct — they exercise EVERY path read_typed_response feeds
-    (typed-match, typed-mismatch⇒Timeout, legacy 0/1, empty/unknown⇒Timeout, ack both
-    ways). Since read_typed_response is a thin I/O wrapper around classify_response
-    (read_timeout result → classify_response), getting classify_response right IS
-    getting the parse logic right.
-  - The two I/O functions (read_typed_response/burst_and_read_one) are verified by
-    `cargo build` (they compile, types/signatures correct) — same bar as the existing
-    hardware-bound burst_to_one/send_raw_report (which also have no unit tests).
-
-  Live-hardware validation of the typed round-trip is deferred to P1.M1.T3.S2 (run()
-  wiring) + P1.M2 (firmware) — out of scope here. Once both land, `run(QueryInfo)`
-  against typed-capable firmware returns Info{..}; against legacy firmware returns Timeout.
+PARTIALLY APPLICABLE. read_typed_response does real HID I/O — a full round-trip needs
+QMK firmware with typed-command support (P1.M2 — NOT implemented; typed commands time
+out, the designed fallback). The 5 classify_response tests (Level 2) ARE the
+verification of the pure decode+guard logic (every path: typed-match, typed-mismatch⇒
+Timeout, legacy 0/1, empty/unknown⇒Timeout, ack both ways). read_typed_response is
+compile-verified only (same bar as the hardware-bound burst_to_one/send_raw_report).
+Live round-trip deferred to S2 (run() wiring) + P1.M2 (firmware).
 ```
 
 ### Level 4: Creative & Domain-Specific Validation
 
 ```bash
 cd /home/dustin/projects/qmk_notifier
-
-# Confirm rustdoc renders (Mode A documentation) for the 3 new functions + the updated
-# REPLY_READ_TIMEOUT_MS/parse_reply docs.
 cargo doc --lib --no-deps 2>&1 | grep -iE "warning|error" || echo "docs clean (good)"
-
-# Confirm REPLY_READ_TIMEOUT_MS no longer carries #[allow(dead_code)] (Change 2),
-# while the 3 new functions + parse_reply still do (staged for S2).
-grep -nB1 "REPLY_READ_TIMEOUT_MS\|fn read_typed_response\|fn burst_and_read_one\|fn classify_response\|fn parse_reply" src/core.rs
-# Expected: REPLY_READ_TIMEOUT_MS has NO allow above it; the 4 functions each have
-#   #[allow(dead_code)] directly above them (consumers land in S2).
-
-# Confirm the new functions exist and are staged allow-dead (not accidentally pub).
-grep -n "fn classify_response\|fn read_typed_response\|fn burst_and_read_one" src/core.rs
-# Expected: 3 hits; classify_response is `pub(crate)` (tested); the other two are
-#   private (they take &HidDevice, internal transport helpers).
-
-# Confirm burst_to_one is UNCHANGED (still drains, still returns bool) — backward compat.
-grep -nA2 "fn burst_to_one" src/core.rs
-# Expected: `fn burst_to_one(interface: &HidDevice, data: &[u8], batch_count: usize, verbose: bool) -> bool`
-#   — signature identical to before this task.
-
-# Confirm zero dead-code warnings overall.
+# parse_reply has NO allow above it; classify_response + read_typed_response each have one:
+grep -nB1 "fn parse_reply\|fn read_typed_response\|fn classify_response" src/core.rs
+# NO burst_and_read_one anywhere:
+grep -n "burst_and_read_one" src/core.rs || echo "burst_and_read_one absent (good)"
+# burst_to_one still captures (committed baseline, UNCHANGED):
+grep -nA1 "fn burst_to_one" src/core.rs   # -> (bool, Option<Vec<u8>>)
 cargo build 2>&1 | grep -iE "never used|warning" || echo "zero dead-code warnings (good)"
 ```
 
 ## Final Validation Checklist
 
 ### Technical Validation
-
-- [ ] Level 1 passed: `cargo build` → zero warnings (no "never used" for
-      `REPLY_READ_TIMEOUT_MS` — Change 4 made `read_typed_response` reference it).
-- [ ] Level 1 passed: `cargo clippy --lib` → zero new warnings.
-- [ ] Level 1 passed: `cargo fmt --check` → exit 0.
-- [ ] Level 2 passed: `cargo test --lib` → all pass, 0 failed (5 new
-      `classify_response_*` + all existing incl. the 9 unchanged `parse_reply_*`).
+- [ ] `cargo build` → zero warnings (no "never used" for `parse_reply`).
+- [ ] `cargo clippy --lib` → zero new warnings; `cargo fmt --check` → exit 0.
+- [ ] `cargo test --lib` → all pass (5 new `classify_response_*` + existing).
 
 ### Feature Validation
-
-- [ ] `classify_response` exists, pure, `pub(crate)`: typed+matching-echo ⇒ delegates
-      to `parse_reply`; typed+mismatched-echo ⇒ `Timeout`; legacy 0/1 ⇒ `Legacy`;
-      empty/unknown ⇒ `Timeout`.
+- [ ] `classify_response` exists, pure, `pub(crate)`: typed+matching-echo ⇒ delegates to
+      `parse_reply`; typed+mismatched-echo ⇒ `Timeout`; legacy 0/1 ⇒ `Legacy`; empty/unknown ⇒ `Timeout`.
 - [ ] `read_typed_response` exists: `Ok(n>0)`⇒`Ok(classify_response)`, `Ok(0)`⇒`Ok(Timeout)`,
-      `Err`⇒`Err(HidReadError)`. Reads into a 33-byte buffer with `REPLY_READ_TIMEOUT_MS`.
-- [ ] `burst_and_read_one` exists: write loop byte-identical to `burst_to_one`; write
-      failure ⇒ `Err(SendReportError)`; tail calls `read_typed_response`.
-- [ ] `#[allow(dead_code)]` removed from `REPLY_READ_TIMEOUT_MS`; doc updated.
-- [ ] Module comment corrected; `parse_reply` doc updated (consumer chain + allow note).
-- [ ] `burst_to_one`/`send_raw_report`/`parse_reply` body/`run()`/`lib.rs`/`error.rs`/
-      `Cargo.toml` unchanged except the documented doc/allow tweaks.
+      `Err`⇒`Err(HidReadError)`. 33-byte buffer, `REPLY_READ_TIMEOUT_MS`.
+- [ ] `parse_reply`'s `#[allow(dead_code)]` removed; doc updated.
+- [ ] **NO `burst_and_read_one`** in `src/core.rs`.
+- [ ] `burst_to_one`/`send_raw_report`/`try_send_once`/`parse_reply` body/`run()`/`lib.rs`/
+      `error.rs`/`Cargo.toml` unchanged except the documented `parse_reply` allow-removal + doc.
 - [ ] Only `src/core.rs` modified.
 
 ### Code Quality Validation
-
-- [ ] `classify_response` delegates to `parse_reply` (no parsing duplication); the only
-      NEW logic is the expected_cmd echo guard.
-- [ ] `burst_and_read_one`'s write loop is COPIED from `burst_to_one` (not paraphrased)
-      — identical framing, chunking, error handling up to the read tail.
-- [ ] The 3 new functions carry `#[allow(dead_code)]` (staged for S2), mirroring
-      `build_typed_payload`'s S1→S2 pattern.
-- [ ] New tests follow the block's existing style (`use super::*;`, snake_case,
-      `assert_eq!` against `CommandResponse` variants — consistent with `parse_reply_*`).
-- [ ] `Ok(0)` (timeout) is `Ok(Timeout)`, NOT an error — matches the item's "not an
-      error — the caller decides".
+- [ ] `classify_response` delegates to `parse_reply` (no parsing duplication); only NEW
+      logic is the expected_cmd echo guard.
+- [ ] `Ok(0)` (timeout) is `Ok(Timeout)`, NOT an error — matches the item's contract.
+- [ ] `read_typed_response`/`classify_response` carry `#[allow(dead_code)]` (staged for S2).
+- [ ] New tests follow the block's existing style (`use super::*;`, `assert_eq!` on `CommandResponse`).
 
 ### Documentation & Deployment
-
-- [ ] Rustdoc (Mode A) on `classify_response`/`read_typed_response`/`burst_and_read_one`
-      covers the read semantics, the timeout-not-an-error contract, the report-ID-0
-      buffer layout, and the P1.M1.T3.S2 consumer forward-ref.
-- [ ] `REPLY_READ_TIMEOUT_MS` doc explains the value + the P4 tuning note.
-- [ ] No new environment variables or config.
+- [ ] Rustdoc (Mode A) on `classify_response`/`read_typed_response` covers the parse
+      semantics, the timeout-not-an-error contract, the report-ID-0 buffer layout, the
+      baseline note (send_raw_report captures), and the S2 forward-ref.
+- [ ] `parse_reply` doc updated with the real consumer chain.
 
 ---
 
 ## Anti-Patterns to Avoid
 
-- ❌ Don't re-implement `parse_reply` or move/renumber its tests. It EXISTS and is
-  tested (9 `parse_reply_*`). `classify_response` DELEGATES to it — the only new logic
-  is the expected_cmd echo guard. Duplicating the 0x51/0/1 disambiguation + per-variant
-  decode creates two sources of truth that will drift.
-- ❌ Don't remove `parse_reply`'s `#[allow(dead_code)]` in S1. Its new caller
-  `classify_response` is reachable only via allow-dead `read_typed_response` (TWO hops,
-  unproven). Keep it conservative; S2 removes it (and the 3 new functions' allows) when
-  `run()` goes live. (REPLY_READ_TIMEOUT_MS IS safe to de-allow — ONE hop, proven.)
-- ❌ Don't wire `read_typed_response`/`burst_and_read_one` into `run()`. That's
-  P1.M1.T3.S2. S1 only adds the staged primitives in `core.rs`. Touching `run()`/`lib.rs`
-  collides with the in-parallel P1.M1.T2.S2 (which owns the typed arm) and with S2.
-- ❌ Don't modify `burst_to_one` (add a `capture` flag, change its return, etc.). The
-  item's "Alternatively, add a separate `burst_and_read_one()`" is the chosen path — it
-  keeps the legacy `SendMessage` drain path byte-for-byte unchanged (backward compat).
-  A flag on `burst_to_one` ripples through `try_send_once`/`send_raw_report` and risks
-  the proven legacy send path.
-- ❌ Don't return `Err(NoResponseReceived)` on a read timeout. `Ok(0)` from
-  `read_timeout` is "poll timed out, no reply" — a NORMAL outcome for a non-capable
-  (legacy) device. The item is explicit: return `Ok(CommandResponse::Timeout)`, "not an
-  error — the caller decides". (`NoResponseReceived` exists for a different need; leave
-  it unused here.)
-- ❌ Don't strip a leading report-ID byte from the read buffer. QMK raw HID uses report
-  ID 0; `read_timeout` returns report DATA at `buf[0]` (so `buf[0]==0x51` for a typed
-  reply). Contrast the WRITE path which prefixes `0x00` — that asymmetry is a known
-  hidapi quirk, NOT a bug to "fix" by aligning them.
-- ❌ Don't hardcode the timeout (100 or 1000) in `read_typed_response`. Use
-  `REPLY_READ_TIMEOUT_MS` by name. The item's "e.g. 100ms" was illustrative; the
-  constant exists and is tested; tuning is P4's job.
-- ❌ Don't try to unit-test `read_typed_response`/`burst_and_read_one` — you can't
-  construct a `HidDevice` in a unit test. They're hardware-bound, like `burst_to_one`/
-  `send_raw_report` (which have NO unit tests). Test `classify_response` (the pure
-  layer); verify the I/O functions compile (`cargo build`) + defer live validation to
-  S2/P4.
-- ❌ Don't change `read_typed_response`'s write-error handling in `burst_and_read_one`
-  to silently return `Ok(Timeout)`. A write FAILURE is a transport error, not a missing
-  reply — surface it as `Err(SendReportError(e))` so the caller (S2) can distinguish
-  "send broke" from "device didn't reply".
-- ❌ Don't call the new functions from `cfg(test)` code expecting to exercise real HID
-  I/O — there's no device. The 5 `classify_response_*` tests cover the parse logic; the
-  I/O functions are compile-verified only.
+- ❌ Don't add `burst_and_read_one`. The committed `71248cd` already took the item's
+  *other* option (modify `burst_to_one` to capture). `burst_and_read_one` is redundant
+  (it would re-read the kernel IN buffer the capturing `burst_to_one` already drained).
+  If present from a parallel attempt, DELETE it.
+- ❌ Don't re-implement `parse_reply` or move/renumber its tests. It EXISTS and is tested.
+  `classify_response` DELEGATES to it; the only new logic is the expected_cmd echo guard.
+- ❌ Don't assume the old baseline (`burst_to_one` drains, `send_raw_report` returns `()`).
+  Verify the committed baseline first (`grep -n "fn burst_to_one\|fn send_raw_report"`):
+  burst_to_one returns `(bool, Option<Vec<u8>>)`, send_raw_report returns
+  `Result<Option<Vec<u8>>, _>`. Align to THIS.
+- ❌ Don't wire `classify_response`/`read_typed_response` into `run()`. That's S2
+  (P1.M1.T3.S2), which also fixes the stale `lib.rs` doc. S1 only adds core.rs primitives.
+- ❌ Don't return `Err(NoResponseReceived)` on a read timeout. `Ok(0)` is "poll timed out,
+  no reply" — a NORMAL outcome for a legacy device. Return `Ok(CommandResponse::Timeout)`
+  ("not an error — the caller decides").
+- ❌ Don't strip a leading report-ID byte from the read buffer. QMK raw HID uses report ID
+  0; `read_timeout` returns report DATA at `buf[0]` (`buf[0]==0x51` for a typed reply). The
+  WRITE path's `0x00` prefix is a known hidapi asymmetry — don't "align" them.
+- ❌ Don't hardcode the timeout (100/1000). Use `REPLY_READ_TIMEOUT_MS` by name; tuning is P4.
+- ❌ Don't try to unit-test `read_typed_response` (can't construct a `HidDevice` in a unit
+  test). Test `classify_response` (the pure layer); verify `read_typed_response` compiles.
+- ❌ Don't anchor edits to line numbers — the file is under concurrent edit. Locate every
+  target by its signature/doc text; run the inventory grep first and make only delta edits.
