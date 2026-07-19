@@ -578,7 +578,12 @@ Task 1: READ current state of src/lib.rs and src/core.rs (anchors)
           usage_page, usage, verbose) -> Result<(), QmkError> (it is — unchanged).
 
 Task 2: EDIT src/lib.rs — switch the match to a borrow (Edit 1a)
-  - REPLACE: `    match params.command {`  →  `    match &params.command {`
+  - REPLACE the run() match line. NOTE: `    match params.command {` is NOT
+          unique — it also appears inside two TEST fns at 8-space indent that
+          MUST NOT change. Use the `pub fn run(...)` signature as the anchor
+          prefix (see Edit 1a's exact FIND/REPLACE in "What").
+  - The net change is `match params.command` → `match &params.command` in the
+          run() body ONLY.
   - VERIFY the SendMessage/ListDevices arms STILL COMPILE unchanged after this
           (message becomes &String; message.as_bytes() auto-derefs). `cargo build`
           after this edit alone should still pass (todo!() arms still present).
