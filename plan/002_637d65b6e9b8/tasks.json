@@ -370,14 +370,14 @@
               "type": "Task",
               "id": "P2.M1.T3",
               "title": "Public API, Anchor Strategy & Delimiter-Aware Matcher",
-              "status": "Planned",
+              "status": "Researching",
               "description": "Port match_with_anchors() (anchor strategy), the public pattern_match() entry point, and the delimiter-aware match_pattern() from notifier.c.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P2.M1.T3.S1",
                   "title": "Port match_with_anchors() and public pattern_match() entry",
-                  "status": "Researching",
+                  "status": "Complete",
                   "story_points": 1,
                   "dependencies": [
                     "P2.M1.T2.S2"
@@ -392,7 +392,7 @@
                   "type": "Subtask",
                   "id": "P2.M1.T3.S2",
                   "title": "Port delimiter-aware match_pattern() and Pattern enum (Single/Parts)",
-                  "status": "Planned",
+                  "status": "Researching",
                   "story_points": 1,
                   "dependencies": [
                     "P2.M1.T3.S1"

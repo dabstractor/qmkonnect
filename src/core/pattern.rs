@@ -887,6 +887,183 @@ pub(crate) fn nfa_match(
     nfa_has_match(states, &clist) // full_match: accept only at end; substring: already returned
 }
 
+// =========================================================================
+// Anchor strategy + public entry (P2.M1.T3.S1)
+//
+// Stage 5 of the P2.M1 matcher pipeline:
+//   parse_pattern -> process_escapes -> nfa_compile -> nfa_addstate/nfa_match
+//                                                            -> match_with_anchors
+//                                                                -> pattern_match
+// Picks the NFA mode (`full_match`) + offset strategy from the parsed anchor
+// flags and exposes the public [`pattern_match`] entry. Faithful port of the
+// firmware `match_with_anchors` + `pattern_match` (`pattern_match.c` ~lines
+// 233-272). See architecture `external_deps.md` §3 point 6 and PRD §4 for the
+// contract sources.
+// =========================================================================
+
+/// The offset loop shared by the suffix (`$`) and substring (no-anchor) modes.
+/// Probes every UTF-8 char boundary PLUS the terminal byte-length offset, so
+/// the firmware's inclusive `0..=str_len` range is reproduced.
+///
+/// (REFINEMENT F per the item spec: `char_indices` keeps the matcher UTF-8-
+/// correct — for the entire realistic ASCII domain it is byte-identical to the
+/// firmware. `chain(once(bytes.len()))` is MANDATORY: `char_indices` alone stops
+/// at the last char START, not one-past, and would miss suffix / tail-empty
+/// cases such as pure `*` reaching `Match` at the very end — GOTCHA-B.)
+fn suffix_or_substring_loop(
+    nfa: &[NfaOp],
+    bytes: &[u8],
+    s: &str,
+    case_sensitive: bool,
+    full_match: bool,
+) -> bool {
+    for i in s
+        .char_indices()
+        .map(|(i, _)| i)
+        .chain(std::iter::once(bytes.len()))
+    {
+        if nfa_match(nfa, bytes, i, case_sensitive, full_match) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Pick the NFA mode (`full_match`) and offset strategy from the parsed anchor
+/// flags, then run the compiled core against `s`. Faithful port of the firmware
+/// `match_with_anchors` (`pattern_match.c:233-256`).
+///
+/// # The four anchor modes → `nfa_match` mapping
+///
+/// The two `start_anchored` / `end_anchored` flags (set by [`parse_pattern`],
+/// T1.S2) select one of four strategies. Each maps to a single [`nfa_match`]
+/// call shape — the firmware's two C wrapper forwarders
+/// (`match_string_with_start` / `match_reaches_end_with_start`) collapse into
+/// direct `nfa_match(.., full_match)` calls (REFINEMENT D):
+///
+/// | flags                          | mode        | `nfa_match` call                              | `full_match` |
+/// |--------------------------------|-------------|-----------------------------------------------|--------------|
+/// | start && end (`^…$`)           | exact       | one call from offset 0                        | **true**     |
+/// | start only (`^…`)              | prefix      | one call from offset 0                        | **false**    |
+/// | end only (`…$`)                | suffix      | loop offsets, one call from each              | **true**     |
+/// | neither (`…`)                  | substring   | empty-core guard, then loop offsets           | **false**    |
+///
+/// `full_match` semantics (T2.S2): `false` ⇒ `Match` reachable at ANY point
+/// (prefix/substring) returns true; `true` ⇒ `Match` reachable only after
+/// consuming the WHOLE remaining string (exact/suffix).
+///
+/// # Refinements over the firmware (each forced by idiomatic Rust)
+///
+/// - **D — fold the wrappers**: the firmware needs `match_string_with_start`
+///   / `match_reaches_end_with_start` only because its `nfa_match` is `static`
+///   and takes a raw pattern; in Rust `nfa_match` takes the compiled `&[NfaOp]`
+///   + a `full_match` bool, so the wrappers are zero-information aliases.
+/// - **E — compile ONCE**: the firmware `nfa_match` recompiles the pattern
+///   internally (stack-local pool) on EVERY call; the suffix/substring loops
+///   therefore recompile `len+1` times. Rust's `nfa_compile` heap-allocates,
+///   so this function calls it ONCE per invocation and reuses `&nfa` across
+///   the loop (semantics identical — `nfa_compile` is pure).
+/// - **F — char boundaries**: the firmware loops raw byte offsets; this port
+///   iterates `s.char_indices()` (UTF-8-correct; byte-identical for ASCII) and
+///   appends the terminal `bytes.len()` to preserve the inclusive end.
+///
+/// # Empty-core substring special case (GOTCHA-A — the one parity trap)
+///
+/// With no anchors and an empty core, the default substring loop would match
+/// at offset 0 of ANY string (an empty NFA `[Match]` reaches `Match`
+/// immediately with `full_match=false`), turning an empty unanchored rule into
+/// "match everything". So the substring branch short-circuits
+/// `parsed.core.is_empty() ⇒ s.is_empty()`. The OTHER three modes need NO
+/// special case (traced in `research/notes.md` §4): the exact/prefix/suffix
+/// empty-core behaviors fall out of `nfa_match` naturally.
+///
+/// # Dead-in-Rust firmware code dropped
+///
+/// The firmware `if (!parsed || !str) return false` (GOTCHA-D) is dropped —
+/// `&str` / `&ParsedPattern` are never null. No `free`/Drop analog is needed
+/// (the `ParsedPattern` owns its `Vec`).
+pub(crate) fn match_with_anchors(parsed: &ParsedPattern, s: &str, case_sensitive: bool) -> bool {
+    let bytes = s.as_bytes();
+
+    if parsed.start_anchored && parsed.end_anchored {
+        // ^...$ exact: one FULL match (consume whole string) from offset 0.
+        let nfa = nfa_compile(&parsed.core); // GOTCHA-C/REFINEMENT E: compile ONCE
+        nfa_match(&nfa, bytes, 0, case_sensitive, true) // GOTCHA-F: full_match=true
+    } else if parsed.start_anchored {
+        // ^ prefix: one reach-any match from offset 0.
+        let nfa = nfa_compile(&parsed.core);
+        nfa_match(&nfa, bytes, 0, case_sensitive, false) // GOTCHA-F: full_match=false
+    } else if parsed.end_anchored {
+        // $ suffix: loop offsets, FULL match from each.
+        let nfa = nfa_compile(&parsed.core);
+        suffix_or_substring_loop(&nfa, bytes, s, case_sensitive, true)
+    } else {
+        // substring (default): empty core -> only the empty string; else loop
+        // offsets, reach-any from each.
+        if parsed.core.is_empty() {
+            return s.is_empty(); // GOTCHA-A: empty pattern (no anchors) matches only ""
+        }
+        let nfa = nfa_compile(&parsed.core);
+        suffix_or_substring_loop(&nfa, bytes, s, case_sensitive, false)
+    }
+}
+
+/// Public pattern-matching entry — the full-parity port of the firmware
+/// `pattern_match` (`pattern_match.c:259-272`), the single source of truth for
+/// match semantics (PRD §4, §14). It is `parse → match_with_anchors → drop`:
+/// the [`ParsedPattern`] owns its `Vec`, so there is no `free` analog and the
+/// firmware NULL guard is dead (a Rust `&str` is never null).
+///
+/// # Supported constructs
+///
+/// This is a full-parity port of the firmware matcher, NOT a subset. The
+/// pattern language (see PRD §4 "Pattern-Matching Syntax"):
+///
+/// | construct            | meaning                                                  |
+/// |----------------------|----------------------------------------------------------|
+/// | `*`                  | glob wildcard — any sequence incl empty; == regex `.*`   |
+/// | `^`                  | start anchor (match must begin at offset 0)              |
+/// | `$`                  | end anchor (match must reach the end of the string)      |
+/// | `^…$`                | exact full-string match                                  |
+/// | `\^` `\$` `\*` `\\` | literal `^` `$` `*` `\`                                  |
+/// | `\d` `\D`            | digit / non-digit                                        |
+/// | `\w` `\W`            | word char / non-word char (`[A-Za-z0-9_]`)               |
+/// | `\s` `\S`            | whitespace / non-whitespace                              |
+/// | `\b` `\B`            | word-boundary / non-boundary (zero-width)                |
+/// | `.`                  | any char EXCEPT `\n` and `\r`                            |
+/// | `+`                  | one-or-more quantifier (linear-time; no backtracking)    |
+///
+/// # Anchor / substring semantics
+///
+/// - **No anchors** ⇒ substring match (backward-compatible): the pattern may
+///   appear anywhere in `s`. An empty unanchored pattern matches ONLY the
+///   empty string — NOT everything (the empty-core special case).
+/// - **`^`** ⇒ prefix; **`$`** ⇒ suffix; **`^…$`** ⇒ exact.
+/// - **Case sensitivity** is per the `case_sensitive` arg (the rules layer
+///   defaults it to `false`); matching ASCII-folds `A-Z` only.
+///
+/// # Pipeline
+///
+/// Stage 5 / the public entry of: `parse_pattern` → `process_escapes` →
+/// `nfa_compile` → `nfa_addstate`/`nfa_match` → `match_with_anchors` →
+/// **`pattern_match`**. The anchor strategy ([`match_with_anchors`]) compiles
+/// the core once and drives [`nfa_match`] at the right offset(s). See Russ Cox,
+/// *“Regular Expression Matching Can Be Simple And Fast”*
+/// (<https://swtch.com/~rsc/regexp/regexp1.html>, cited by the firmware at
+/// PRD §7.5/§7.9) for the linear-time Thompson NFA this ports.
+///
+/// # Consumers
+///
+/// - **P2.M1.T3.S2** (delimiter-aware `match_pattern`): splits a pattern/message
+///   on the GS delimiter (`0x1D`) and calls this on each half.
+/// - **P3.M1 `rules.rs`**: evaluates `rules.toml` layer/callback rules via
+///   `pattern_match(rule.pattern, window_class_or_title, rule.case_sensitive)`.
+pub fn pattern_match(pattern: &str, s: &str, case_sensitive: bool) -> bool {
+    let parsed = parse_pattern(pattern); // T1.S2 (GOTCHA-J: reuse, do NOT reimplement)
+    match_with_anchors(&parsed, s, case_sensitive)
+    // `parsed` drops here automatically — NO free_parsed_pattern analog (GOTCHA-D).
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2047,5 +2224,227 @@ mod tests {
         // converging epsilon edges terminate (no infinite recursion).
         let nfa = nfa_compile(&process_escapes("\\b\\b"));
         assert!(nfa_match(&nfa, b"a", 0, true, false));
+    }
+
+    // ============================================================
+    // match_with_anchors + pattern_match (P2.M1.T3.S1)
+    //
+    // End-to-end parity vectors curated from the firmware's 380-row corpus
+    // (research/notes.md §7), grouped by anchor mode + the empty-core special
+    // case + escapes/classes/\b. The firmware `pattern_match.c` is the single
+    // source of truth for match semantics (PRD §14); every row asserts the
+    // firmware-expected bool via the public `pattern_match` (the public
+    // contract) plus a few direct `match_with_anchors` calls to isolate the
+    // four-mode dispatch.
+    // ============================================================
+
+    // --- Start anchor ^ (prefix, full_match=false, offset 0) --- §7.1
+
+    #[test]
+    fn test_pm_start_anchor_prefix() {
+        assert!(pattern_match("^searchterm", "searchterm", true));
+        assert!(!pattern_match("^searchterm", "presearchterm", true));
+        assert!(pattern_match("^searchterm", "searchtermpost", true)); // reach-any
+        assert!(pattern_match("^test", "test123", true));
+        assert!(!pattern_match("^test", "pretest", true));
+    }
+
+    #[test]
+    fn test_pm_start_anchor_empty_core() {
+        // Empty core prefix (^ matches everything — traced in notes §4).
+        assert!(pattern_match("^", "", true));
+    }
+
+    #[test]
+    fn test_pm_start_anchor_case_insensitive() {
+        assert!(pattern_match("^abc", "ABC", false));
+        assert!(!pattern_match("^abc", "ABC", true));
+    }
+
+    #[test]
+    fn test_pm_start_anchor_with_glob() {
+        assert!(pattern_match("^*test", "anytest", true));
+        assert!(pattern_match("^*", "anything", true));
+    }
+
+    // --- End anchor $ (suffix, full_match=true, loop offsets) --- §7.2
+
+    #[test]
+    fn test_pm_end_anchor_suffix() {
+        assert!(pattern_match("searchterm$", "searchterm", true));
+        assert!(!pattern_match("searchterm$", "searchtermpost", true));
+        assert!(pattern_match("searchterm$", "presearchterm", true)); // loops offsets
+        assert!(pattern_match("test$", "pretest", true));
+        assert!(!pattern_match("test$", "test123", true));
+    }
+
+    #[test]
+    fn test_pm_end_anchor_empty_core() {
+        // Empty core suffix ($ matches everything — traced in notes §4).
+        assert!(pattern_match("$", "", true));
+    }
+
+    #[test]
+    fn test_pm_end_anchor_case_insensitive() {
+        assert!(pattern_match("abc$", "ABC", false));
+        assert!(!pattern_match("abc$", "ABC", true));
+    }
+
+    #[test]
+    fn test_pm_end_anchor_with_glob() {
+        assert!(pattern_match("test*$", "testany", true));
+        assert!(pattern_match("*$", "anything", true));
+    }
+
+    // --- Full anchor ^…$ (exact, full_match=true, offset 0) --- §7.3
+
+    #[test]
+    fn test_pm_full_anchor_exact() {
+        assert!(pattern_match("^searchterm$", "searchterm", true));
+        assert!(!pattern_match("^searchterm$", "presearchterm", true));
+        assert!(!pattern_match("^searchterm$", "searchtermpost", true));
+        assert!(!pattern_match("^searchterm$", "presearchtermpost", true));
+        assert!(pattern_match("^test$", "test", true));
+    }
+
+    #[test]
+    fn test_pm_full_anchor_empty_core() {
+        // ^$ matches empty only (GOTCHA-A natural case for exact mode).
+        assert!(pattern_match("^$", "", true));
+        assert!(!pattern_match("^$", "a", true));
+    }
+
+    #[test]
+    fn test_pm_full_anchor_case_insensitive() {
+        assert!(pattern_match("^abc$", "ABC", false)); // ci exact
+        assert!(!pattern_match("^abc$", "ABC", true)); // cs exact
+    }
+
+    #[test]
+    fn test_pm_full_anchor_with_glob() {
+        assert!(pattern_match("^sear*term$", "searchterm", true));
+        assert!(pattern_match("^sear*term$", "searedsalmonterm", true)); // glob expansion
+        assert!(pattern_match("^a*b*c$", "aabbcc", true)); // multiple globs
+        assert!(pattern_match("^*$", "anything", true)); // full glob exact (matches all)
+    }
+
+    // --- Substring (no anchors, full_match=false, loop offsets) + empty-core
+    //     special case (GOTCHA-A) --- §7.4
+
+    #[test]
+    fn test_pm_substring_basic() {
+        assert!(pattern_match("searchterm", "presearchtermpost", true));
+        assert!(pattern_match("sear*term", "presearchtermpost", true)); // glob
+        assert!(pattern_match("*term", "searchterm", true)); // leading glob (suffix-like)
+        assert!(pattern_match("search*", "searchterm", true)); // trailing glob (prefix-like)
+        assert!(pattern_match("test", "test", true));
+        assert!(pattern_match("test", "testing", true));
+    }
+
+    #[test]
+    fn test_pm_substring_full_glob_matches_anything() {
+        // GOTCHA-B linchpin: a trailing/terminal Match at the very end is only
+        // reached because the loop probes i == bytes.len().
+        assert!(pattern_match("*", "anything", true));
+    }
+
+    #[test]
+    fn test_pm_substring_empty_core_only_matches_empty() {
+        // GOTCHA-A — THE parity trap. An empty unanchored pattern matches ONLY
+        // the empty string, NOT everything. Without the guard, the empty NFA
+        // [Match] would reach Match at offset 0 in reach-any mode (full_match=false)
+        // and wrongly return true for "test".
+        assert!(pattern_match("", "", true)); // empty/empty -> true
+        assert!(!pattern_match("", "test", true)); // empty/non-empty -> FALSE (the special case)
+    }
+
+    #[test]
+    fn test_pm_substring_nonempty_pattern_empty_input() {
+        assert!(!pattern_match("test", "", true)); // non-empty pattern, empty str
+    }
+
+    #[test]
+    fn test_pm_substring_case_insensitive() {
+        assert!(pattern_match("abc", "ABC", false));
+        assert!(!pattern_match("abc", "ABC", true));
+    }
+
+    #[test]
+    fn test_pm_substring_globs_both_sides_and_min() {
+        assert!(pattern_match("*test*", "pretestpost", true));
+        assert!(pattern_match("a*", "a", true)); // glob min match
+    }
+
+    // --- Edge cases / escapes / classes / \b (cross-mode) --- §7.5
+
+    #[test]
+    fn test_pm_double_caret_double_dollar_literals() {
+        // 1st ^ anchors; 2nd ^ is a literal core byte (0x5E). Trailing $ anchors;
+        // the $ before it is a literal core byte (0x24).
+        assert!(pattern_match("^^test", "^test", true));
+        assert!(pattern_match("test$$", "test$", true));
+    }
+
+    #[test]
+    fn test_pm_complex_escape_literal() {
+        // User-authored pattern is the 4 chars `\\\^` (three backslashes then
+        // caret): process_escapes turns `\\`->ESC_BSLASH(0x04) then `\^`->
+        // ESC_CARET(0x01), so the core decodes to the literal two bytes `\^`.
+        // (Rust source: "\\\\\\^" == the string \\\^; "\\^" == \^.)
+        assert!(pattern_match("\\\\\\^", "\\^", true));
+        assert!(pattern_match("\\\\", "\\", true)); // single backslash
+    }
+
+    #[test]
+    fn test_pm_digit_class_prefix_suffix() {
+        assert!(pattern_match("^\\d", "5", true));
+        assert!(!pattern_match("^\\d", "a5", true)); // non-digit at start
+        assert!(pattern_match("\\d$", "5", true));
+    }
+
+    #[test]
+    fn test_pm_plus_quantifier_end_to_end() {
+        assert!(pattern_match("^\\d+$", "12345", true)); // exact + \d+
+        assert!(pattern_match("^\\w+$", "hello_1", true)); // exact + \w+
+    }
+
+    #[test]
+    fn test_pm_bword_linchpin_false() {
+        // THE linchpin end-to-end: substring loop + original-string \b threading
+        // must compose (REFINEMENT F + the `start` offset + \b all together).
+        // "\bword" vs "aword" -> false: there is NO boundary between 'a' and
+        // 'word' (both word chars), so \b fails and the substring match rejects.
+        assert!(!pattern_match("\\bword", "aword", true));
+        // Boundary before 'word' (space separates) -> matches.
+        assert!(pattern_match("\\bword", "a word", true));
+    }
+
+    // --- Direct match_with_anchors isolation (per-mode dispatch) ---
+
+    #[test]
+    fn test_mwa_suffix_loops_offsets() {
+        // Directly confirms the suffix branch loops offsets (not a single
+        // offset-0 call): "test$" must match "pretest" (suffix found mid-string).
+        let parsed = parse_pattern("test$");
+        assert!(parsed.end_anchored && !parsed.start_anchored);
+        assert!(match_with_anchors(&parsed, "pretest", true));
+    }
+
+    #[test]
+    fn test_mwa_substring_empty_core_guard() {
+        // Directly confirms the GOTCHA-A guard in the substring branch.
+        let parsed = parse_pattern("");
+        assert!(!parsed.start_anchored && !parsed.end_anchored);
+        assert!(match_with_anchors(&parsed, "", true));
+        assert!(!match_with_anchors(&parsed, "test", true));
+    }
+
+    #[test]
+    fn test_mwa_full_anchor_single_call() {
+        // Exact mode: a single offset-0 full match. Both anchors set.
+        let parsed = parse_pattern("^abc$");
+        assert!(parsed.start_anchored && parsed.end_anchored);
+        assert!(match_with_anchors(&parsed, "abc", true));
+        assert!(!match_with_anchors(&parsed, "xabc", true));
     }
 }
