@@ -331,14 +331,14 @@
               "type": "Task",
               "id": "P2.M1.T2",
               "title": "Thompson NFA Engine (compile, simulate, match)",
-              "status": "Planned",
+              "status": "Researching",
               "description": "Port the Thompson NFA construction, epsilon-closure, and two-list simulation. This is the core matching engine guaranteeing O(states × input_len) without backtracking.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P2.M1.T2.S1",
                   "title": "Port NFA compiler (nfa_compile) and state types",
-                  "status": "Researching",
+                  "status": "Complete",
                   "story_points": 2,
                   "dependencies": [
                     "P2.M1.T1.S2"
@@ -353,7 +353,7 @@
                   "type": "Subtask",
                   "id": "P2.M1.T2.S2",
                   "title": "Port epsilon-closure (nfa_addstate) and NFA simulation (nfa_match)",
-                  "status": "Planned",
+                  "status": "Researching",
                   "story_points": 2,
                   "dependencies": [
                     "P2.M1.T2.S1"
