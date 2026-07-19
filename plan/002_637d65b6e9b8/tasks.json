@@ -294,7 +294,7 @@
               "type": "Task",
               "id": "P2.M1.T1",
               "title": "Escape Processing & Pattern Parsing",
-              "status": "Researching",
+              "status": "Complete",
               "description": "Port process_escapes() (escape sequences, dot, + quantifier placeholder bytes) and parse_pattern() (anchor detection, core extraction, even-backslash-count rule).",
               "subtasks": [
                 {
@@ -314,7 +314,7 @@
                   "type": "Subtask",
                   "id": "P2.M1.T1.S2",
                   "title": "Port parse_pattern() — anchor detection and core extraction",
-                  "status": "Researching",
+                  "status": "Complete",
                   "story_points": 1,
                   "dependencies": [
                     "P2.M1.T1.S1"
@@ -338,7 +338,7 @@
                   "type": "Subtask",
                   "id": "P2.M1.T2.S1",
                   "title": "Port NFA compiler (nfa_compile) and state types",
-                  "status": "Planned",
+                  "status": "Researching",
                   "story_points": 2,
                   "dependencies": [
                     "P2.M1.T1.S2"

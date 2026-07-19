@@ -202,6 +202,135 @@ pub(crate) fn process_escapes(pattern: &str) -> Vec<u8> {
     out // NO trailing NUL — Vec<u8> length is authoritative
 }
 
+/// The result of parsing a user pattern: anchor flags + the `process_escapes()`-
+/// processed core the Thompson NFA compiler consumes. Rust analog of the firmware
+/// `parsed_pattern_t` (`pattern_match.c`), minus the C malloc/fallback fields:
+/// Rust `Vec<u8>` owns its heap buffer, so there is no `processed_pattern` to
+/// free and no `core_pattern` raw-fallback pointer. The NFA compiler (P2.M1.T2)
+/// reads `core`; the matcher entry `match_with_anchors` (P2.M1.T3) reads the
+/// anchor flags to pick exact / prefix / suffix / substring strategy.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ParsedPattern {
+    /// `process_escapes()` output for the substring between the anchors — the
+    /// placeholder-byte stream the NFA compiles (P2.M1.T2.S1).
+    pub(crate) core: Vec<u8>,
+    /// `true` iff the original pattern began with `^` (start anchor).
+    pub(crate) start_anchored: bool,
+    /// `true` iff the original pattern ended with an UNESCAPED `$` (end anchor).
+    pub(crate) end_anchored: bool,
+}
+
+/// Detect the anchors in a human-authored pattern and carve out the core the
+/// Thompson NFA consumes — a faithful port of the firmware `parse_pattern`
+/// (`pattern_match.c:parse_pattern`).
+///
+/// This is stage 2 of the P2.M1 matcher pipeline:
+/// `parse_pattern` → `process_escapes` → `nfa_compile` → `nfa_match` →
+/// `match_with_anchors`. See architecture `external_deps.md` §3 and PRD §4 for
+/// the contract sources.
+///
+/// # Anchor rules
+///
+/// - **Start anchor**: if the pattern begins with `^`, `start_anchored` is set
+///   and the `^` is skipped. Only the very first byte is considered — `\^`
+///   would already be an escape sequence processed to `0x01` later by
+///   [`process_escapes`], never seen as an anchor here.
+/// - **End anchor**: a trailing `$` is a real end anchor ONLY when an EVEN
+///   number of backslashes (0, 2, 4, …) immediately precede it. An ODD count
+///   means the `$` is escaped (`\$`) and stays in the core — `process_escapes`
+///   turns `\$` into the `0x02` literal. This is the standard "is the final
+///   metacharacter quoted?" test: walk left from the `$` counting RAW
+///   CONSECUTIVE backslashes (do **not** pair them as escapes); even ⇒ unquoted.
+///
+///   The four canonical cases (Rust source literals):
+///
+///   | pattern literal   | backslashes | anchored? | core fed to `process_escapes` |
+///   |-------------------|-------------|-----------|--------------------------------|
+///   | `"abc$"`          | 0 (even)    | ✅ anchor | `"abc"`            → `[61 62 63]`             |
+///   | `"abc\\$"`        | 1 (odd)     | ❌ escaped | `"abc\$"` → `[61 62 63 02]` (ESC_DOLLAR) |
+///   | `"abc\\\\$"`       | 2 (even)    | ✅ anchor | `"abc\\"` → `[61 62 63 04]` (ESC_BSLASH) |
+///   | `"abc\\\\\\$"`      | 3 (odd)     | ❌ escaped | `"abc\\\$"` → `[61 62 63 04 02]`       |
+///
+/// # Degenerate / edge cases
+///
+/// - `"^$"` → both anchors set, empty core (matches the empty string only).
+/// - A lone `"^"` sets `start_anchored` only (empty core); a lone `"$"` sets
+///   `end_anchored` only (empty core). The `end > start` guard before each
+///   anchor check prevents underflow and matches the firmware's degenerate-input
+///   rejection.
+/// - A leading `^` is detected only at index 0: `"^^"` anchors on the first,
+///   and the second `^` is a bare literal that passes through as `0x5E`.
+/// - A non-trailing `$` (e.g. interior, or the first `$` of `"$$"`) is a bare
+///   literal that passes through as `0x24`.
+///
+/// # NUL / `strlen` parity
+///
+/// The firmware computes `end = pattern + strlen(pattern)`, stopping at the
+/// first `0x00`. A Rust `&str` *can* hold a NUL byte (valid UTF-8), so for
+/// byte-for-byte parity this function computes the effective length the same
+/// way — *before* anchor detection — otherwise the anchor **flags** would
+/// diverge on a NUL-containing input (a `$` past a NUL would be wrongly seen
+/// as a trailing anchor). Real `rules.toml` patterns never contain NUL; this
+/// is defensive but keeps the port honest and mirrors `process_escapes`' own
+/// NUL-stop.
+///
+/// The carved `core` substring is then handed to [`process_escapes`], which
+/// produces the placeholder bytes the NFA compiler dispatches on.
+pub(crate) fn parse_pattern(pattern: &str) -> ParsedPattern {
+    let bytes = pattern.as_bytes();
+    // GOTCHA-2: mirror firmware strlen — stop at the first NUL byte, BEFORE
+    // anchor detection (else anchor flags diverge on NUL-containing input).
+    let len = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
+
+    let mut start = 0usize;
+    let mut end = len;
+    let mut start_anchored = false;
+    let mut end_anchored = false;
+
+    // START anchor: a leading '^' (only at the very front; '\^' would be
+    // processed to 0x01 later by process_escapes, never seen as an anchor here).
+    if end > start && bytes[start] == b'^' {
+        start_anchored = true;
+        start += 1;
+    }
+
+    // END anchor: a trailing '$' preceded by an EVEN number of backslashes
+    // (GOTCHA-1). The walk counts RAW CONSECUTIVE backslashes — do NOT pair
+    // them as escapes. Decrement-then-check so indices end-2 .. start (incl.)
+    // are inspected, mirroring the C `for (check = end-2; check >= start; --)`.
+    if end > start && bytes[end - 1] == b'$' {
+        let mut bs = 0usize;
+        let mut k = end - 1; // index of the '$'
+        while k > start {
+            k -= 1; // step left onto the byte before '$'
+            if bytes[k] == b'\\' {
+                bs += 1;
+            } else {
+                break;
+            }
+        }
+        if bs % 2 == 0 {
+            // even (0,2,4,...) => unescaped '$'
+            end_anchored = true;
+            end -= 1; // drop the '$'
+        }
+        // odd => '$' is escaped: leave it in the core; process_escapes turns
+        // the trailing '\$' into ESC_DOLLAR (0x02).
+    }
+
+    // Carve the core and process its escapes. The slice is safe: '^','$','\\',
+    // and NUL are all ASCII (< 0x80) => UTF-8 char boundaries, so trimming at
+    // these indices never splits a multi-byte sequence. Do NOT rebuild a
+    // String — slice the &str directly and hand it to process_escapes.
+    let core = process_escapes(&pattern[start..end]);
+
+    ParsedPattern {
+        core,
+        start_anchored,
+        end_anchored,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -377,5 +506,388 @@ mod tests {
         let out = process_escapes("a");
         assert_eq!(out, vec![0x61]);
         assert_eq!(out.len(), 1); // would be 2 if a trailing NUL were appended
+    }
+
+    // ========================================================================
+    // parse_pattern — anchor detection + core extraction (P2.M1.T1.S2)
+    //
+    // Parity table: research/notes.md §3 (27 inputs). `core` is the
+    // process_escapes() output of the carved substring; the anchor flags are
+    // detected per the even-backslash-count rule. These assert ParsedPattern
+    // directly — STRICTLY STRONGER than the firmware's end-to-end-only tests
+    // (the C parse_pattern is `static` and only reachable via pattern_match).
+    // ========================================================================
+
+    // --- Anchor detection (no escape interaction) — rows 1-12 ---
+
+    #[test]
+    fn test_parse_empty() {
+        // row 1: "" -> no anchors, empty core.
+        assert_eq!(
+            parse_pattern(""),
+            ParsedPattern {
+                core: vec![],
+                start_anchored: false,
+                end_anchored: false,
+            }
+        );
+    }
+
+    #[test]
+    fn test_parse_plain_no_anchors() {
+        // row 2: "hello" -> no anchors.
+        assert_eq!(
+            parse_pattern("hello"),
+            ParsedPattern {
+                core: vec![0x68, 0x65, 0x6C, 0x6C, 0x6F],
+                start_anchored: false,
+                end_anchored: false,
+            }
+        );
+    }
+
+    #[test]
+    fn test_parse_start_anchor_only() {
+        // row 3: "^hello" -> start anchored.
+        assert_eq!(
+            parse_pattern("^hello"),
+            ParsedPattern {
+                core: vec![0x68, 0x65, 0x6C, 0x6C, 0x6F],
+                start_anchored: true,
+                end_anchored: false,
+            }
+        );
+    }
+
+    #[test]
+    fn test_parse_end_anchor_only() {
+        // row 4: "hello$" -> end anchored.
+        assert_eq!(
+            parse_pattern("hello$"),
+            ParsedPattern {
+                core: vec![0x68, 0x65, 0x6C, 0x6C, 0x6F],
+                start_anchored: false,
+                end_anchored: true,
+            }
+        );
+    }
+
+    #[test]
+    fn test_parse_both_anchors() {
+        // row 5: "^hello$" -> both anchored.
+        assert_eq!(
+            parse_pattern("^hello$"),
+            ParsedPattern {
+                core: vec![0x68, 0x65, 0x6C, 0x6C, 0x6F],
+                start_anchored: true,
+                end_anchored: true,
+            }
+        );
+    }
+
+    #[test]
+    fn test_parse_lone_start_anchor() {
+        // row 6: "^" -> start-only, empty core.
+        assert_eq!(
+            parse_pattern("^"),
+            ParsedPattern {
+                core: vec![],
+                start_anchored: true,
+                end_anchored: false,
+            }
+        );
+    }
+
+    #[test]
+    fn test_parse_lone_end_anchor() {
+        // row 7: "$" -> end-only, empty core.
+        assert_eq!(
+            parse_pattern("$"),
+            ParsedPattern {
+                core: vec![],
+                start_anchored: false,
+                end_anchored: true,
+            }
+        );
+    }
+
+    #[test]
+    fn test_parse_both_anchors_empty_core() {
+        // row 8: "^$" -> both anchored, empty core (matches the empty string).
+        assert_eq!(
+            parse_pattern("^$"),
+            ParsedPattern {
+                core: vec![],
+                start_anchored: true,
+                end_anchored: true,
+            }
+        );
+    }
+
+    #[test]
+    fn test_parse_double_caret_second_is_literal() {
+        // row 9: "^^" -> start anchored on FIRST '^'; the second is a bare
+        // literal that passes through as 0x5E.
+        assert_eq!(
+            parse_pattern("^^"),
+            ParsedPattern {
+                core: vec![0x5E],
+                start_anchored: true,
+                end_anchored: false,
+            }
+        );
+    }
+
+    #[test]
+    fn test_parse_double_dollar_first_is_literal() {
+        // row 10: "$$" -> the FIRST '$' is an interior/non-trailing literal
+        // (passes through as 0x24); the SECOND '$' is the trailing anchor.
+        assert_eq!(
+            parse_pattern("$$"),
+            ParsedPattern {
+                core: vec![0x24],
+                start_anchored: false,
+                end_anchored: true,
+            }
+        );
+    }
+
+    #[test]
+    fn test_parse_anchored_single_char() {
+        // row 11: "^a$" -> both anchored, core [0x61].
+        assert_eq!(
+            parse_pattern("^a$"),
+            ParsedPattern {
+                core: vec![0x61],
+                start_anchored: true,
+                end_anchored: true,
+            }
+        );
+    }
+
+    #[test]
+    fn test_parse_anchored_glob_star() {
+        // row 12: "^*$" -> both anchored, core [GLOB_STAR].
+        assert_eq!(
+            parse_pattern("^*$"),
+            ParsedPattern {
+                core: vec![GLOB_STAR],
+                start_anchored: true,
+                end_anchored: true,
+            }
+        );
+    }
+
+    // --- Even-backslash-count rule (GOTCHA-1) — rows 13-20 ---
+
+    #[test]
+    fn test_parse_end_anchor_even_backslash_zero() {
+        // row 13: "abc$" -> 0 backslashes (even) => anchor; core "abc".
+        assert_eq!(
+            parse_pattern("abc$"),
+            ParsedPattern {
+                core: vec![0x61, 0x62, 0x63],
+                start_anchored: false,
+                end_anchored: true,
+            }
+        );
+    }
+
+    #[test]
+    fn test_parse_escaped_dollar_odd_backslash_one() {
+        // row 14: "abc\$" -> 1 backslash (odd) => escaped; core "abc\$"
+        // -> process_escapes turns "\$" into ESC_DOLLAR.
+        assert_eq!(
+            parse_pattern("abc\\$"),
+            ParsedPattern {
+                core: vec![0x61, 0x62, 0x63, ESC_DOLLAR],
+                start_anchored: false,
+                end_anchored: false,
+            }
+        );
+    }
+
+    #[test]
+    fn test_parse_end_anchor_even_backslash_two() {
+        // row 15: "abc\\$" -> 2 backslashes (even) => anchor; the "\\" pair
+        // is a literal backslash in the core -> ESC_BSLASH.
+        assert_eq!(
+            parse_pattern("abc\\\\$"),
+            ParsedPattern {
+                core: vec![0x61, 0x62, 0x63, ESC_BSLASH],
+                start_anchored: false,
+                end_anchored: true,
+            }
+        );
+    }
+
+    #[test]
+    fn test_parse_escaped_dollar_odd_backslash_three() {
+        // row 16: "abc\\\$" -> 3 backslashes (odd) => escaped; "\\" pair +
+        // "\$" -> core [.., ESC_BSLASH, ESC_DOLLAR].
+        assert_eq!(
+            parse_pattern("abc\\\\\\$"),
+            ParsedPattern {
+                core: vec![0x61, 0x62, 0x63, ESC_BSLASH, ESC_DOLLAR],
+                start_anchored: false,
+                end_anchored: false,
+            }
+        );
+    }
+
+    #[test]
+    fn test_parse_escaped_caret_then_end_anchor() {
+        // row 17: "\^$" -> 0 backslashes immediately before '$' (the "\^"
+        // escape precedes it) => anchor; core "\^" -> ESC_CARET.
+        assert_eq!(
+            parse_pattern("\\^$"),
+            ParsedPattern {
+                core: vec![ESC_CARET],
+                start_anchored: false,
+                end_anchored: true,
+            }
+        );
+    }
+
+    #[test]
+    fn test_parse_start_anchor_escaped_end() {
+        // row 18: "^\$" -> start '^' anchored; 1 backslash before '$' (odd)
+        // => escaped; core "\$" -> ESC_DOLLAR.
+        assert_eq!(
+            parse_pattern("^\\$"),
+            ParsedPattern {
+                core: vec![ESC_DOLLAR],
+                start_anchored: true,
+                end_anchored: false,
+            }
+        );
+    }
+
+    #[test]
+    fn test_parse_escaped_caret_glob_escaped_dollar_no_anchors() {
+        // row 19: "\^*\$" -> 1 backslash before final '$' (odd) => escaped,
+        // no anchors; core "\^*\$" -> [ESC_CARET, GLOB_STAR, ESC_DOLLAR].
+        assert_eq!(
+            parse_pattern("\\^*\\$"),
+            ParsedPattern {
+                core: vec![ESC_CARET, GLOB_STAR, ESC_DOLLAR],
+                start_anchored: false,
+                end_anchored: false,
+            }
+        );
+    }
+
+    #[test]
+    fn test_parse_interior_dollar_then_end_anchor() {
+        // row 20: "mid$dle$" -> 0 backslashes before the final '$' (preceded
+        // by 'e') => anchor; the interior '$' is a bare 0x24 literal.
+        assert_eq!(
+            parse_pattern("mid$dle$"),
+            ParsedPattern {
+                core: vec![0x6D, 0x69, 0x64, 0x24, 0x64, 0x6C, 0x65],
+                start_anchored: false,
+                end_anchored: true,
+            }
+        );
+    }
+
+    // --- Anchor + escape/class interaction — rows 21-26 ---
+
+    #[test]
+    fn test_parse_anchored_digit_class() {
+        // row 21: "^\d$" -> both anchored, core [CLASS_DIGIT].
+        assert_eq!(
+            parse_pattern("^\\d$"),
+            ParsedPattern {
+                core: vec![CLASS_DIGIT],
+                start_anchored: true,
+                end_anchored: true,
+            }
+        );
+    }
+
+    #[test]
+    fn test_parse_anchored_word_class() {
+        // row 22: "^\w$" -> both anchored, core [CLASS_WORD].
+        assert_eq!(
+            parse_pattern("^\\w$"),
+            ParsedPattern {
+                core: vec![CLASS_WORD],
+                start_anchored: true,
+                end_anchored: true,
+            }
+        );
+    }
+
+    #[test]
+    fn test_parse_anchored_dot_meta() {
+        // row 23: "^.$" -> both anchored, core [DOT_META].
+        assert_eq!(
+            parse_pattern("^.$"),
+            ParsedPattern {
+                core: vec![DOT_META],
+                start_anchored: true,
+                end_anchored: true,
+            }
+        );
+    }
+
+    #[test]
+    fn test_parse_anchored_escaped_dot_literal() {
+        // row 24: "^\.$" -> both anchored; escaped dot is LITERAL 0x2E
+        // (GOTCHA-A from S1), NOT DOT_META.
+        assert_eq!(
+            parse_pattern("^\\.$"),
+            ParsedPattern {
+                core: vec![0x2E],
+                start_anchored: true,
+                end_anchored: true,
+            }
+        );
+    }
+
+    #[test]
+    fn test_parse_anchored_plus_quantifier() {
+        // row 25: "^a+$" -> both anchored; 'a' consumable so '+' is PLUS_QUANT.
+        assert_eq!(
+            parse_pattern("^a+$"),
+            ParsedPattern {
+                core: vec![0x61, PLUS_QUANT],
+                start_anchored: true,
+                end_anchored: true,
+            }
+        );
+    }
+
+    #[test]
+    fn test_parse_leading_glob_no_anchors() {
+        // row 26: "*^test" -> no anchors (neither at the very front/end as an
+        // anchor); bare '^' passes through as 0x5E.
+        assert_eq!(
+            parse_pattern("*^test"),
+            ParsedPattern {
+                core: vec![GLOB_STAR, 0x5E, 0x74, 0x65, 0x73, 0x74],
+                start_anchored: false,
+                end_anchored: false,
+            }
+        );
+    }
+
+    // --- NUL-stop parity (GOTCHA-2) — row 27 ---
+
+    #[test]
+    fn test_parse_nul_truncates_before_anchor_check() {
+        // row 27: "ab\0cd$" -> effective_len=2 (NUL at index 2). Trailing-$
+        // check sees bytes[1]=='b', NOT '$' => no end anchor (anchor FLAG,
+        // not just core, must match firmware strlen). Core = bytes[0..2] = "ab".
+        let s = std::str::from_utf8(b"ab\0cd$").unwrap();
+        assert_eq!(
+            parse_pattern(s),
+            ParsedPattern {
+                core: vec![0x61, 0x62],
+                start_anchored: false,
+                end_anchored: false,
+            }
+        );
     }
 }
