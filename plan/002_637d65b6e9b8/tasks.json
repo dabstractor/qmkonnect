@@ -453,14 +453,14 @@
               "type": "Task",
               "id": "P3.M1.T1",
               "title": "rules.toml Data Model & Deserialization",
-              "status": "Planned",
+              "status": "Researching",
               "description": "Define the Rust structs that deserialize rules.toml and the effective disable_firmware_config resolution.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P3.M1.T1.S1",
                   "title": "Define RuleSet, HostDefaults, LayerRule, CallbackRule structs with serde",
-                  "status": "Ready",
+                  "status": "Complete",
                   "story_points": 1,
                   "dependencies": [
                     "P2.M1.T3.S2"
@@ -476,7 +476,7 @@
                   "type": "Subtask",
                   "id": "P3.M1.T1.S2",
                   "title": "Implement effective disable_firmware_config resolution and parse_rules()",
-                  "status": "Planned",
+                  "status": "Researching",
                   "story_points": 1,
                   "dependencies": [
                     "P3.M1.T1.S1"
