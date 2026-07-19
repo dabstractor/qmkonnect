@@ -108,6 +108,12 @@ A value is **explicit** when `Some` (uncommented), **commented-out** when `None`
 `create_config_dir()` returns the primary dir (creating it). The Settings
 dialogs call it before writing, so the directory always exists.
 
+> **Round B (v0.3.0, planned):** the host-side `rules.toml` lives in the **same
+directory** as `config.toml` (e.g. `~/.config/qmk-notifier/rules.toml`,
+`%APPDATA%\QMKonnect\rules.toml`,
+`~/Library/Application Support/QMKonnect/rules.toml`). Absent ⇒ host rules
+disabled (string-only). Schema: `HOST_RULES.md` §9.
+
 ---
 
 ## 4. CLI Reference (`src/main.rs`)
@@ -128,6 +134,9 @@ Options:
       --show-window-info  [macOS/Windows] open the Window Information dialog directly
       --tray-app          [Windows] run as tray app (default)
       --console           [Windows] allocate a console and run for debugging
+      --list-callbacks      [round B] handshake → print the keyboard's callback name→id table
+      --validate-rules      [round B] parse rules.toml; report schema/callback-name errors
+      --rules-path <path>   [round B] override the rules.toml location
 ```
 
 Running with **no options** starts the notifier service (the tray app on

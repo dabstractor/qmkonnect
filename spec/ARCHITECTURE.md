@@ -265,6 +265,24 @@ Read-only enumeration; `true` iff any interface matches the filter. Backs the
 tray device-status line. Runs on a background thread (3 s macOS/Windows,
 1 s Linux) and only fires a UI update on a transition.
 
+### 5.7 Round-B host-side-rules extension (planned, v0.3.0)
+
+The v0.3.0 host-side-rules feature extends this pipeline; the full design is in
+`HOST_RULES.md` and the wire contract is canonical in the firmware `PRD.md` §4.6.
+In summary, after the debounced string send, QMKonnect additionally:
+- runs a **capability handshake** at (re)connect (`QUERY_INFO`; gated on
+  `proto_ver == 2`) + a `QUERY_CALLBACK` name sweep, and sends `SET_OS` once
+  (the host is the OS source of truth while connected);
+- evaluates `rules.toml` against the window and sends an `APPLY_HOST_CONTEXT`
+  typed command (the `clear_board` flag selects per-window stack vs replace —
+  see `HOST_RULES.md` §4); on no-match it always clears the host layer +
+  callbacks.
+The debounce worker itself is unchanged — the host-context send happens within
+the same debounced "send" step (one window change ⇒ ≤2 sends: string + context,
+or context-only in replace mode). Retry/cache for the typed command match the
+string path (§5.4). The host-side matcher is ported into `src/core/pattern.rs`
+(full parity with the firmware matcher).
+
 ---
 
 ## 6. Concurrency Model (per component)
