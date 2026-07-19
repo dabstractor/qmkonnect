@@ -11,7 +11,7 @@
           "type": "Milestone",
           "id": "P1.M1",
           "title": "qmk_notifier Crate v0.3.0 — Typed-Command Transport",
-          "status": "Planned",
+          "status": "Ready",
           "description": "Add typed-command RunCommand variants, HostOs enum, CommandResponse enum, typed-command framing (0x81 0x9F 0xF0 prefix, multi-report chunking), response parsing (0x51 typed vs 0/1 legacy vs timeout), and change run() to return CommandResponse. Tag release v0.3.0.",
           "tasks": [
             {
@@ -96,7 +96,7 @@
               "type": "Task",
               "id": "P1.M1.T3",
               "title": "Response Parsing & run() Return Type Change",
-              "status": "Researching",
+              "status": "Complete",
               "description": "Parse the 32-byte IN report after a typed burst into CommandResponse. Change run() to return Result<CommandResponse, QmkError>.",
               "subtasks": [
                 {
@@ -118,7 +118,7 @@
                   "type": "Subtask",
                   "id": "P1.M1.T3.S2",
                   "title": "Change run() signature to return CommandResponse and wire response parsing",
-                  "status": "Researching",
+                  "status": "Complete",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M1.T3.S1"
@@ -135,14 +135,14 @@
               "type": "Task",
               "id": "P1.M1.T4",
               "title": "Tag Crate Release v0.3.0",
-              "status": "Planned",
+              "status": "Ready",
               "description": "Tag the qmk_notifier crate as v0.3.0 so qmkonnect can pin the git dependency.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M1.T4.S1",
                   "title": "Bump version, update Cargo.toml, tag v0.3.0",
-                  "status": "Planned",
+                  "status": "Ready",
                   "story_points": 0.5,
                   "dependencies": [
                     "P1.M1.T3.S2"
