@@ -280,14 +280,14 @@
       "type": "Phase",
       "id": "P2",
       "title": "QMKonnect Pattern Matcher — Full-Parity Port",
-      "status": "Researching",
+      "status": "Complete",
       "description": "Port the firmware pattern_match.c Thompson-NFA matcher to Rust at src/core/pattern.rs. This is a full-parity port (not a subset) including *, ^, $, WT(), +, and all character classes (\\d \\D \\w \\W \\s \\S \\b \\B .). All constructs are linear-time in the NFA. The port is the foundation for host-side rule evaluation and must produce identical results to the firmware matcher for every pattern/string pair.",
       "milestones": [
         {
           "type": "Milestone",
           "id": "P2.M1",
           "title": "Pattern Matcher Port (src/core/pattern.rs)",
-          "status": "Researching",
+          "status": "Complete",
           "description": "Create the new src/core/pattern.rs module, register it in src/core/mod.rs, and port the complete firmware matcher with parity tests against the firmware test corpus.",
           "tasks": [
             {
@@ -410,14 +410,14 @@
               "type": "Task",
               "id": "P2.M1.T4",
               "title": "Port Firmware Test Corpus as Parity Tests",
-              "status": "Researching",
+              "status": "Complete",
               "description": "Port the firmware pattern matcher test corpus into Rust unit tests to validate full parity.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P2.M1.T4.S1",
                   "title": "Port firmware test cases as Rust parity tests",
-                  "status": "Researching",
+                  "status": "Complete",
                   "story_points": 2,
                   "dependencies": [
                     "P2.M1.T3.S2"
@@ -460,7 +460,7 @@
                   "type": "Subtask",
                   "id": "P3.M1.T1.S1",
                   "title": "Define RuleSet, HostDefaults, LayerRule, CallbackRule structs with serde",
-                  "status": "Planned",
+                  "status": "Ready",
                   "story_points": 1,
                   "dependencies": [
                     "P2.M1.T3.S2"
