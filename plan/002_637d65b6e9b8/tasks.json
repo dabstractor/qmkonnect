@@ -536,14 +536,14 @@
               "type": "Task",
               "id": "P4.M1.T1",
               "title": "Extend Notifier Trait for Typed Commands",
-              "status": "Researching",
+              "status": "Complete",
               "description": "Add methods to the Notifier trait for sending typed commands and receiving CommandResponse, with mock support for ordering assertions.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P4.M1.T1.S1",
                   "title": "Add send_command() to Notifier trait and QmkNotifier impl",
-                  "status": "Researching",
+                  "status": "Complete",
                   "story_points": 2,
                   "dependencies": [
                     "P1.M1.T4.S1"

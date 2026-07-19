@@ -11,6 +11,48 @@ use std::time::{Duration, Instant};
 // Trait to abstract the notification functionality
 pub trait Notifier: Send + Sync {
     fn notify(&self, message: String) -> Result<(), Box<dyn Error + Send + Sync>>;
+
+    /// Send a **typed** command to the QMK device and return its parsed reply.
+    ///
+    /// This is the typed-command transport primitive backing the host-side-rules
+    /// pipeline (PRD §5.7, §8(4)/(5)): the capability handshake (`QueryInfo` /
+    /// `QueryCallback` / `SetOs`, P4.M2) and the per-window host-context send
+    /// (`ApplyHostContext`, P4.M3) both ride through this single method.
+    ///
+    /// `notify()` remains the legacy string path (`SendMessage`); `send_command`
+    /// is the typed path — parameterized by [`qmk_notifier::RunCommand`] so the
+    /// trait stays one seam the test mock can intercept and the real impl can
+    /// route to [`qmk_notifier::run`].
+    ///
+    /// **Retry / cache parity** (PRD §5.7: "Retry/cache for the typed command
+    /// match the string path §5.4") is the **caller's** responsibility
+    /// (P4.M3.T1.S1), not this method's — `send_command` is a thin transport
+    /// wrapper: build [`qmk_notifier::RunParameters`] from `command` + `filter`,
+    /// call [`qmk_notifier::run`], map [`qmk_notifier::QmkError`] to a boxed
+    /// error, and return the [`qmk_notifier::CommandResponse`] unchanged.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use qmkonnect::core::notifier::{Notifier, QmkNotifier, DeviceFilter};
+    /// use qmk_notifier::{RunCommand, CommandResponse};
+    ///
+    /// let notifier = QmkNotifier;
+    /// let filter = DeviceFilter {
+    ///     vendor_id: None, product_id: None,
+    ///     usage_page: 0xFF60, usage: 0x61,
+    /// };
+    /// match notifier.send_command(RunCommand::QueryInfo, &filter) {
+    ///     Ok(CommandResponse::Info { proto_ver: 2, feature_flags, callback_count, .. }) => { /* capable */ }
+    ///     Ok(_) => { /* legacy / timeout -> string-only fallback */ }
+    ///     Err(e) => { /* device error — caller decides retry/cache (P4.M3) */ }
+    /// }
+    /// ```
+    fn send_command(
+        &self,
+        command: qmk_notifier::RunCommand,
+        filter: &DeviceFilter,
+    ) -> Result<qmk_notifier::CommandResponse, Box<dyn Error + Send + Sync>>;
 }
 
 // Real implementation that uses qmk_notifier
@@ -181,6 +223,25 @@ impl Notifier for QmkNotifier {
         }
 
         Ok(())
+    }
+
+    fn send_command(
+        &self,
+        command: qmk_notifier::RunCommand,
+        filter: &DeviceFilter,
+    ) -> Result<qmk_notifier::CommandResponse, Box<dyn Error + Send + Sync>> {
+        let params = qmk_notifier::RunParameters::new(
+            command,
+            filter.vendor_id,
+            filter.product_id,
+            filter.usage_page,
+            filter.usage,
+            false, // verbose — transport stays quiet; orchestration logs (D3)
+        );
+        match qmk_notifier::run(params) {
+            Ok(resp) => Ok(resp),
+            Err(e) => Err(Box::new(e)), // G3: QmkError: Error+Send+Sync, coerces directly
+        }
     }
 }
 
@@ -381,10 +442,13 @@ mod tests {
     // Use a shared global mock for testing
     static MOCK_CALL_COUNT: Lazy<AtomicUsize> = Lazy::new(|| AtomicUsize::new(0));
     static MOCK_LAST_MESSAGE: Lazy<StdMutex<Option<String>>> = Lazy::new(|| StdMutex::new(None));
+    static MOCK_SEND_COMMAND_CALLS: Lazy<StdMutex<Vec<qmk_notifier::RunCommand>>> =
+        Lazy::new(|| StdMutex::new(Vec::new()));
 
     fn reset_global_mock() {
         MOCK_CALL_COUNT.store(0, Ordering::SeqCst);
         *MOCK_LAST_MESSAGE.lock().unwrap() = None;
+        MOCK_SEND_COMMAND_CALLS.lock().unwrap().clear();
     }
 
     struct MockNotifier;
@@ -402,6 +466,10 @@ mod tests {
         fn get_last_message() -> Option<String> {
             MOCK_LAST_MESSAGE.lock().unwrap().clone()
         }
+
+        fn get_send_command_calls() -> Vec<qmk_notifier::RunCommand> {
+            MOCK_SEND_COMMAND_CALLS.lock().unwrap().clone()
+        }
     }
 
     impl Notifier for MockNotifier {
@@ -411,6 +479,18 @@ mod tests {
             MOCK_CALL_COUNT.fetch_add(1, Ordering::SeqCst);
             *MOCK_LAST_MESSAGE.lock().unwrap() = Some(message);
             Ok(())
+        }
+
+        fn send_command(
+            &self,
+            command: qmk_notifier::RunCommand,
+            _filter: &DeviceFilter,
+        ) -> Result<qmk_notifier::CommandResponse, Box<dyn Error + Send + Sync>> {
+            MOCK_SEND_COMMAND_CALLS
+                .lock()
+                .unwrap()
+                .push(command.clone());
+            Ok(qmk_notifier::CommandResponse::Ack { ok: true })
         }
     }
 
@@ -600,5 +680,135 @@ mod tests {
         let count = MockNotifier::get_call_count();
         println!("Final call count after threaded test: {}", count);
         assert!(count >= 1);
+    }
+
+    #[test]
+    fn test_send_command_records_call_sequence() {
+        reset_test_state();
+        set_notifier(Box::new(MockNotifier::new()));
+
+        let f = DeviceFilter {
+            vendor_id: Some(0x1234),
+            product_id: Some(0x5678),
+            usage_page: 0xFF60,
+            usage: 0x61,
+        };
+
+        {
+            let notifier = get_notifier();
+            let n = notifier.lock().unwrap();
+            let _ = n.send_command(qmk_notifier::RunCommand::QueryInfo, &f);
+            let _ = n.send_command(
+                qmk_notifier::RunCommand::ApplyHostContext {
+                    layer: Some(224),
+                    callbacks: vec![0, 1],
+                    clear_board: false,
+                },
+                &f,
+            );
+        }
+
+        let calls = MockNotifier::get_send_command_calls();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0], qmk_notifier::RunCommand::QueryInfo);
+        assert!(matches!(
+            calls[1],
+            qmk_notifier::RunCommand::ApplyHostContext { layer: Some(224), .. }
+        ));
+    }
+
+    #[test]
+    fn test_send_command_reset_clears_log() {
+        reset_test_state();
+        set_notifier(Box::new(MockNotifier::new()));
+
+        let f = DeviceFilter {
+            vendor_id: None,
+            product_id: None,
+            usage_page: 0xFF60,
+            usage: 0x61,
+        };
+
+        {
+            let notifier = get_notifier();
+            let n = notifier.lock().unwrap();
+            let _ = n.send_command(qmk_notifier::RunCommand::QueryInfo, &f);
+        }
+        assert!(!MockNotifier::get_send_command_calls().is_empty());
+
+        reset_test_state(); // G7: must clear the log via reset_global_mock
+        assert!(MockNotifier::get_send_command_calls().is_empty());
+    }
+
+    #[test]
+    fn test_send_command_returns_ok_ack_default() {
+        reset_test_state();
+        set_notifier(Box::new(MockNotifier::new()));
+
+        let f = DeviceFilter {
+            vendor_id: None,
+            product_id: None,
+            usage_page: 0xFF60,
+            usage: 0x61,
+        };
+
+        let notifier = get_notifier();
+        let n = notifier.lock().unwrap();
+        let resp = n.send_command(
+            qmk_notifier::RunCommand::SetOs(qmk_notifier::HostOs::Linux),
+            &f,
+        );
+        assert!(matches!(
+            resp,
+            Ok(qmk_notifier::CommandResponse::Ack { ok: true })
+        ));
+    }
+
+    #[test]
+    fn test_qmk_notifier_send_command_maps_device_not_found() {
+        reset_test_state(); // stabilize state; we use QmkNotifier directly
+
+        let qmk = QmkNotifier;
+        let f = DeviceFilter {
+            vendor_id: Some(0xFFFF),
+            product_id: Some(0xFFFF),
+            usage_page: 0xFF60,
+            usage: 0x61,
+        };
+
+        let res = qmk.send_command(qmk_notifier::RunCommand::QueryInfo, &f);
+        assert!(res.is_err());
+        let msg = res.unwrap_err().to_string().to_lowercase();
+        assert!(
+            msg.contains("no device found"),
+            "expected DeviceNotFound, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_send_command_notify_recorders_independent() {
+        reset_test_state();
+        set_notifier(Box::new(MockNotifier::new()));
+
+        let f = DeviceFilter {
+            vendor_id: None,
+            product_id: None,
+            usage_page: 0xFF60,
+            usage: 0x61,
+        };
+
+        {
+            let notifier = get_notifier();
+            let n = notifier.lock().unwrap();
+            let _ = n.notify("App\x1DTitle".to_string());
+            let _ = n.send_command(qmk_notifier::RunCommand::QueryInfo, &f);
+        }
+
+        assert_eq!(MockNotifier::get_call_count(), 1);
+        assert_eq!(
+            MockNotifier::get_last_message(),
+            Some("App\x1DTitle".to_string())
+        );
+        assert_eq!(MockNotifier::get_send_command_calls().len(), 1);
     }
 }
