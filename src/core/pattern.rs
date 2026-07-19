@@ -563,6 +563,330 @@ pub(crate) fn nfa_compile(pat: &[u8]) -> Vec<NfaOp> {
     states // start is implicitly states[0]; the simulator (T2.S2) seeds from here
 }
 
+// =========================================================================
+// Thompson NFA simulator (P2.M1.T2.S2)
+//
+// Stage 4 of the P2.M1 matcher pipeline:
+//   parse_pattern -> process_escapes -> nfa_compile -> nfa_addstate/nfa_match
+//                                                              -> match_with_anchors
+// Runs a compiled `Vec<NfaOp>` (S1 `nfa_compile` output) against a candidate
+// string: the epsilon-closure (`nfa_addstate`) + the two-list Thompson
+// simulation (`nfa_match`), plus the supporting character predicates. Faithful
+// port of the firmware `pattern_match.c` ~lines 454-625 (is_digit_char /
+// is_word_char / is_whitespace_char / is_word_boundary / nfa_addstate /
+// pattern_char_matches / nfa_has_match / nfa_match) + `get_escaped_char`
+// (~116-140, literal cases only). See architecture `external_deps.md` §3
+// points 4-5 and PRD §4 for the contract sources.
+// =========================================================================
+
+// ---- Character classifiers (byte-identical to the firmware C ranges) ----
+//
+// GOTCHA-8: these use the `u8::is_ascii_*` methods, NOT the `char::` forms. The
+// firmware uses C range checks / `tolower` which are ASCII-only in the C locale;
+// `char::is_whitespace()` would add Unicode whitespace and diverge on
+// non-ASCII (e.g. UTF-8 continuation) bytes.
+
+#[inline]
+fn is_digit_char(c: u8) -> bool {
+    c.is_ascii_digit() // == c >= b'0' && c <= b'9'
+}
+
+#[inline]
+fn is_word_char(c: u8) -> bool {
+    // [a-zA-Z0-9_]. is_ascii_alphanumeric == [a-zA-Z0-9]; add '_'.
+    c.is_ascii_alphanumeric() || c == b'_'
+}
+
+#[inline]
+fn is_whitespace_char(c: u8) -> bool {
+    // ' ' '\t' '\n' '\r' '\x0c'(\f) '\x0b'(\v). is_ascii_whitespace is EXACTLY
+    // this set (GOTCHA-8).
+    c.is_ascii_whitespace()
+}
+
+/// Word-boundary test against the ORIGINAL string at an absolute byte position.
+/// A boundary exists at `pos` iff exactly one of the neighboring bytes is a
+/// word char. Off-string edges use an implicit non-word char.
+///
+/// Mirrors the firmware `is_word_boundary` (`pattern_match.c`:~470) exactly.
+/// The empty-original-string special case for `\b`/`\B` is handled by
+/// [`nfa_addstate`] BEFORE calling this (it checks `string_start.is_empty()`
+/// first — GOTCHA-6); the guards here are defensive (`pos > len` ⇒ false, and
+/// the `len > 0` clauses keep the edge positions sane on an empty string).
+fn is_word_boundary(string: &[u8], pos: usize) -> bool {
+    let len = string.len();
+    if pos == 0 {
+        return len > 0 && is_word_char(string[0]);
+    }
+    if pos == len {
+        return len > 0 && is_word_char(string[len - 1]);
+    }
+    if pos > len {
+        return false;
+    }
+    is_word_char(string[pos - 1]) != is_word_char(string[pos])
+}
+
+/// Decode an escaped-literal placeholder (`ESC_CARET`..=`ESC_BSLASH`, i.e.
+/// 0x01-0x04) back to its literal byte. Mirrors firmware `get_escaped_char`
+/// (`pattern_match.c`:~116-140) for the four literal cases only — the
+/// class/assertion bytes (0x05-0x0D) are handled directly in
+/// [`pattern_char_matches`]. Any other byte passes through unchanged.
+fn decoded_literal(pc: u8) -> u8 {
+    match pc {
+        ESC_CARET => b'^',  // 0x01 -> \^
+        ESC_DOLLAR => b'$',  // 0x02 -> \$
+        ESC_STAR => b'*',    // 0x03 -> \*
+        ESC_BSLASH => b'\\', // 0x04 -> \\
+        _ => pc,             // not an escaped literal; ordinary byte
+    }
+}
+
+/// Test whether a processed-pattern byte `pc` matches an input byte `sc`.
+///
+/// Faithful port of the firmware `pattern_char_matches` (`pattern_match.c`
+/// ~lines 542-575). Dispatches on the S1 named placeholder consts (NOT raw
+/// hex):
+/// - `ESC_CARET`..=`ESC_BSLASH` (0x01-0x04): escaped literals are **DECODED
+///   first** then ASCII-folded — never fold the placeholder byte itself
+///   (GOTCHA-9).
+/// - `CLASS_DIGIT`/`NDIGIT`/`WORD`/`NWORD`/`SPACE`/`NSPACE`: the six character
+///   classes, via the ASCII classifiers above.
+/// - `DOT_META` (0x0D): the dot — matches any byte EXCEPT `\n` AND `\r`
+///   (GOTCHA-7). Distinct from the glob `*` (compiled as `Any`, which matches
+///   any byte including newline).
+/// - anything else: an ordinary literal, ASCII-folded for case-insensitive.
+///
+/// ASCII folding via [`u8::to_ascii_lowercase`] is exactly C
+/// `tolower((unsigned char))` in the C locale — it folds only `A-Z` and is the
+/// identity for all other bytes (including UTF-8 continuation bytes).
+fn pattern_char_matches(pc: u8, sc: u8, case_sensitive: bool) -> bool {
+    // Escaped literal: decode THEN compare (GOTCHA-9: never fold the placeholder).
+    if pc >= ESC_CARET && pc <= ESC_BSLASH {
+        // 0x01..=0x04
+        let lit = decoded_literal(pc);
+        return if case_sensitive {
+            lit == sc
+        } else {
+            lit.to_ascii_lowercase() == sc.to_ascii_lowercase()
+        };
+    }
+    match pc {
+        CLASS_DIGIT => is_digit_char(sc),          // \d
+        CLASS_NDIGIT => !is_digit_char(sc),         // \D
+        CLASS_WORD => is_word_char(sc),             // \w
+        CLASS_NWORD => !is_word_char(sc),           // \W
+        CLASS_SPACE => is_whitespace_char(sc),      // \s
+        CLASS_NSPACE => !is_whitespace_char(sc),    // \S
+        DOT_META => sc != b'\n' && sc != b'\r',    // .  (dot excludes newline/CR)
+        _ => {
+            // ordinary literal
+            if case_sensitive {
+                pc == sc
+            } else {
+                pc.to_ascii_lowercase() == sc.to_ascii_lowercase()
+            }
+        }
+    }
+}
+
+/// Epsilon-closure add: follow `Split`/`Assert` edges (consuming no input),
+/// collect `Char`/`Any`/`Match` states onto the live `list`.
+///
+/// Faithful port of the firmware `nfa_addstate` (`pattern_match.c`:~480-540).
+/// Index-based: `idx` selects `states[idx]`; `list`/`seen` are owned by the
+/// caller (the simulator [`nfa_match`]).
+///
+/// # Dedup (the reason `*` / `\b\b` terminate)
+///
+/// `seen[idx] == generation` means `idx` was already followed in THIS closure,
+/// so it is skipped. The caller bumps `generation` once per phase (seed + each
+/// consumed char) and NEVER clears `seen` — the stale tags simply become
+/// invisible against the new generation (PRD §13 #11, the O(1)-dedup property).
+/// The tag is set BEFORE dispatching (GOTCHA-4) so a state reached via one
+/// `Split` branch is not re-added when the other converges on it.
+///
+/// # Epsilon edges keep `abspos` unchanged
+///
+/// `string_start` (the FULL original input — firmware `string_start`) and
+/// `abspos` (an absolute offset into it) are forwarded UNCHANGED across
+/// epsilon edges so `\b`/`\B` evaluate against the ORIGINAL string at an
+/// absolute offset (PRD §13 #10; GOTCHA-2/3). Only the simulator's per-char
+/// step advances `abspos` (by 1, when feeding a consumed `Char`/`Any`'s `out`).
+///
+/// # What gets collected
+///
+/// `Split` and `Assert` are NEVER collected (GOTCHA-5): `Split` follows both
+/// edges; `Assert` conditionally follows `out` iff the word-boundary test
+/// matches `arg`. Only `Char`/`Any`/`Match` are pushed onto `list`. The
+/// empty-original-string special case (GOTCHA-6): if `string_start` is empty,
+/// NEITHER `\b` NOR `\B` passes — do not recurse (independent of the
+/// [`is_word_boundary`] implementation).
+///
+/// Recursive on epsilon edges; depth is bounded by the longest epsilon chain
+/// (≪ `states.len()`), so no overflow risk for realistic host patterns.
+fn nfa_addstate(
+    states: &[NfaOp],
+    idx: usize,
+    list: &mut Vec<usize>,
+    seen: &mut Vec<u32>,
+    generation: u32,
+    string_start: &[u8],
+    abspos: usize,
+) {
+    // Dedup: skip if already followed in THIS closure (firmware `lastlist == nfa_gen`).
+    if seen[idx] == generation {
+        return;
+    }
+    // Mark seen BEFORE dispatching (firmware sets `lastlist = nfa_gen` first), so
+    // a state reached via one Split branch isn't re-added when the other
+    // converges (GOTCHA-4).
+    seen[idx] = generation;
+
+    match states[idx] {
+        NfaOp::Match => {
+            // Accepting state: collect it; nfa_has_match reports the match.
+            list.push(idx);
+        }
+        NfaOp::Split { out, out1 } => {
+            // Epsilon fork (glob '*', 'X+'): follow BOTH edges, abspos UNCHANGED
+            // (GOTCHA-3).
+            nfa_addstate(states, out, list, seen, generation, string_start, abspos);
+            nfa_addstate(states, out1, list, seen, generation, string_start, abspos);
+        }
+        NfaOp::Assert { arg, out } => {
+            // Zero-width \b (ASSERT_BOUND, want a boundary) / \B
+            // (ASSERT_NBOUND, want a NON-boundary). Recurse into `out` ONLY if
+            // the boundary condition holds.
+            //
+            // EMPTY-STRING SPECIAL CASE (GOTCHA-6): if the original string is
+            // empty, NEITHER a boundary nor a non-boundary passes — do NOT
+            // recurse. (Firmware checks `*string_start != '\0'` BEFORE
+            // is_word_boundary; this short-circuit is independent of the
+            // is_word_boundary implementation.)
+            let want_boundary = arg == ASSERT_BOUND;
+            if !string_start.is_empty()
+                && is_word_boundary(string_start, abspos) == want_boundary
+            {
+                nfa_addstate(states, out, list, seen, generation, string_start, abspos);
+            }
+            // Never collect an Assert itself (firmware `return` with no list add).
+        }
+        NfaOp::Char { .. } | NfaOp::Any { .. } => {
+            // Consuming state: it is "live", waiting for the next input char.
+            list.push(idx);
+        }
+    }
+}
+
+/// True iff an accepting [`NfaOp::Match`] state is on the current live `list`.
+/// Faithful port of the firmware `nfa_has_match` (`pattern_match.c`:~575-577).
+fn nfa_has_match(states: &[NfaOp], list: &[usize]) -> bool {
+    list.iter().any(|&idx| states[idx] == NfaOp::Match)
+}
+
+/// Two-list Thompson NFA simulation — run a compiled NFA (S1 [`nfa_compile`]
+/// output; start state is always `states[0]`) against `string` beginning at
+/// byte `start`.
+///
+/// # Parameters
+///
+/// - `states`: the compiled NFA (S1 [`nfa_compile`] output). The start state
+///   is always index 0 (S1's start-`==`-0 invariant).
+/// - `string`: the **FULL ORIGINAL** input (firmware `string_start`).
+///   `\b`/`\B` evaluate against this at an absolute offset (PRD §13 #10), so a
+///   substring/prefix search that starts mid-string must still pass the whole
+///   string here.
+/// - `start`: the byte offset into `string` to begin consuming (firmware
+///   `str - string_start`). For substring/suffix matching, `match_with_anchors`
+///   (P2.M1.T3.S1) loops offsets `i` and calls this at each `start = i`.
+/// - `full_match`: `false` ⇒ a `Match` reachable at ANY point (prefix /
+///   substring) returns `true`; `true` ⇒ `Match` must be reachable only after
+///   consuming the WHOLE remaining string (exact / suffix).
+///
+/// # The linear-time guarantee
+///
+/// This is the canonical two-list Thompson simulation (`clist` = current live
+/// states, `nlist` = next live states, swapped per step) with generation-tag
+/// O(1) dedup (`seen[idx] == generation` ⇒ already followed this phase;
+/// `generation` is bumped once per phase and never cleared). Each input byte is
+/// consumed in a single pass over `clist`, each state is followed at most once
+/// per phase, and there is no backtracking — so the whole match is
+/// **O(states × consumed_len)** with **no allocation in the hot loop** (the two
+/// lists are pre-sized). This is the fix for the old exponential matcher
+/// (PRD §7.8); `a+a+a+…` (which compiles to `2k+1` states, S1) simulates in
+/// linear time. See Russ Cox, *“Regular Expression Matching Can Be Simple And
+/// Fast”* (<https://swtch.com/~rsc/regexp/regexp1.html>, cited by the firmware
+/// rustdoc at PRD §7.5/§7.9), in particular §“NFA-based Regular Expression
+/// Algorithms”.
+///
+/// # Pipeline
+///
+/// Stage 4 of: `parse_pattern` → `process_escapes` → `nfa_compile` →
+/// `nfa_addstate`/`nfa_match` → `match_with_anchors`. The anchor strategy
+/// (`match_with_anchors`, which compiles once and calls this at each offset) is
+/// P2.M1.T3.S1 — a later subtask.
+pub(crate) fn nfa_match(
+    states: &[NfaOp],
+    string: &[u8],
+    start: usize,
+    case_sensitive: bool,
+    full_match: bool,
+) -> bool {
+    debug_assert!(!states.is_empty(), "nfa_compile always yields >= [Match]");
+    // The firmware defensive guard `if (!start) return full_match ? (*str=='\0')
+    // : true;` is dead in Rust: nfa_compile (S1) never returns an empty Vec, so
+    // states[0] always exists (GOTCHA-1). Do NOT add a guard returning spurious
+    // true.
+
+    let mut clist: Vec<usize> = Vec::with_capacity(states.len());
+    let mut nlist: Vec<usize> = Vec::with_capacity(states.len());
+    let mut seen: Vec<u32> = vec![0u32; states.len()]; // generation-tag dedup (0 = unseen)
+    let mut generation: u32 = 0; // first `+= 1` makes it 1; 0 means unseen (GOTCHA-10)
+
+    let mut pos = start; // abspos: absolute offset into `string` (for \b/\B)
+
+    // Seed the closure from states[0] (the start — always index 0, S1 invariant).
+    generation += 1; // fresh phase (GOTCHA-11: bump once, NEVER clear seen)
+    nfa_addstate(states, 0, &mut clist, &mut seen, generation, string, pos);
+    if !full_match && nfa_has_match(states, &clist) {
+        return true; // empty prefix matched (substring/prefix semantics)
+    }
+
+    // Consume one input byte per step.
+    while pos < string.len() {
+        let c = string[pos];
+        generation += 1; // fresh phase (firmware `nfa_gen++; nn = 0;`) — O(1) dedup, no clear
+        nlist.clear();
+        for &s in &clist {
+            match states[s] {
+                NfaOp::Any { out } => {
+                    // glob '*': ANY byte incl '\n'/'\r' (PRD §13 #8). Unconditional add.
+                    nfa_addstate(states, out, &mut nlist, &mut seen, generation, string, pos + 1);
+                }
+                NfaOp::Char { arg, out } => {
+                    if pattern_char_matches(arg, c, case_sensitive) {
+                        nfa_addstate(states, out, &mut nlist, &mut seen, generation, string, pos + 1);
+                    }
+                }
+                // Match/Assert/Split are never on the LIVE list (nfa_addstate
+                // resolves them via epsilon edges); skip silently (GOTCHA-5).
+                _ => {}
+            }
+        }
+        std::mem::swap(&mut clist, &mut nlist); // swap lists (firmware pointer swap; GOTCHA-12)
+        pos += 1;
+        if clist.is_empty() {
+            break; // dead — no live states can recover (GOTCHA-14)
+        }
+        if !full_match && nfa_has_match(states, &clist) {
+            return true; // prefix matched mid-stream (GOTCHA-13: NOT for full_match)
+        }
+    }
+
+    nfa_has_match(states, &clist) // full_match: accept only at end; substring: already returned
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1386,5 +1710,342 @@ mod tests {
                 NfaOp::Match,
             ]
         );
+    }
+
+    // ========================================================================
+    // nfa_match — Thompson NFA simulation (P2.M1.T2.S2)
+    //
+    // Parity table: research/notes.md §4 (~30 vectors). Patterns are compiled
+    // via `nfa_compile(&process_escapes(pat))` (realistic integration of S1 +
+    // S2), then `nfa_match` is called at a specific (start, full_match) offset.
+    // These are STRICTLY STRONGER than the firmware's end-to-end-only tests:
+    // they exercise the simulator in isolation, pinning simulator bugs
+    // independent of anchor-strategy bugs (the full end-to-end corpus is ported
+    // in P2.M1.T4.S1). The linchpin is `\bword`/`aword`@1 → false (GOTCHA-2 /
+    // REFINEMENT A): it proves `\b` sees the ORIGINAL string at an absolute
+    // offset, not a per-offset slice.
+    // ========================================================================
+
+    // --- Exact full-string (full_match=true, start=0) — §4.1 (7 rows) ---
+
+    #[test]
+    fn test_match_exact_whole_string() {
+        // "test" vs b"test" full -> consume whole string, reach Match.
+        let nfa = nfa_compile(&process_escapes("test"));
+        assert!(nfa_match(&nfa, b"test", 0, true, true));
+    }
+
+    #[test]
+    fn test_match_exact_rejects_trailing_input() {
+        // "test" vs b"testing" full -> Match reached at pos 3, but the string
+        // is not exhausted; after the Match there are no live consuming states
+        // -> dead list before end -> false.
+        let nfa = nfa_compile(&process_escapes("test"));
+        assert!(!nfa_match(&nfa, b"testing", 0, true, true));
+    }
+
+    #[test]
+    fn test_match_exact_rejects_short_input() {
+        // "test" vs b"tes" full -> ran out of input before reaching Match.
+        let nfa = nfa_compile(&process_escapes("test"));
+        assert!(!nfa_match(&nfa, b"tes", 0, true, true));
+    }
+
+    #[test]
+    fn test_match_exact_empty_pattern_empty_string() {
+        // "" vs b"" full -> [Match]; seed closure has Match; loop is a no-op;
+        // final nfa_has_match -> true.
+        let nfa = nfa_compile(&process_escapes(""));
+        assert!(nfa_match(&nfa, b"", 0, true, true));
+    }
+
+    #[test]
+    fn test_match_exact_empty_pattern_nonempty_string() {
+        // "" vs b"a" full -> Match is in the seed, but 'a' is unconsumed ->
+        // dead list after the first step -> final has_match on empty -> false.
+        let nfa = nfa_compile(&process_escapes(""));
+        assert!(!nfa_match(&nfa, b"a", 0, true, true));
+    }
+
+    #[test]
+    fn test_match_exact_case_insensitive() {
+        // "abc" vs b"ABC" full, cs=false -> case-insensitive full match.
+        let nfa = nfa_compile(&process_escapes("abc"));
+        assert!(nfa_match(&nfa, b"ABC", 0, false, true));
+    }
+
+    #[test]
+    fn test_match_exact_case_sensitive_mismatch() {
+        // "abc" vs b"ABC" full, cs=true -> case-sensitive mismatch -> false.
+        let nfa = nfa_compile(&process_escapes("abc"));
+        assert!(!nfa_match(&nfa, b"ABC", 0, true, true));
+    }
+
+    // --- Prefix / substring (full_match=false) — §4.2 (7 rows) ---
+
+    #[test]
+    fn test_match_prefix_at_start() {
+        // "test" vs b"testing" prefix (full_match=false) -> Match at pos 3 -> true.
+        let nfa = nfa_compile(&process_escapes("test"));
+        assert!(nfa_match(&nfa, b"testing", 0, true, false));
+    }
+
+    #[test]
+    fn test_match_prefix_mismatch_at_offset_zero() {
+        // "test" vs b"pretest" at start=0, full_match=false -> 't' != 'p' at
+        // offset 0 -> dead list immediately -> false. (T3.S1 would retry at
+        // offset 3.)
+        let nfa = nfa_compile(&process_escapes("test"));
+        assert!(!nfa_match(&nfa, b"pretest", 0, true, false));
+    }
+
+    #[test]
+    fn test_match_prefix_at_offset() {
+        // "test" vs b"pretest" at start=3, full_match=false -> prefix at offset 3.
+        let nfa = nfa_compile(&process_escapes("test"));
+        assert!(nfa_match(&nfa, b"pretest", 3, true, false));
+    }
+
+    #[test]
+    fn test_match_glob_matches_anything() {
+        // "*" vs b"anything" prefix -> glob matches anything.
+        let nfa = nfa_compile(&process_escapes("*"));
+        assert!(nfa_match(&nfa, b"anything", 0, true, false));
+    }
+
+    #[test]
+    fn test_match_glob_matches_empty_prefix() {
+        // "*" vs b"" prefix -> glob matches the empty prefix (Split->out1->Match
+        // is in the seed closure).
+        let nfa = nfa_compile(&process_escapes("*"));
+        assert!(nfa_match(&nfa, b"", 0, true, false));
+    }
+
+    #[test]
+    fn test_match_a_star_prefix() {
+        // "a*" vs b"aaa" prefix -> glob after 'a'.
+        let nfa = nfa_compile(&process_escapes("a*"));
+        assert!(nfa_match(&nfa, b"aaa", 0, true, false));
+    }
+
+    #[test]
+    fn test_match_a_star_b_full() {
+        // "a*b" vs b"aaab" full -> full match with a mid glob.
+        let nfa = nfa_compile(&process_escapes("a*b"));
+        assert!(nfa_match(&nfa, b"aaab", 0, true, true));
+    }
+
+    // --- Quantifier + (Char+SPLIT loop) — §4.3 (4 rows) ---
+
+    #[test]
+    fn test_match_plus_needs_one() {
+        // "a+" vs b"aaa" full -> one-or-more -> true.
+        let nfa = nfa_compile(&process_escapes("a+"));
+        assert!(nfa_match(&nfa, b"aaa", 0, true, true));
+    }
+
+    #[test]
+    fn test_match_plus_rejects_empty() {
+        // "a+" vs b"" full -> needs >=1 'a' -> false.
+        let nfa = nfa_compile(&process_escapes("a+"));
+        assert!(!nfa_match(&nfa, b"", 0, true, true));
+    }
+
+    #[test]
+    fn test_match_plus_rejects_wrong_first_char() {
+        // "a+" vs b"b" full -> no leading 'a' -> false.
+        let nfa = nfa_compile(&process_escapes("a+"));
+        assert!(!nfa_match(&nfa, b"b", 0, true, true));
+    }
+
+    #[test]
+    fn test_match_digit_plus_full() {
+        // "\d+" vs b"123" full -> class + quantifier -> true.
+        let nfa = nfa_compile(&process_escapes("\\d+"));
+        assert!(nfa_match(&nfa, b"123", 0, true, true));
+    }
+
+    // --- Character classes + dot — §4.4 (10 rows) ---
+
+    #[test]
+    fn test_match_class_digit_matches_digit() {
+        // "\d" vs b"5" -> true.
+        let nfa = nfa_compile(&process_escapes("\\d"));
+        assert!(nfa_match(&nfa, b"5", 0, true, false));
+    }
+
+    #[test]
+    fn test_match_class_digit_rejects_letter() {
+        // "\d" vs b"a" -> false.
+        let nfa = nfa_compile(&process_escapes("\\d"));
+        assert!(!nfa_match(&nfa, b"a", 0, true, false));
+    }
+
+    #[test]
+    fn test_match_class_word_includes_underscore() {
+        // "\w" vs b"_" -> true (\w includes underscore).
+        let nfa = nfa_compile(&process_escapes("\\w"));
+        assert!(nfa_match(&nfa, b"_", 0, true, false));
+    }
+
+    #[test]
+    fn test_match_class_word_rejects_space() {
+        // "\w" vs b" " -> false.
+        let nfa = nfa_compile(&process_escapes("\\w"));
+        assert!(!nfa_match(&nfa, b" ", 0, true, false));
+    }
+
+    #[test]
+    fn test_match_class_nword_matches_punctuation() {
+        // "\W" vs b"!" -> true (\W matches punctuation).
+        let nfa = nfa_compile(&process_escapes("\\W"));
+        assert!(nfa_match(&nfa, b"!", 0, true, false));
+    }
+
+    #[test]
+    fn test_match_class_space_matches_tab() {
+        // "\s" vs b"\t" -> true (\s matches tab).
+        let nfa = nfa_compile(&process_escapes("\\s"));
+        assert!(nfa_match(&nfa, b"\t", 0, true, false));
+    }
+
+    #[test]
+    fn test_match_class_nspace_rejects_whitespace() {
+        // "\S" vs b"\t" -> false (\S does not match whitespace).
+        let nfa = nfa_compile(&process_escapes("\\S"));
+        assert!(!nfa_match(&nfa, b"\t", 0, true, false));
+    }
+
+    #[test]
+    fn test_match_dot_matches_letter() {
+        // "." vs b"a" -> true (dot matches any non-newline).
+        let nfa = nfa_compile(&process_escapes("."));
+        assert!(nfa_match(&nfa, b"a", 0, true, false));
+    }
+
+    #[test]
+    fn test_match_dot_excludes_newline() {
+        // "." vs b"\n" -> false (GOTCHA-7: dot EXCLUDES newline).
+        let nfa = nfa_compile(&process_escapes("."));
+        assert!(!nfa_match(&nfa, b"\n", 0, true, false));
+    }
+
+    #[test]
+    fn test_match_dot_excludes_cr() {
+        // "." vs b"\r" -> false (GOTCHA-7: dot EXCLUDES CR too).
+        let nfa = nfa_compile(&process_escapes("."));
+        assert!(!nfa_match(&nfa, b"\r", 0, true, false));
+    }
+
+    // --- Glob * includes newline (GOTCHA-7 counterpart) ---
+
+    #[test]
+    fn test_match_glob_includes_newline() {
+        // "*" (glob, compiled as Any) must consume a newline: "*" vs b"a\nb"
+        // full_match=true -> true. Any matches ANY byte incl '\n'/'\r'
+        // (PRD §13 #8). Contrast with the dot tests above.
+        let nfa = nfa_compile(&process_escapes("*"));
+        assert!(nfa_match(&nfa, b"a\nb", 0, true, true));
+    }
+
+    // --- Word boundary \b (THE abspos/linchpin tests) — §4.5 (7 rows) ---
+    //
+    // These prove \b evaluates against the ORIGINAL string at an ABSOLUTE
+    // offset (GOTCHA-2 / REFINEMENT A). The LINCHPIN is \bword/aword@1 -> false:
+    // if \b saw only the per-offset slice "word" (treating it as string_start
+    // at abspos 0), it would see 'w' -> boundary -> pass -> true (WRONG). The
+    // firmware returns false because \b sees the ORIGINAL "aword" at abspos 1
+    // ('a','w' both word -> NO boundary -> \b fails).
+
+    #[test]
+    fn test_match_bword_sees_original_string_at_offset() {
+        // LINCHPIN (GOTCHA-2 / REFINEMENT A): "\bword" vs b"aword" at start=1
+        // -> FALSE. At abspos 1, 'a' and 'w' are both word chars -> NO
+        // boundary -> \b fails. A slice-based impl (string_start = "word",
+        // abspos = 0) would wrongly see 'w' -> boundary -> pass -> true.
+        let nfa = nfa_compile(&process_escapes("\\bword"));
+        assert!(!nfa_match(&nfa, b"aword", 1, true, false));
+    }
+
+    #[test]
+    fn test_match_bword_at_real_boundary_in_string() {
+        // "\bword" vs b" word" at start=1 -> true. At abspos 1, ' ' is
+        // non-word and 'w' is word -> boundary -> \b passes; then "word"
+        // prefix-matches the slice b"word".
+        let nfa = nfa_compile(&process_escapes("\\bword"));
+        assert!(nfa_match(&nfa, b" word", 1, true, false));
+    }
+
+    #[test]
+    fn test_match_bword_at_string_start() {
+        // "\bword" vs b"word" at start=0 -> true. abspos 0: is_word_char('w')
+        // -> boundary -> \b passes; "word" prefix-matches.
+        let nfa = nfa_compile(&process_escapes("\\bword"));
+        assert!(nfa_match(&nfa, b"word", 0, true, false));
+    }
+
+    #[test]
+    fn test_match_bword_fails_after_digit() {
+        // "\bword" vs b"123word" at start=3 -> false. abspos 3: '3' and 'w'
+        // both word -> NO boundary -> \b fails.
+        let nfa = nfa_compile(&process_escapes("\\bword"));
+        assert!(!nfa_match(&nfa, b"123word", 3, true, false));
+    }
+
+    #[test]
+    fn test_match_bword_fails_after_underscore() {
+        // "\bword" vs b"_word" at start=1 -> false. abspos 1: '_' and 'w'
+        // both word -> NO boundary -> \b fails.
+        let nfa = nfa_compile(&process_escapes("\\bword"));
+        assert!(!nfa_match(&nfa, b"_word", 1, true, false));
+    }
+
+    #[allow(non_snake_case)] // capital B mirrors the \B (non-boundary) assertion
+    #[test]
+    fn test_match_Bord_non_boundary_inside_word() {
+        // "\Bord" vs b"word" at start=1 -> true. abspos 1: 'w' and 'o' both
+        // word -> NOT a boundary -> \B (non-boundary) passes.
+        let nfa = nfa_compile(&process_escapes("\\Bord"));
+        assert!(nfa_match(&nfa, b"word", 1, true, false));
+    }
+
+    #[allow(non_snake_case)] // capital B mirrors the \B (non-boundary) assertion
+    #[test]
+    fn test_match_Bord_fails_at_string_start() {
+        // "\Bord" vs b"ord" at start=0 -> false. abspos 0: is_word_char('o')
+        // -> boundary -> \B fails.
+        let nfa = nfa_compile(&process_escapes("\\Bord"));
+        assert!(!nfa_match(&nfa, b"ord", 0, true, false));
+    }
+
+    // --- Empty-string \b/\B special case — §4.6 (3 rows) ---
+
+    #[test]
+    fn test_match_b_empty_false() {
+        // "\b" vs b"" -> false (GOTCHA-6: empty original string -> \b
+        // short-circuits, no recurse -> no Match). This is independent of
+        // is_word_boundary (which would otherwise return false at pos 0 on
+        // empty, making \B WRONGLY pass).
+        let nfa = nfa_compile(&process_escapes("\\b"));
+        assert!(!nfa_match(&nfa, b"", 0, true, false));
+    }
+
+    #[allow(non_snake_case)] // capital B mirrors the \B (non-boundary) assertion
+    #[test]
+    fn test_match_B_empty_false() {
+        // "\B" vs b"" -> false (GOTCHA-6: empty original string -> \B ALSO
+        // fails — legacy semantics the test corpus encodes).
+        let nfa = nfa_compile(&process_escapes("\\B"));
+        assert!(!nfa_match(&nfa, b"", 0, true, false));
+    }
+
+    #[test]
+    fn test_match_bb_generation_dedup_terminates() {
+        // "\b\b" vs b"a" -> true (GOTCHA-4/11). Two zero-width asserts then
+        // Match: at abspos 0 both \b pass (boundary at 'a'), so the seed
+        // closure reaches Match. The generation-tag dedup is what makes the
+        // converging epsilon edges terminate (no infinite recursion).
+        let nfa = nfa_compile(&process_escapes("\\b\\b"));
+        assert!(nfa_match(&nfa, b"a", 0, true, false));
     }
 }
