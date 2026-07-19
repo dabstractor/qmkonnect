@@ -1,0 +1,679 @@
+{
+  "backlog": [
+    {
+      "type": "Phase",
+      "id": "P1",
+      "title": "External Transport & Firmware Layer",
+      "status": "Researching",
+      "description": "Typed-command support in the qmk_notifier Rust crate (v0.3.0) and typed-command dispatch in the qmk-notifier firmware. These are prerequisite external-repo changes that unblock QMKonnect's host-side rules feature. The crate gains new RunCommand variants, CommandResponse, and multi-report typed framing; the firmware gains the 0xF0 discriminator, handle_typed_command dispatcher, and the QUERY_INFO/QUERY_CALLBACK/SET_OS/APPLY_HOST_CONTEXT handlers that use the already-scaffolded host_layer/host_cb_enabled/has_been_queried state.",
+      "milestones": [
+        {
+          "type": "Milestone",
+          "id": "P1.M1",
+          "title": "qmk_notifier Crate v0.3.0 — Typed-Command Transport",
+          "status": "Planned",
+          "description": "Add typed-command RunCommand variants, HostOs enum, CommandResponse enum, typed-command framing (0x81 0x9F 0xF0 prefix, multi-report chunking), response parsing (0x51 typed vs 0/1 legacy vs timeout), and change run() to return CommandResponse. Tag release v0.3.0.",
+          "tasks": [
+            {
+              "type": "Task",
+              "id": "P1.M1.T1",
+              "title": "Typed-Command Types (HostOs, RunCommand variants, CommandResponse)",
+              "status": "Planned",
+              "description": "Add the new public types to the crate: HostOs enum, new RunCommand variants, and CommandResponse enum.",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P1.M1.T1.S1",
+                  "title": "Add HostOs enum and new RunCommand variants",
+                  "status": "Planned",
+                  "story_points": 1,
+                  "dependencies": [],
+                  "prd_selectors": ["h2.85", "h2.83", "h2.31"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: The crate is at /home/dustin/projects/qmk_notifier/src/lib.rs. Current RunCommand has only SendMessage(String) and ListDevices (lib.rs:14-17). QmkError has 11 variants including forward-looking HidReadError and NoResponseReceived (src/error.rs) that will be used by the response-parsing path. The os_variant_t mapping is: 0 UNSURE, 1 LINUX, 2 WINDOWS, 3 MACOS, 4 IOS (mirrors QMK os_variant_t).\n2. INPUT: None (greenfield types).\n3. LOGIC: Add to lib.rs: (a) `#[repr(u8)] pub enum HostOs { Unsure=0, Linux=1, Windows=2, Macos=3, Ios=4 }` with Debug, Clone, Copy, PartialEq, Eq derives. (b) Extend RunCommand enum with: `QueryInfo`, `QueryCallback(u8)`, `SetOs(HostOs)`, `ApplyHostContext { layer: Option<u8>, callbacks: Vec<u8>, clear_board: bool }`. Keep existing SendMessage(String) and ListDevices. Add Debug, Clone derives (already present).\n4. OUTPUT: The extended RunCommand enum and HostOs enum for consumption by P1.M1.T2.S1 (framing) and downstream by qmkonnect's Notifier trait (P4.M1.T1.S1).\n5. DOCS: [Mode A] Add JSDoc-style rustdoc comments on each new variant referencing the firmware PRD §4.6 command table. No external doc files changed."
+                },
+                {
+                  "type": "Subtask",
+                  "id": "P1.M1.T1.S2",
+                  "title": "Add CommandResponse enum",
+                  "status": "Planned",
+                  "story_points": 1,
+                  "dependencies": ["P1.M1.T1.S1"],
+                  "prd_selectors": ["h2.85", "h2.83"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: The crate currently returns Result<(), QmkError> from run(). The firmware sends 32-byte replies: legacy response[0] in {0,1} (match bool), typed response[0]==0x51 followed by [cmd_id_echo][payload]. No response within timeout ⇒ Timeout variant. See architecture/external_deps.md §1.\n2. INPUT: HostOs enum and RunCommand variants from P1.M1.T1.S1.\n3. LOGIC: Add to lib.rs: `pub enum CommandResponse { Legacy { matched: bool }, Info { proto_ver: u8, feature_flags: u8, callback_count: u8, board_rules_present: bool }, CallbackName { index: u8, name: Option<String> }, Ack { ok: bool }, Timeout }`. Derive Debug, Clone, PartialEq, Eq.\n4. OUTPUT: CommandResponse enum for consumption by P1.M1.T3.S1 (response parsing) and downstream by qmkonnect's handshake (P4.M2.T1.S1).\n5. DOCS: [Mode A] Add rustdoc comments on each variant. No external doc files changed."
+                }
+              ]
+            },
+            {
+              "type": "Task",
+              "id": "P1.M1.T2",
+              "title": "Typed-Command Framing (multi-report chunking with 0xF0 discriminator)",
+              "status": "Planned",
+              "description": "Frame typed commands using [0x81, 0x9F, 0xF0, cmd_id, args...] with the same ETX-framed, multi-report chunking as strings. APPLY_HOST_CONTEXT may span reports (uncapped callback-id list).",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P1.M1.T2.S1",
+                  "title": "Implement typed-command payload builder and multi-report framing",
+                  "status": "Planned",
+                  "story_points": 2,
+                  "dependencies": ["P1.M1.T1.S2"],
+                  "prd_selectors": ["h2.85", "h2.25", "h2.31"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: The crate's send_raw_report() (src/core.rs:~80) builds a 33-byte buffer per report: [0x00, 0x81, 0x9F, <30 payload bytes>]. The existing framing appends ETX (0x03) before chunking in run() (lib.rs:~200). batches_for(data) = (data.len() + 29) / 30. The device cache (LazyLock<Mutex<Option<DeviceCache>>>) and burst_to_one() are reusable as-is. Typed commands must use the SAME multi-report path because APPLY_HOST_CONTEXT can carry >30 bytes of callback ids.\n2. INPUT: RunCommand variants from P1.M1.T1.S1, CommandResponse from P1.M1.T1.S2.\n3. LOGIC: Add a function `fn build_typed_payload(cmd: &RunCommand) -> Vec<u8>` in core.rs that serializes a typed command into raw bytes: prefix [0x81, 0x9F, 0xF0, cmd_id], then command-specific args (QUERY_INFO: none; QUERY_CALLBACK: [index]; SET_OS: [os_byte]; APPLY_HOST_CONTEXT: [layer, flags, count, id...]), then ETX (0x03). The layer byte for APPLY_HOST_CONTEXT is the layer number or 0xFF for clear. flags bit 0 = clear_board. This payload is then chunked via the EXISTING batches_for/burst_to_one path (the [0x00] report-ID byte and the [0x81, 0x9F] header are already in the buffer layout, so the typed path writes [0x81, 0x9F, 0xF0, cmd_id, args..., ETX] as the payload AFTER stripping the existing header — or restructure to build the full payload including header). CRITICAL: the existing send_raw_report prepends [0x00, 0x81, 0x9F] in burst_to_one's buffer; for typed commands the third byte becomes 0xF0. The cleanest approach is to pass the full payload (starting with 0xF0, cmd_id, args) to send_raw_report, which already prepends [0x00, 0x81, 0x9F].\n4. OUTPUT: A function that produces the wire payload for any RunCommand variant, for consumption by P1.M1.T2.S2.\n5. DOCS: [Mode A] Rustdoc on build_typed_payload. No external doc files changed."
+                },
+                {
+                  "type": "Subtask",
+                  "id": "P1.M1.T2.S2",
+                  "title": "Wire typed commands into run() dispatch and send path",
+                  "status": "Planned",
+                  "story_points": 1,
+                  "dependencies": ["P1.M1.T2.S1"],
+                  "prd_selectors": ["h2.85", "h2.27"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: run() in lib.rs:~190 currently matches on RunCommand::SendMessage (append ETX, call send_raw_report) and RunCommand::ListDevices (call list_hid_devices). The new typed variants must route through send_raw_report with their typed payload from P1.M1.T2.S1.\n2. INPUT: build_typed_payload() from P1.M1.T2.S1.\n3. LOGIC: Extend run()'s match arms: for QueryInfo/QueryCallback/SetOs/ApplyHostContext, call build_typed_payload(cmd) to get the payload bytes, then call send_raw_report(payload, vid, pid, page, usage, verbose). The send_raw_report function already handles device cache lookup, burst-write, and IN-drain. After the burst, the IN-drain currently discards replies — P1.M1.T3.S1 will modify burst_to_one to optionally return the first IN report instead of draining all.\n4. OUTPUT: Extended run() that dispatches all RunCommand variants, for consumption by P1.M1.T3.S1 (response parsing).\n5. DOCS: [Mode A] Rustdoc on the new match arms. No external doc files changed."
+                }
+              ]
+            },
+            {
+              "type": "Task",
+              "id": "P1.M1.T3",
+              "title": "Response Parsing & run() Return Type Change",
+              "status": "Planned",
+              "description": "Parse the 32-byte IN report after a typed burst into CommandResponse. Change run() to return Result<CommandResponse, QmkError>.",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P1.M1.T3.S1",
+                  "title": "Implement response reader and parser (0x51 typed vs 0/1 legacy vs timeout)",
+                  "status": "Planned",
+                  "story_points": 2,
+                  "dependencies": ["P1.M1.T2.S2"],
+                  "prd_selectors": ["h2.85", "h2.31"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: burst_to_one() in core.rs:~200 currently drains IN reports with read_timeout(0) in a bounded loop (IN_DRAIN_MAX=32), discarding them. For typed commands, we need to READ the first IN report (with a short timeout, e.g. 100ms) and parse it. response[0]==0x51 ⇒ typed (decode by cmd_echo at response[1]); response[0] in {0,1} ⇒ Legacy{matched}; no reply within timeout ⇒ Timeout. HidReadError and NoResponseReceived error variants already exist in error.rs. For QUERY_INFO response: [0x51, 0x01, proto_ver, feature_flags, callback_count, board_rules_present(0/1)]. For QUERY_CALLBACK: [0x51, 0x02, index, name_bytes...NUL-padded]. For SET_OS/APPLY_HOST_CONTEXT: [0x51, cmd_echo, ack(0/1)].\n2. INPUT: RunCommand variant being sent (from P1.M1.T2.S2 dispatch), the device handle from the cache.\n3. LOGIC: (a) Add a new function `fn read_typed_response(device: &HidDevice, expected_cmd: u8, verbose: bool) -> Result<CommandResponse, QmkError>` that reads one 32-byte IN report with a 100ms timeout. On Ok(n>0): check response[0]==0x51 and response[1]==expected_cmd, then decode per the command table. On Ok(0) or timeout: return CommandResponse::Timeout (not an error — the caller decides what to do). (b) Modify burst_to_one to optionally return the first IN report instead of draining all. Alternatively, add a separate `burst_and_read_one()` function for typed commands that writes all reports then reads exactly one response. The existing burst_to_one continues to drain-discard for the SendMessage path (backward compat).\n4. OUTPUT: CommandResponse for consumption by the caller (run()), which returns it. Downstream qmkonnect handshake (P4.M2.T1.S1) pattern-matches on Info/Ack/Timeout.\n5. DOCS: [Mode A] Rustdoc on read_typed_response and the response format. No external doc files changed."
+                },
+                {
+                  "type": "Subtask",
+                  "id": "P1.M1.T3.S2",
+                  "title": "Change run() signature to return CommandResponse and wire response parsing",
+                  "status": "Planned",
+                  "story_points": 1,
+                  "dependencies": ["P1.M1.T3.S1"],
+                  "prd_selectors": ["h2.85", "h2.27"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: run() currently returns Result<(), QmkError>. This is a BREAKING API change: qmkonnect's QmkNotifier::notify (src/core/notifier.rs:142-186) currently does `qmk_notifier::run(params)` and discards the result with Ok(_). After this change, the return is CommandResponse. The SendMessage path returns CommandResponse::Legacy{matched: bool} (parsed from the legacy 0/1 response), and ListDevices returns CommandResponse::Legacy{matched: false} (or a new variant). Typed paths return their parsed CommandResponse.\n2. INPUT: read_typed_response from P1.M1.T3.S1, the existing send paths from P1.M1.T2.S2.\n3. LOGIC: Change `pub fn run(params: RunParameters) -> Result<(), QmkError>` to `pub fn run(params: RunParameters) -> Result<CommandResponse, QmkError>`. For SendMessage: after send_raw_report succeeds, read one IN report (the legacy 0/1 reply) and return CommandResponse::Legacy{matched: response[0]==1}. For typed commands: call the typed send + read_typed_response, return the parsed CommandResponse. For ListDevices: return CommandResponse::Legacy{matched: false} (or a no-op variant).\n4. OUTPUT: Updated run() returning CommandResponse. This is the final crate API surface for v0.3.0.\n5. DOCS: [Mode A] Update the crate README.md to document the new return type and CommandResponse variants."
+                }
+              ]
+            },
+            {
+              "type": "Task",
+              "id": "P1.M1.T4",
+              "title": "Tag Crate Release v0.3.0",
+              "status": "Planned",
+              "description": "Tag the qmk_notifier crate as v0.3.0 so qmkonnect can pin the git dependency.",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P1.M1.T4.S1",
+                  "title": "Bump version, update Cargo.toml, tag v0.3.0",
+                  "status": "Planned",
+                  "story_points": 0.5,
+                  "dependencies": ["P1.M1.T3.S2"],
+                  "prd_selectors": ["h2.85"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: The crate is at /home/dustin/projects/qmk_notifier. Current version in Cargo.toml is 0.2.1. qmkonnect pins via `git = ..., tag = \"v0.2.1\"`.\n2. INPUT: All crate changes from P1.M1.T1-T3 are complete and tests pass.\n3. LOGIC: Bump Cargo.toml version to 0.3.0. Commit and tag as v0.3.0. Push tag.\n4. OUTPUT: A git tag v0.3.0 that qmkonnect's Cargo.toml can pin (P4.M1.T1.S2).\n5. DOCS: [Mode A] Update crate CHANGELOG or release notes if they exist."
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "Milestone",
+          "id": "P1.M2",
+          "title": "qmk-notifier Firmware — Typed-Command Dispatch",
+          "status": "Planned",
+          "description": "Add the 0xF0 discriminator check, handle_typed_command() dispatcher, and QUERY_INFO/QUERY_CALLBACK/SET_OS/APPLY_HOST_CONTEXT handlers. The state variables (host_layer, host_cb_enabled, has_been_queried) and callback registry are already scaffolded.",
+          "tasks": [
+            {
+              "type": "Task",
+              "id": "P1.M2.T1",
+              "title": "Typed-Command Dispatch Infrastructure",
+              "status": "Planned",
+              "description": "Add the 0xF0 discriminator check at the top of hid_notify() and implement the handle_typed_command() dispatcher.",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P1.M2.T1.S1",
+                  "title": "Add 0xF0 discriminator check and handle_typed_command() skeleton in hid_notify()",
+                  "status": "Planned",
+                  "story_points": 1,
+                  "dependencies": [],
+                  "prd_selectors": ["h2.83", "h2.84", "h2.75"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: notifier.c hid_notify() (lines 543-577) currently checks data[0]==0x81 && data[1]==0x9F, strips the 2-byte header, then processes legacy bytes. The 0xF0 discriminator must be checked AFTER stripping the 2-byte header: if data[0]==0xF0 (which is now the first byte after stripping), route to handle_typed_command(). The constants NOTIFY_CMD_DISCRIMINATOR=0xF0, NOTIFY_CMD_QUERY_INFO=0x01, etc. are already defined in notifier.h. The host state variables (host_layer, host_cb_enabled, has_been_queried) are already declared at notifier.c:137-139.\n2. INPUT: None (the constants and state are already defined in notifier.h and notifier.c).\n3. LOGIC: In hid_notify(), after `data += 2; length -= 2;`, add: `if (length >= 1 && data[0] == NOTIFY_CMD_DISCRIMINATOR) { handle_typed_command(data + 1, length - 1); return; }`. Implement `static void handle_typed_command(uint8_t *data, uint8_t length)` that switches on data[0] (cmd_id) to QUERY_INFO(0x01), QUERY_CALLBACK(0x02), SET_OS(0x03), APPLY_HOST_CONTEXT(0x05). Each handler builds a 32-byte response and calls raw_hid_send. has_been_queried is set to true on the first QUERY_INFO.\n4. OUTPUT: The dispatch skeleton for consumption by P1.M2.T2.S1-S4 (individual handlers).\n5. DOCS: none — firmware C code has no user-facing doc surface."
+                },
+                {
+                  "type": "Subtask",
+                  "id": "P1.M2.T1.S2",
+                  "title": "Implement set_host_layer() and apply_host_callbacks() helper functions",
+                  "status": "Planned",
+                  "story_points": 2,
+                  "dependencies": ["P1.M2.T1.S1"],
+                  "prd_selectors": ["h2.84", "h2.82"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: notifier.c:137-138 declares `static uint8_t host_layer = LAYER_UNSET;` and `static bool host_cb_enabled[HOST_CALLBACK_MAX] = {false};`. The board-layer equivalents are activate_layer()/deactivate_layer() (notifier.c:~225-240). LAYER_UNSET=255 and HOST_LAYER_BASE=224 are defined. layer_on()/layer_off() are QMK functions. get_host_callbacks()/_size() return the registry (weak defaults {NULL,0}).\n2. INPUT: handle_typed_command skeleton from P1.M2.T1.S1.\n3. LOGIC: Implement `static void set_host_layer(uint8_t layer)`: if layer==0xFF, layer_off(host_layer) and set host_layer=LAYER_UNSET. Else if host_layer != LAYER_UNSET, layer_off(host_layer). Then layer_on(layer) and host_layer=layer. This operates ONLY on the host tracker, never touching board activated_layer. Implement `static void apply_host_callbacks(const uint8_t *ids, uint8_t count)`: for each id in 0..HOST_CALLBACK_MAX, if id was in host_cb_enabled but NOT in the new ids set, call the callback's on_disable and clear the flag. Then for each id in the new set, if NOT already enabled, call on_enable and set the flag. This is the disable-before-enable diff. Guard against NULL on_enable/on_disable and ids >= HOST_CALLBACK_MAX.\n4. OUTPUT: Two helper functions consumed by APPLY_HOST_CONTEXT handler (P1.M2.T2.S4).\n5. DOCS: none — firmware C code."
+                }
+              ]
+            },
+            {
+              "type": "Task",
+              "id": "P1.M2.T2",
+              "title": "Typed-Command Handlers (QUERY_INFO, QUERY_CALLBACK, SET_OS, APPLY_HOST_CONTEXT)",
+              "status": "Planned",
+              "description": "Implement the four typed-command response builders and the APPLY_HOST_CONTEXT clear_board logic.",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P1.M2.T2.S1",
+                  "title": "QUERY_INFO handler: proto_ver, feature_flags, callback_count, board_rules_present",
+                  "status": "Planned",
+                  "story_points": 1,
+                  "dependencies": ["P1.M2.T1.S1"],
+                  "prd_selectors": ["h2.83", "h2.84"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: board_rules_present() (notifier.c:193) already exists and checks all default + per-OS maps. get_host_callbacks_size() returns the callback count (weak default 0). NOTIFY_PROTO_VER=2, NOTIFY_FEATURE_APPLY_HOST_CONTEXT=0x01, NOTIFY_FEATURE_CALLBACK_REGISTRY=0x02 are in notifier.h. NOTIFY_RESPONSE_MARKER=0x51.\n2. INPUT: handle_typed_command dispatcher from P1.M2.T1.S1.\n3. LOGIC: On QUERY_INFO (0x01): set has_been_queried=true. Build response[32]={0}: response[0]=0x51 (NOTIFY_RESPONSE_MARKER), response[1]=NOTIFY_CMD_QUERY_INFO (0x01), response[2]=NOTIFY_PROTO_VER (2), response[3]=feature_flags (0x01 if board_rules_present() or always, bitwise-OR 0x02 if get_host_callbacks_size()>0), response[4]=get_host_callbacks_size() (as u8), response[5]=board_rules_present() ? 1 : 0. Call raw_hid_send(response, RAW_REPORT_SIZE).\n4. OUTPUT: 32-byte QUERY_INFO response for the host's handshake (consumed by qmkonnect P4.M2.T1.S1).\n5. DOCS: none — firmware C code."
+                },
+                {
+                  "type": "Subtask",
+                  "id": "P1.M2.T2.S2",
+                  "title": "QUERY_CALLBACK handler: return callback name by index",
+                  "status": "Planned",
+                  "story_points": 1,
+                  "dependencies": ["P1.M2.T1.S1"],
+                  "prd_selectors": ["h2.83", "h2.84"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: host_callback_t has fields { name: const char*, on_enable: callback_t, on_disable: callback_t }. get_host_callbacks() returns the array, get_host_callbacks_size() the count. Names are C strings (NUL-terminated). Response format: [0x51, 0x02, index, name_bytes..., 0x00 padding].\n2. INPUT: handle_typed_command dispatcher from P1.M2.T1.S1.\n3. LOGIC: On QUERY_CALLBACK (0x02): read the index from data[1]. If index >= get_host_callbacks_size(), respond with [0x51, 0x02, index, 0x00] (name = NULL/empty). Else, get the callback at that index, copy its name string into response[3..] (NUL-padded to fill 32 bytes). response[0]=0x51, response[1]=0x02, response[2]=index. Call raw_hid_send(response, RAW_REPORT_SIZE).\n4. OUTPUT: 32-byte QUERY_CALLBACK response for the host's name sweep (consumed by qmkonnect P4.M2.T1.S1).\n5. DOCS: none — firmware C code."
+                },
+                {
+                  "type": "Subtask",
+                  "id": "P1.M2.T2.S3",
+                  "title": "SET_OS handler: update current_os",
+                  "status": "Planned",
+                  "story_points": 0.5,
+                  "dependencies": ["P1.M2.T1.S1"],
+                  "prd_selectors": ["h2.83", "h2.84"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: current_os (os_variant_t) is declared at notifier.c:132. notifier_set_os() (notifier.c:~480) handles OS changes with idempotent guard + state clear. For typed SET_OS, we can call notifier_set_os() directly with the os_byte mapped to os_variant_t. os_variant_t mapping: 0=OS_UNSURE, 1=OS_LINUX, 2=OS_WINDOWS, 3=OS_MACOS, 4=OS_IOS.\n2. INPUT: handle_typed_command dispatcher from P1.M2.T1.S1.\n3. LOGIC: On SET_OS (0x03): read os_byte from data[1]. Call notifier_set_os((os_variant_t)os_byte). Build response [0x51, 0x03, 0x01] (ack=ok). raw_hid_send(response, RAW_REPORT_SIZE).\n4. OUTPUT: SET_OS ack for the host (consumed by qmkonnect P4.M2.T1.S1).\n5. DOCS: none — firmware C code."
+                },
+                {
+                  "type": "Subtask",
+                  "id": "P1.M2.T2.S4",
+                  "title": "APPLY_HOST_CONTEXT handler: clear_board, set_host_layer, apply_host_callbacks",
+                  "status": "Planned",
+                  "story_points": 2,
+                  "dependencies": ["P1.M2.T1.S2", "P1.M2.T2.S1"],
+                  "prd_selectors": ["h2.83", "h2.84", "h2.82"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: set_host_layer() and apply_host_callbacks() from P1.M2.T1.S2. The board equivalents are deactivate_layer() and disable_command() (notifier.c:~225-260). The clear_board flag (data bit 0) tells the firmware to clear board state before applying host context. Request format after discriminator+cmd_id: [layer][flags][count][id...]. layer=0xFF means clear host layer. Multi-report: the full message is reassembled in hid_notify's msg_buffer before dispatch — but wait, typed commands are NOT reassembled through msg_buffer (they bypass the ETX reassembly). REVISE: typed commands MUST be ETX-framed and multi-report reassembled, same as strings. The handle_typed_command must reassemble the full typed payload across reports before parsing. This means the 0xF0 check should happen AFTER ETX reassembly, not per-report. See HOST_RULES.md §5: 'Framing: ETX-framed and multi-report like strings.'\n2. INPUT: set_host_layer() and apply_host_callbacks() from P1.M2.T1.S2, QUERY_INFO from P1.M2.T2.S1.\n3. LOGIC: REVISED approach — the 0xF0 discriminator check must happen AFTER ETX reassembly, inside process_full_message or just before it. In hid_notify(), after ETX triggers msg_buffer dispatch, check if msg_buffer[0]==0xF0 before calling process_full_message. If 0xF0: route to handle_typed_command(msg_buffer, msg_index) which parses the full reassembled payload: cmd_id=msg_buffer[1], then command-specific args. For APPLY_HOST_CONTEXT (0x05): layer=msg_buffer[2], flags=msg_buffer[3], count=msg_buffer[4], ids=&msg_buffer[5..5+count]. If flags bit 0 (clear_board): deactivate_layer() + disable_command() (clear board state first). Then set_host_layer(layer). Then apply_host_callbacks(ids, count). Build response [0x51, 0x05, 0x01] (ack). raw_hid_send(response, RAW_REPORT_SIZE).\n4. OUTPUT: APPLY_HOST_CONTEXT ack for the host (consumed by qmkonnect P4.M3.T1.S1).\n5. DOCS: none — firmware C code."
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "Phase",
+      "id": "P2",
+      "title": "QMKonnect Pattern Matcher — Full-Parity Port",
+      "status": "Researching",
+      "description": "Port the firmware pattern_match.c Thompson-NFA matcher to Rust at src/core/pattern.rs. This is a full-parity port (not a subset) including *, ^, $, WT(), +, and all character classes (\\d \\D \\w \\W \\s \\S \\b \\B .). All constructs are linear-time in the NFA. The port is the foundation for host-side rule evaluation and must produce identical results to the firmware matcher for every pattern/string pair.",
+      "milestones": [
+        {
+          "type": "Milestone",
+          "id": "P2.M1",
+          "title": "Pattern Matcher Port (src/core/pattern.rs)",
+          "status": "Planned",
+          "description": "Create the new src/core/pattern.rs module, register it in src/core/mod.rs, and port the complete firmware matcher with parity tests against the firmware test corpus.",
+          "tasks": [
+            {
+              "type": "Task",
+              "id": "P2.M1.T1",
+              "title": "Escape Processing & Pattern Parsing",
+              "status": "Planned",
+              "description": "Port process_escapes() (escape sequences, dot, + quantifier placeholder bytes) and parse_pattern() (anchor detection, core extraction, even-backslash-count rule).",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P2.M1.T1.S1",
+                  "title": "Port process_escapes() to Rust — escape/class/quantifier byte transform",
+                  "status": "Planned",
+                  "story_points": 2,
+                  "dependencies": [],
+                  "prd_selectors": ["h2.74", "h2.92"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: The firmware process_escapes() (pattern_match.c:15-75) transforms a pattern string into processed bytes: \\x01-\\x04 = escaped literals ^$*\\, \\x05-\\x0A = classes \\d\\D\\w\\W\\s\\S, \\x0B-\\x0C = assertions \\b\\B, \\x0D = dot, \\x0E = + quantifier marker, 0x2A = glob * (wildcard). Literal . and + (when not after a consumable element) are emitted as ordinary ASCII 0x2E/0x2B. The `last_consumable` flag tracks whether the previous element consumed a char (determines whether + is quantifier or literal). See architecture/external_deps.md §3 for the full byte contract.\n2. INPUT: None (greenfield module).\n3. LOGIC: Create src/core/pattern.rs. Implement `fn process_escapes(pattern: &str) -> Vec<u8>` that mirrors the C function exactly. Track `last_consumable: bool`. For each byte: if backslash + next char, emit the appropriate placeholder byte. If bare *, emit 0x2A and set last_consumable=false. If bare + after consumable, emit 0x0E and set last_consumable=false; if + after non-consumable, emit literal 0x2B. If bare ., emit 0x0D. Otherwise emit the byte literally. Register the module in src/core/mod.rs with `pub mod pattern;`.\n4. OUTPUT: process_escapes() function for consumption by P2.M1.T1.S2 (parse_pattern).\n5. DOCS: [Mode A] Add rustdoc on process_escapes explaining the placeholder byte contract. No external docs changed yet."
+                },
+                {
+                  "type": "Subtask",
+                  "id": "P2.M1.T1.S2",
+                  "title": "Port parse_pattern() — anchor detection and core extraction",
+                  "status": "Planned",
+                  "story_points": 1,
+                  "dependencies": ["P2.M1.T1.S1"],
+                  "prd_selectors": ["h2.74", "h2.92"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: The firmware parse_pattern() (pattern_match.c:~100-160) detects a leading ^ (start_anchored), a trailing $ with an EVEN backslash count (end_anchored — the even-backslash-count rule is critical: abc$=anchor, abc\\\\$=escaped, abc\\\\\\\\$=anchor), carves out the core between anchors, and calls process_escapes on the core. The parsed_pattern_t struct holds { core_pattern, start_anchored, end_anchored, processed_pattern }.\n2. INPUT: process_escapes() from P2.M1.T1.S1.\n3. LOGIC: Implement `struct ParsedPattern { core: Vec<u8>, start_anchored: bool, end_anchored: bool }` and `fn parse_pattern(pattern: &str) -> ParsedPattern`. Detect leading ^ → start_anchored=true, advance past it. For trailing $: walk left from end-1 counting consecutive backslashes; if even count, end_anchored=true, truncate. Extract core substring between anchors, call process_escapes() on it. Handle empty core (^$ matches empty string).\n4. OUTPUT: ParsedPattern for consumption by P2.M1.T2.S1 (NFA matching).\n5. DOCS: [Mode A] Rustdoc on parse_pattern explaining the even-backslash-count rule."
+                }
+              ]
+            },
+            {
+              "type": "Task",
+              "id": "P2.M1.T2",
+              "title": "Thompson NFA Engine (compile, simulate, match)",
+              "status": "Planned",
+              "description": "Port the Thompson NFA construction, epsilon-closure, and two-list simulation. This is the core matching engine guaranteeing O(states × input_len) without backtracking.",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P2.M1.T2.S1",
+                  "title": "Port NFA compiler (nfa_compile) and state types",
+                  "status": "Planned",
+                  "story_points": 2,
+                  "dependencies": ["P2.M1.T1.S2"],
+                  "prd_selectors": ["h2.74", "h2.92"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: The firmware nfa_compile() (pattern_match.c:~350-430) builds a State pool via Thompson construction. Opcodes: OP_CHAR (consume one matching byte), OP_ANY (consume any byte incl newline — glob *), OP_SPLIT (epsilon fork for * and +), OP_ASSERT (zero-width \\b/\\B), OP_MATCH (accepting). X+ compiles to exactly 2 states (OP_CHAR + OP_SPLIT loop-back). Glob * compiles to OP_SPLIT→OP_ANY(loop-back)→exit. The `tail` pointer threads the dangling exit slots. The pool is stack-allocated fresh each call with lastlist zeroed.\n2. INPUT: ParsedPattern from P2.M1.T1.S2 (the processed core bytes).\n3. LOGIC: Define `enum NfaOp { Char(u8), Any, Split(usize, usize), Assert(u8), Match }` (using indices instead of pointers for Rust safety). Implement `fn nfa_compile(pat: &[u8]) -> Vec<NfaOp>` that walks the processed bytes and builds the state list. For 0x2A (glob *): emit Split + Any(loop-back). For 0x0B/0x0C: emit Assert. For 0x0E after a consuming element: convert the previous Char/Any into Char+Split loop-back. For other consuming bytes: emit Char. Append Match at the end. Use a Vec<NfaOp> and index-based edges (no raw pointers).\n4. OUTPUT: Compiled NFA (Vec<NfaOp>) for consumption by P2.M1.T2.S2.\n5. DOCS: [Mode A] Rustdoc referencing Russ Cox's paper and explaining linear-time guarantee."
+                },
+                {
+                  "type": "Subtask",
+                  "id": "P2.M1.T2.S2",
+                  "title": "Port epsilon-closure (nfa_addstate) and NFA simulation (nfa_match)",
+                  "status": "Planned",
+                  "story_points": 2,
+                  "dependencies": ["P2.M1.T2.S1"],
+                  "prd_selectors": ["h2.74", "h2.92"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: The firmware nfa_addstate() (pattern_match.c:~460-500) follows epsilon transitions (OP_SPLIT forks and conditional OP_ASSERT edges) with a `lastlist` generation guard that prevents infinite recursion. nfa_match() (pattern_match.c:~520-570) is a two-list simulation: maintain clist (current live states) and nlist (next live states), bump nfa_gen once per phase for O(1) dedup, feed one input char per step, check for OP_MATCH in the list. The full_match flag controls prefix/substring vs consume-whole-string. is_word_boundary(str, pos) checks XOR of neighboring word-char-ness.\n2. INPUT: Compiled NFA from P2.M1.T2.S1.\n3. LOGIC: In Rust, use a `generation: usize` counter and a `Vec<bool>` seen-set (indexed by state index) instead of the C lastlist field. Implement `fn nfa_addstate(states: &[NfaOp], idx: usize, list: &mut Vec<usize>, seen: &mut Vec<bool>, generation: usize, string_start: &[u8], abspos: usize)`. For Split: recurse both branches. For Assert: check is_word_boundary, recurse if condition holds. For Char/Any/Match: add to list. Implement `fn nfa_match(pattern: &[u8], str_bytes: &[u8], case_sensitive: bool, full_match: bool) -> bool` using two Vec<usize> lists swapped per step. Port is_word_boundary, is_digit_char, is_word_char, is_whitespace_char, pattern_char_matches from the C originals. The empty-string special case for \\b/\\B: if string is empty, neither boundary nor non-boundary passes.\n4. OUTPUT: The core nfa_match function for consumption by P2.M1.T3.S1 (anchor strategy).\n5. DOCS: [Mode A] Rustdoc on nfa_match explaining the two-list simulation."
+                }
+              ]
+            },
+            {
+              "type": "Task",
+              "id": "P2.M1.T3",
+              "title": "Public API, Anchor Strategy & Delimiter-Aware Matcher",
+              "status": "Planned",
+              "description": "Port match_with_anchors() (anchor strategy), the public pattern_match() entry point, and the delimiter-aware match_pattern() from notifier.c.",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P2.M1.T3.S1",
+                  "title": "Port match_with_anchors() and public pattern_match() entry",
+                  "status": "Planned",
+                  "story_points": 1,
+                  "dependencies": ["P2.M1.T2.S2"],
+                  "prd_selectors": ["h2.74", "h2.92"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: match_with_anchors() (pattern_match.c:~170-200) selects the NFA mode based on anchor flags: ^...$ exact → one full match from offset 0; ^ prefix → one reach-any from offset 0; $ suffix → loop offsets, full match from each; substring → loop offsets, reach-any from each (empty core only matches empty string). The public pattern_match(pattern, str, case_sensitive) calls parse_pattern → match_with_anchors → free.\n2. INPUT: nfa_match from P2.M1.T2.S2, ParsedPattern from P2.M1.T1.S2.\n3. LOGIC: Implement `fn match_with_anchors(parsed: &ParsedPattern, s: &str, case_sensitive: bool) -> bool` with the four anchor modes. Implement `pub fn pattern_match(pattern: &str, s: &str, case_sensitive: bool) -> bool` as the public entry. Each mode calls nfa_match with full_match=true (exact/suffix) or full_match=false (prefix/substring). For substring mode: loop str.char_indices() and call nfa_match from each offset.\n4. OUTPUT: Public pattern_match function for consumption by P2.M1.T3.S2 (delimiter matcher) and downstream by rules.rs.\n5. DOCS: [Mode A] Rustdoc on pattern_match documenting all supported constructs (*, ^, $, +, \\d, etc.)."
+                },
+                {
+                  "type": "Subtask",
+                  "id": "P2.M1.T3.S2",
+                  "title": "Port delimiter-aware match_pattern() and Pattern enum (Single/Parts)",
+                  "status": "Planned",
+                  "story_points": 1,
+                  "dependencies": ["P2.M1.T3.S1"],
+                  "prd_selectors": ["h2.74", "h2.110", "h2.92"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: match_pattern() (notifier.c:~290-340) handles the GS delimiter (0x1D): if pattern has GS but message doesn't, match pattern_left against whole message; if message has GS but pattern doesn't, match pattern against msg_left (class only); if both have GS, split both and match both halves; neither has GS, direct match. HOST_RULES.md §8(2) defines Pattern::Single(String) and Pattern::Parts(String, String) for rules.toml.\n2. INPUT: pattern_match from P2.M1.T3.S1.\n3. LOGIC: Implement `pub enum Pattern { Single(String), Parts(String, String) }` with serde Deserialize (untagged — string → Single, array of 2 → Parts). Implement `pub fn match_pattern(pattern: &Pattern, app_class: &str, title: &str, case_sensitive: bool) -> bool` that mirrors the C match_pattern logic using GS (0x1D) as delimiter. For Single(p): if title is non-empty, match p against app_class only (firmware parity); else against whole string. For Parts(c, t): both halves must match.\n4. OUTPUT: Pattern enum and match_pattern function for consumption by P3.M1.T2 (rules evaluation).\n5. DOCS: [Mode A] Rustdoc on Pattern and match_pattern with WT() examples."
+                }
+              ]
+            },
+            {
+              "type": "Task",
+              "id": "P2.M1.T4",
+              "title": "Port Firmware Test Corpus as Parity Tests",
+              "status": "Planned",
+              "description": "Port the firmware pattern matcher test corpus into Rust unit tests to validate full parity.",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P2.M1.T4.S1",
+                  "title": "Port firmware test cases as Rust parity tests",
+                  "status": "Planned",
+                  "story_points": 2,
+                  "dependencies": ["P2.M1.T3.S2"],
+                  "prd_selectors": ["h2.74", "h2.92", "h2.90"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: Firmware test files at /home/dustin/projects/qmk-notifier/: test_pattern_match.c (basic wildcards/anchors), test_char_classification.c (class predicates), test_metachar_verification.c (escape sequences), test_word_boundary_basic.c + test_word_boundary_integration.c (\\b/\\B), test_comprehensive_integration.c (end-to-end), test_invalid_patterns.c, test_error_handling.c. Each test case has a pattern, a string, a case_sensitive flag, and an expected bool result. The PRD HOST_RULES.md §12 testing plan says: 'unit-test (src/core/pattern.rs) full matcher parity by porting the firmware pattern_match corpus (wildcards, ^/$, WT, +, classes, case sensitivity) and asserting identical results.'\n2. INPUT: pattern_match and match_pattern from P2.M1.T3.\n3. LOGIC: Read each firmware test_*.c file, extract every test case (pattern, string, case_sensitive, expected), and port them as Rust #[test] functions in src/core/pattern.rs's #[cfg(test)] module. Include: wildcard tests (*), anchor tests (^, $, ^$), escape tests (\\^, \\$, \\*, \\\\), class tests (\\d, \\D, \\w, \\W, \\s, \\S), word boundary tests (\\b, \\B), dot tests (.), plus quantifier tests (+), case sensitivity tests, and delimiter-aware match_pattern tests. Every Rust test must produce the same bool as the firmware C test.\n4. OUTPUT: A comprehensive parity test suite that validates the port is correct.\n5. DOCS: none — test code."
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "Phase",
+      "id": "P3",
+      "title": "QMKonnect Rules System — rules.toml Schema & Evaluation",
+      "status": "Planned",
+      "description": "Create src/core/rules.rs with the rules.toml data model, TOML deserialization, and the rule evaluation logic (layer first-match, callback all-match, stack-vs-replace decision). This module consumes the pattern matcher from P2 and is consumed by the notification pipeline in P4.",
+      "milestones": [
+        {
+          "type": "Milestone",
+          "id": "P3.M1",
+          "title": "rules.toml Data Model & Evaluation (src/core/rules.rs)",
+          "status": "Planned",
+          "description": "Create the rules module with the RuleSet/HostDefaults/LayerRule/CallbackRule structs, serde deserialization, and the evaluate() function that produces a HostContext (layer + callback set + stack/replace decision).",
+          "tasks": [
+            {
+              "type": "Task",
+              "id": "P3.M1.T1",
+              "title": "rules.toml Data Model & Deserialization",
+              "status": "Planned",
+              "description": "Define the Rust structs that deserialize rules.toml and the effective disable_firmware_config resolution.",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P3.M1.T1.S1",
+                  "title": "Define RuleSet, HostDefaults, LayerRule, CallbackRule structs with serde",
+                  "status": "Planned",
+                  "story_points": 1,
+                  "dependencies": ["P2.M1.T3.S2"],
+                  "prd_selectors": ["h2.87", "h2.81", "h2.92"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: HOST_RULES.md §9 defines the schema. The toml crate is v0.9 (Cargo.toml). Pattern is the enum from P2.M1.T3.S2 (Single/Parts, untagged serde). Config struct pattern: src/core/mod.rs uses #[derive(serde::Deserialize, serde::Serialize)] with #[serde(default)] and rename attributes.\n2. INPUT: Pattern enum from P2.M1.T3.S2.\n3. LOGIC: Create src/core/rules.rs. Define: `RuleSet { host: HostDefaults, layer_rules: Vec<LayerRule>, callback_rules: Vec<CallbackRule> }` with #[derive(Debug, Deserialize, Default)]. `HostDefaults { disable_firmware_config: bool }` default false. `LayerRule { pattern: Pattern (renamed 'match'), layer: u8, case_sensitive: bool (default false), disable_firmware_config: Option<bool> (default None) }`. `CallbackRule { pattern: Pattern (renamed 'match'), enable: Vec<String> (default empty), disable: Vec<String> (default empty), case_sensitive: bool (default false), disable_firmware_config: Option<bool> (default None) }`. Register module in src/core/mod.rs with `pub mod rules;`.\n4. OUTPUT: Deserializable structs for consumption by P3.M1.T1.S2 (resolution) and P3.M1.T2 (evaluation).\n5. DOCS: [Mode A] Rustdoc on each struct with TOML examples from HOST_RULES.md §9."
+                },
+                {
+                  "type": "Subtask",
+                  "id": "P3.M1.T1.S2",
+                  "title": "Implement effective disable_firmware_config resolution and parse_rules()",
+                  "status": "Planned",
+                  "story_points": 1,
+                  "dependencies": ["P3.M1.T1.S1"],
+                  "prd_selectors": ["h2.87", "h2.82"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: A rule's effective disable_firmware_config = its override (Some) if set, else the [host] global default. HOST_RULES.md §4: 'The window is replace iff every matched rule's effective flag is true.' The string is sent iff the board has rules AND at least 1 matched rule is non-disabling.\n2. INPUT: RuleSet from P3.M1.T1.S1.\n3. LOGIC: Implement `fn effective_disable_firmware_config(rule_override: Option<bool>, host_default: bool) -> bool` (override.unwrap_or(host_default)). Implement `pub fn parse_rules(path: &Path) -> Result<RuleSet, Box<dyn Error>>` that reads and deserializes rules.toml. Implement `pub fn get_rules_paths() -> Vec<PathBuf>` that mirrors get_config_paths() but substitutes 'rules.toml' for 'config.toml'. This function lives in rules.rs but calls platforms::get_config_paths() to get the base directories.\n4. OUTPUT: parse_rules() and path resolution for consumption by P3.M1.T2 (evaluation) and P5.M1 (CLI).\n5. DOCS: [Mode A] Rustdoc on parse_rules and get_rules_paths."
+                }
+              ]
+            },
+            {
+              "type": "Task",
+              "id": "P3.M1.T2",
+              "title": "Rule Evaluation — Layer/Callback Matching & Stack/Replace Decision",
+              "status": "Planned",
+              "description": "Implement the evaluate() function that takes a RuleSet and a window string, matches layer rules (first-match) and callback rules (all-match), resolves callback names to IDs, and determines stack vs replace.",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P3.M1.T2.S1",
+                  "title": "Implement evaluate() with layer first-match, callback all-match, and HostContext output",
+                  "status": "Planned",
+                  "story_points": 2,
+                  "dependencies": ["P3.M1.T1.S2"],
+                  "prd_selectors": ["h2.86", "h2.82", "h2.87"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: HOST_RULES.md §8(3) Per-window evaluation: (1) Layer: first matching layer_rule → L_h (else none). (2) Callbacks: ALL matching callback_rules → desired enabled callback id set; each rule's disable names are explicit exclusion (removed from desired set). (3) Stack-vs-replace: window is replace iff EVERY matched rule's effective disable_firmware_config is true. HOST_RULES.md §4: the host decides per window whether the board runs — send the string first iff the board has rules AND at least 1 matched rule is non-disabling. The match_pattern function from P2.M1.T3.S2 takes a Pattern, app_class, title, and case_sensitive.\n2. INPUT: RuleSet from P3.M1.T1.S1, match_pattern from P2.M1.T3.S2, name_to_id: HashMap<String, u8> from the handshake (P4.M2.T1.S1 — for now accept as parameter).\n3. LOGIC: Define `pub struct HostContext { pub layer: Option<u8>, pub callback_ids: Vec<u8>, pub clear_board: bool, pub any_match: bool }`. Implement `pub fn evaluate(rules: &RuleSet, app_class: &str, title: &str, name_to_id: &HashMap<String, u8>, board_has_rules: bool) -> HostContext`. Scan layer_rules in order; first match_pattern() success → layer = Some(rule.layer), record the rule's effective disable_firmware_config. Scan ALL callback_rules; for each match, add enable names (resolved via name_to_id) to the desired set, remove disable names. Collect effective disable_firmware_config from all matched rules. If no rules matched → HostContext { layer: None, callback_ids: vec![], clear_board: false, any_match: false }. If matched → clear_board = all matched rules have effective disable_firmware_config == true (AND board_has_rules is considered: string is sent iff board_has_rules AND NOT all-disabling).\n4. OUTPUT: HostContext for consumption by P4.M3.T1.S1 (notify_qmk send logic).\n5. DOCS: [Mode A] Rustdoc on evaluate() and HostContext with the stack/replace decision rules."
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "Phase",
+      "id": "P4",
+      "title": "QMKonnect Pipeline Integration",
+      "status": "Planned",
+      "description": "Integrate the pattern matcher (P2) and rules system (P3) into the notification pipeline: extend the Notifier trait, pin the new crate version, implement the startup capability handshake + SET_OS, and extend notify_qmk() to evaluate rules and send APPLY_HOST_CONTEXT. This is the core integration work that makes host-side rules functional.",
+      "milestones": [
+        {
+          "type": "Milestone",
+          "id": "P4.M1",
+          "title": "Notifier Trait Extension & Crate Dependency Pin",
+          "status": "Planned",
+          "description": "Extend the Notifier trait to support typed commands, implement QmkNotifier's typed methods, pin qmk_notifier v0.3.0 in Cargo.toml, and update the DebounceState to carry WindowInfo.",
+          "tasks": [
+            {
+              "type": "Task",
+              "id": "P4.M1.T1",
+              "title": "Extend Notifier Trait for Typed Commands",
+              "status": "Planned",
+              "description": "Add methods to the Notifier trait for sending typed commands and receiving CommandResponse, with mock support for ordering assertions.",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P4.M1.T1.S1",
+                  "title": "Add send_command() to Notifier trait and QmkNotifier impl",
+                  "status": "Planned",
+                  "story_points": 2,
+                  "dependencies": ["P1.M1.T4.S1"],
+                  "prd_selectors": ["h2.18", "h3.10", "h2.86"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: Current Notifier trait (src/core/notifier.rs:12-14) has one method: `fn notify(&self, message: String) -> Result<(), Box<dyn Error + Send + Sync>>`. The QmkNotifier impl (notifier.rs:142-186) calls qmk_notifier::run(RunParameters::new(SendMessage(msg), ...)) and discards the result. The test mock (MockNotifier, notifier.rs:~380) records MOCK_CALL_COUNT and MOCK_LAST_MESSAGE. After the crate v0.3.0 change (P1.M1.T3.S2), run() returns CommandResponse.\n2. INPUT: qmk_notifier v0.3.0 types (RunCommand, CommandResponse, HostOs, RunParameters) from P1.M1.T4.S1.\n3. LOGIC: Add to the Notifier trait: `fn send_command(&self, command: qmk_notifier::RunCommand, filter: &DeviceFilter) -> Result<qmk_notifier::CommandResponse, Box<dyn Error + Send + Sync>>`. Implement for QmkNotifier: build RunParameters from the command + filter, call qmk_notifier::run(params), map QmkError to boxed error, return the CommandResponse. Keep notify() as-is (calls SendMessage internally). Update MockNotifier to also implement send_command() with a call recorder (store sequence of calls for ordering assertions). Update reset_test_state() to clear the call log.\n4. OUTPUT: Extended Notifier trait for consumption by P4.M2 (handshake) and P4.M3 (send logic).\n5. DOCS: [Mode A] Rustdoc on send_command explaining typed-command support."
+                }
+              ]
+            },
+            {
+              "type": "Task",
+              "id": "P4.M1.T2",
+              "title": "Pin qmk_notifier v0.3.0 and Extend DebounceState",
+              "status": "Planned",
+              "description": "Update Cargo.toml to pin the new crate tag, extend DebounceState to carry WindowInfo, and update the debounce worker.",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P4.M1.T2.S1",
+                  "title": "Pin qmk_notifier crate to v0.3.0 tag in Cargo.toml",
+                  "status": "Planned",
+                  "story_points": 0.5,
+                  "dependencies": ["P1.M1.T4.S1"],
+                  "prd_selectors": ["h2.14", "h2.86"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: Cargo.toml:16 currently pins `qmk_notifier = { package = \"qmk_notifier\", git = \"https://github.com/dabstractor/qmk_notifier\", tag = \"v0.2.1\" }`.\n2. INPUT: Crate tag v0.3.0 from P1.M1.T4.S1.\n3. LOGIC: Change Cargo.toml tag from \"v0.2.1\" to \"v0.3.0\". Run cargo update -p qmk_notifier. Verify compilation succeeds with the new CommandResponse return type. Fix any compile errors in QmkNotifier::notify (the Ok(_) match arm still works since CommandResponse is a success value).\n4. OUTPUT: Updated Cargo.toml pinning v0.3.0 for consumption by P4.M1.T1.S1 and all downstream tasks.\n5. DOCS: [Mode A] Update the comment in Cargo.toml noting the v0.3.0 bump reason."
+                },
+                {
+                  "type": "Subtask",
+                  "id": "P4.M1.T2.S2",
+                  "title": "Extend DebounceState to carry WindowInfo for host-context evaluation",
+                  "status": "Planned",
+                  "story_points": 2,
+                  "dependencies": ["P4.M1.T2.S1"],
+                  "prd_selectors": ["h3.12", "h2.18", "h2.16"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: DebounceState (notifier.rs:193-202) holds pending: Option<String>. The debounce_worker (notifier.rs:223-284) calls notifier.notify(message) when flushing. notify_qmk (notifier.rs:305-372) formats the string and stores it in pending. To support host-context evaluation after debounce, the worker needs access to the WindowInfo (not just the formatted string) so it can run rules evaluation and send APPLY_HOST_CONTEXT. The architecture decision: store pending as Option<(String, WindowInfo)> or a struct PendingMessage { string: String, window_info: WindowInfo }.\n2. INPUT: WindowInfo from src/core/types.rs.\n3. LOGIC: Add `use crate::core::types::WindowInfo;` to notifier.rs. Change DebounceState.pending from Option<String> to Option<PendingMessage> where `struct PendingMessage { payload: String, window_info: WindowInfo }`. Update notify_qmk to store PendingMessage instead of just the string. Update debounce_worker to pass both the payload and window_info to the send logic. The send logic (P4.M3.T1.S1) will use window_info for rules evaluation. Update the immediate-send path in notify_qmk similarly. Ensure reset_test_state() is updated for the new pending type.\n4. OUTPUT: Extended DebounceState carrying WindowInfo for consumption by P4.M3.T1.S1 (send logic).\n5. DOCS: none — internal state change."
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "Milestone",
+          "id": "P4.M2",
+          "title": "Startup Handshake & Capability Detection",
+          "status": "Planned",
+          "description": "Implement the capability handshake (QUERY_INFO → callback sweep → SET_OS) that runs at startup and on device reconnect, and the capability state tracking that gates host-rules.",
+          "tasks": [
+            {
+              "type": "Task",
+              "id": "P4.M2.T1",
+              "title": "Capability Handshake (QUERY_INFO, QUERY_CALLBACK sweep, SET_OS)",
+              "status": "Planned",
+              "description": "Implement the handshake that detects host-capable firmware, builds the name→id callback map, sends SET_OS, and sets the global capable flag.",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P4.M2.T1.S1",
+                  "title": "Implement handshake function and global capability state",
+                  "status": "Planned",
+                  "story_points": 2,
+                  "dependencies": ["P4.M1.T1.S1", "P3.M1.T2.S1"],
+                  "prd_selectors": ["h2.86", "h3.16", "h2.83"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: HOST_RULES.md §8(5) specifies the handshake: run(QueryInfo) → if Info{proto_ver:2, flags&0x01} → run(SetOs(host_os)) → for i in 0..callback_count: run(QueryCallback(i)).name → name_to_id map → validate rules.toml names. Re-trigger only on device transition via is_device_connected() poll. The host determines its OS: Linux/Windows/macOS. startup_device_probe (notifier.rs:77-125) is called at startup by every runner. The Notifier trait's send_command (from P4.M1.T1.S1) is the path to send typed commands.\n2. INPUT: send_command from P4.M1.T1.S1, DeviceFilter from configured_filter(), HostOs enum from the crate.\n3. LOGIC: Add global state: `static HOST_CAPABLE: AtomicBool` (false), `static CALLBACK_NAMES: Lazy<Mutex<HashMap<String, u8>>>`. Implement `pub fn perform_handshake(verbose: bool)` that: (1) builds filter via configured_filter(), (2) calls send_command(QueryInfo, &filter), (3) matches on CommandResponse::Info{proto_ver:2, feature_flags, callback_count, ..} if flags & 0x01 → capable, (4) if capable: send SetOs based on cfg!(target_os), sweep callbacks via QueryCallback(i) for i in 0..callback_count, populate CALLBACK_NAMES, validate rules.toml callback names against the map (warn, don't fail), set HOST_CAPABLE=true. On Timeout/Legacy/non-v2: set HOST_CAPABLE=false (string-only). Deduplicate by tracking has_handshaked state (once per board boot).\n4. OUTPUT: HOST_CAPABLE flag and CALLBACK_NAMES map for consumption by P4.M3.T1.S1 (send logic).\n5. DOCS: [Mode A] Rustdoc on perform_handshake."
+                },
+                {
+                  "type": "Subtask",
+                  "id": "P4.M2.T1.S2",
+                  "title": "Integrate handshake into startup and device-status poll",
+                  "status": "Planned",
+                  "story_points": 1,
+                  "dependencies": ["P4.M2.T1.S1"],
+                  "prd_selectors": ["h2.86", "h3.14", "h3.15", "h2.43"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: Each runner (runners/{windows,macos,linux}.rs) calls startup_device_probe(verbose) at startup. The device-status poll threads (tray.rs ~312/379, linux_tray.rs ~76/254) call is_device_connected() on a background thread and emit transitions. The handshake should run after startup_device_probe if a device is found, and on false→true device transitions.\n2. INPUT: perform_handshake from P4.M2.T1.S1.\n3. LOGIC: In each runner's startup sequence, after startup_device_probe, call perform_handshake(verbose) if is_device_connected() returns true. In the device-status poll threads (tray.rs and linux_tray.rs), on a false→true transition, call perform_handshake(verbose) on the polling thread (non-blocking to the UI thread). Add a has_handshaked guard so the handshake runs at most once per board boot (reset on device disconnect).\n4. OUTPUT: Handshake integrated into the startup/poll lifecycle for consumption by P4.M3.T1.S1.\n5. DOCS: none — internal lifecycle integration."
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "Milestone",
+          "id": "P4.M3",
+          "title": "notify_qmk Host-Context Send Logic",
+          "status": "Planned",
+          "description": "Extend the debounce worker's send step to evaluate rules and send APPLY_HOST_CONTEXT in stack or replace mode, or clear on no-match. This is the core per-window-changes send logic.",
+          "tasks": [
+            {
+              "type": "Task",
+              "id": "P4.M3.T1",
+              "title": "Host-Context Send Logic (stack, replace, no-match clear)",
+              "status": "Planned",
+              "description": "After the debounced string send, evaluate rules and send the appropriate APPLY_HOST_CONTEXT command, or clear on no-match.",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P4.M3.T1.S1",
+                  "title": "Implement host-context evaluation and send in debounce worker",
+                  "status": "Planned",
+                  "story_points": 2,
+                  "dependencies": ["P4.M1.T2.S2", "P4.M2.T1.S2", "P3.M1.T2.S1"],
+                  "prd_selectors": ["h2.86", "h2.82", "h3.16"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: The debounce_worker (notifier.rs:223-284) flushes pending by calling notifier.notify(message). After P4.M1.T2.S2, pending carries PendingMessage{payload, window_info}. HOST_RULES.md §8(4) specifies the send logic: Stack (board has rules AND at least 1 matched rule non-disabling): send string first, then APPLY_HOST_CONTEXT{layer, callbacks, clear_board=false}. Replace (all matched rules disabling, OR board has no rules): send ONLY APPLY_HOST_CONTEXT{layer, callbacks, clear_board=true}. No match: APPLY_HOST_CONTEXT{layer=0xFF, callbacks=empty}. The evaluate() function from P3.M1.T2.S1 produces HostContext. HOST_CAPABLE and CALLBACK_NAMES from P4.M2.T1.S1 gate the host-rules path.\n2. INPUT: PendingMessage from P4.M1.T2.S2, evaluate() from P3.M1.T2.S1, HOST_CAPABLE and CALLBACK_NAMES from P4.M2.T1.S1, send_command from P4.M1.T1.S1.\n3. LOGIC: In the debounce worker's flush step (and in the immediate-send path in notify_qmk): (1) If NOT HOST_CAPABLE OR no rules.toml: send the legacy string only (current behavior, unchanged). (2) If HOST_CAPABLE AND rules.toml present: call evaluate(rules, &window_info.app_class, &window_info.title, &CALLBACK_NAMES, board_has_rules). Then: if ctx.any_match AND NOT ctx.clear_board (stack mode): send the string first via notify(payload), then send_command(ApplyHostContext{layer: ctx.layer, callbacks: ctx.callback_ids, clear_board: false}). If ctx.any_match AND ctx.clear_board (replace mode): send ONLY send_command(ApplyHostContext{..., clear_board: true}). If NOT ctx.any_match: send_command(ApplyHostContext{layer: None, callbacks: vec![], clear_board: false}). Retry/cache parity with SendMessage (device errors swallowed after 3 retries per §5.4).\n4. OUTPUT: Functional host-context send logic that completes the host-rules feature end-to-end.\n5. DOCS: none — internal pipeline logic."
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "Phase",
+      "id": "P5",
+      "title": "QMKonnect CLI & Tray Integration",
+      "status": "Planned",
+      "description": "Add the --list-callbacks, --validate-rules, --rules-path CLI flags and the 'Reload rules' tray menu item on all three platforms.",
+      "milestones": [
+        {
+          "type": "Milestone",
+          "id": "P5.M1",
+          "title": "CLI Flags (--list-callbacks, --validate-rules, --rules-path)",
+          "status": "Planned",
+          "description": "Add the new CLI subcommands for host-rules diagnostics and validation.",
+          "tasks": [
+            {
+              "type": "Task",
+              "id": "P5.M1.T1",
+              "title": "Implement --list-callbacks, --validate-rules, --rules-path CLI flags",
+              "status": "Planned",
+              "description": "Add the new CLI flags to the hand-rolled CLI scanner in src/main.rs.",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P5.M1.T1.S1",
+                  "title": "Add --list-callbacks and --validate-rules dispatch in main.rs",
+                  "status": "Planned",
+                  "story_points": 2,
+                  "dependencies": ["P4.M2.T1.S1", "P3.M1.T1.S2"],
+                  "prd_selectors": ["h2.59", "h3.86", "h2.86"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: src/main.rs parses args via hand-rolled `args.iter().any(|a| a == \"--flag\")` scanning. print_help() lists all flags. Dispatch order: -h → -c → -r → -l → --list-devices → --show-window-info → runner. parse_value_flag() handles `--flag value` and `--flag=value`.\n2. INPUT: perform_handshake from P4.M2.T1.S1, parse_rules and get_rules_paths from P3.M1.T1.S2.\n3. LOGIC: Add three new flag checks to run() in src/main.rs BEFORE the runner dispatch: (1) `--list-callbacks`: call perform_handshake(true), then print the CALLBACK_NAMES map as a table (name→id) or 'Legacy firmware (no callback support)' if HOST_CAPABLE is false. (2) `--validate-rules`: resolve rules path (--rules-path or get_rules_paths() first existing), call parse_rules(), report success or schema/callback-name errors, exit non-zero on error. Validate callback names against CALLBACK_NAMES if a device is connected and capable. (3) `--rules-path <path>`: use parse_value_flag to extract the path, pass to --validate-rules. Update print_help() with the new flags. Also extend -c/--config to seed a commented rules.toml template alongside config.toml.\n4. OUTPUT: Three new CLI flags functional for user diagnostics.\n5. DOCS: [Mode A] Update print_help() text in main.rs to document the new flags."
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "Milestone",
+          "id": "P5.M2",
+          "title": "Tray 'Reload rules' Menu Item (all platforms)",
+          "status": "Planned",
+          "description": "Add a 'Reload rules' menu item to the macOS/Windows tray (src/tray.rs) and the Linux SNI tray (src/linux_tray.rs).",
+          "tasks": [
+            {
+              "type": "Task",
+              "id": "P5.M2.T1",
+              "title": "Add 'Reload rules' to macOS/Windows tray and Linux SNI tray",
+              "status": "Planned",
+              "description": "Add the reload menu item to both tray implementations with appropriate event handling.",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P5.M2.T1.S1",
+                  "title": "Add 'Reload rules' MenuItem to src/tray.rs (macOS/Windows)",
+                  "status": "Planned",
+                  "story_points": 1,
+                  "dependencies": ["P4.M2.T1.S2", "P3.M1.T1.S2"],
+                  "prd_selectors": ["h2.40", "h3.54", "h2.86"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: src/tray.rs builds the menu via `menu_items: Vec<&dyn tray_icon::menu::IsMenuItem>` (around line 100-130 of tray.rs). Items are created with MenuItem::new(label, enabled, None). The event loop handles clicks via event.id matching item.id() inside the UserEvent::MenuEvent arm. MenuItem is !Send — must be mutated only on the event-loop thread.\n2. INPUT: parse_rules from P3.M1.T1.S2, perform_handshake from P4.M2.T1.S1.\n3. LOGIC: In setup_tray(), create `let reload_rules_i = MenuItem::new(\"Reload rules\", true, None);`. Push into menu_items after settings_i and before the separator. In the event loop's UserEvent::MenuEvent arm, add a match case for `reload_rules_i.id()`: re-read rules.toml via parse_rules (log success/error), if HOST_CAPABLE and device present, re-run perform_handshake to refresh CALLBACK_NAMES. Consider a UserEvent variant for async reload status feedback.\n4. OUTPUT: 'Reload rules' menu item on macOS/Windows.\n5. DOCS: none — UI addition."
+                },
+                {
+                  "type": "Subtask",
+                  "id": "P5.M2.T1.S2",
+                  "title": "Add 'Reload rules' to src/linux_tray.rs (Linux SNI)",
+                  "status": "Planned",
+                  "story_points": 1,
+                  "dependencies": ["P4.M2.T1.S2", "P3.M1.T1.S2"],
+                  "prd_selectors": ["h3.55", "h2.53", "h2.86"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: src/linux_tray.rs builds the menu via QmkTray::menu() which returns Vec<MenuItem<QmkTray>>. Items are StandardItem with activate closures. The menu is rebuilt on every handle.update() call. ksni runs on its own D-Bus thread.\n2. INPUT: parse_rules from P3.M1.T1.S2, perform_handshake from P4.M2.T1.S1.\n3. LOGIC: In QmkTray::menu(), add after the Settings item: a Separator + StandardItem with label 'Reload rules' and an activate closure that calls parse_rules (re-read rules.toml), logs success/error via eprintln!, and if device connected calls perform_handshake. The closure runs on ksni's handler thread (safe for parse_rules which is std; perform_handshake may need care if it accesses the device).\n4. OUTPUT: 'Reload rules' menu item on Linux SNI.\n5. DOCS: none — UI addition."
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "Phase",
+      "id": "P6",
+      "title": "Documentation Sync",
+      "status": "Planned",
+      "description": "Update all changeset-level documentation to reflect the host-side window rules feature. Per SOW §5 Mode B, this final task covers cross-cutting docs (README, configuration, qmk-integration, examples, troubleshooting) that span the whole changeset. Per-feature docs that ride with the implementing subtask are already handled via Mode A in their respective context_scope.",
+      "milestones": [
+        {
+          "type": "Milestone",
+          "id": "P6.M1",
+          "title": "Sync changeset-level documentation",
+          "status": "Planned",
+          "description": "Update the cross-cutting documentation files to surface the host-side rules feature, the new CLI flags, the rules.toml format, and the migration path from DEFINE_*.",
+          "tasks": [
+            {
+              "type": "Task",
+              "id": "P6.M1.T1",
+              "title": "Sync changeset-level documentation",
+              "status": "Planned",
+              "description": "Update README.md, docs/configuration.md, docs/qmk-integration.md, docs/examples.md, docs/troubleshooting.md, and docs/llms_full.txt to document the host-side rules feature.",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P6.M1.T1.S1",
+                  "title": "Update docs/configuration.md with rules.toml schema and CLI flags",
+                  "status": "Planned",
+                  "story_points": 1,
+                  "dependencies": ["P5.M1.T1.S1", "P3.M1.T1.S1", "P3.M1.T2.S1"],
+                  "prd_selectors": ["h2.87", "h2.59", "h2.86"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: docs/configuration.md (10.8 KB) is the user-facing config contract. It currently documents the config.toml schema, config paths per OS, and the CLI reference. The rules.toml schema from HOST_RULES.md §9 and the new CLI flags from §4 need to be added.\n2. INPUT: rules.toml schema from P3.M1.T1.S1, CLI flags from P5.M1.T1.S1.\n3. LOGIC: Add a new section to docs/configuration.md documenting: (1) rules.toml file location (same dir as config.toml), (2) the full schema reference ([host] defaults, [[layer_rules]], [[callback_rules]]), (3) the disable_firmware_config stack/replace semantics, (4) the new CLI flags (--list-callbacks, --validate-rules, --rules-path), (5) the -c flag now also seeding rules.toml. Include the complete annotated example from HOST_RULES.md §9.\n4. OUTPUT: Updated docs/configuration.md.\n5. DOCS: This IS the documentation subtask."
+                },
+                {
+                  "type": "Subtask",
+                  "id": "P6.M1.T1.S2",
+                  "title": "Update docs/qmk-integration.md with host-rules migration guide",
+                  "status": "Planned",
+                  "story_points": 1,
+                  "dependencies": ["P5.M1.T1.S1", "P3.M1.T1.S1"],
+                  "prd_selectors": ["h2.88", "h2.86", "h2.71"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: docs/qmk-integration.md (6.6 KB) documents firmware integration (DEFINE_SERIAL_COMMANDS, DEFINE_SERIAL_LAYERS, WT()). The migration section from HOST_RULES.md §10 needs to be added.\n2. INPUT: rules.toml schema from P3.M1.T1.S1, HOST_RULES.md §10 migration steps.\n3. LOGIC: Add a new section documenting: (1) The three-repo architecture (crate + firmware + app), (2) DEFINE_HOST_CALLBACKS for exposing callbacks by name (one-time firmware change), (3) Migration from DEFINE_SERIAL_LAYERS/COMMANDS to rules.toml (incremental, optional), (4) The stack vs replace model, (5) Reference to docs/configuration.md for the rules.toml schema.\n4. OUTPUT: Updated docs/qmk-integration.md.\n5. DOCS: This IS the documentation subtask."
+                },
+                {
+                  "type": "Subtask",
+                  "id": "P6.M1.T1.S3",
+                  "title": "Update docs/examples.md and docs/troubleshooting.md with host-rules content",
+                  "status": "Planned",
+                  "story_points": 1,
+                  "dependencies": ["P5.M1.T1.S1", "P3.M1.T1.S1"],
+                  "prd_selectors": ["h2.87", "h2.86", "h2.88"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: docs/examples.md (8.0 KB) has config and keymap examples. docs/troubleshooting.md (17.3 KB) has a FAQ and common issues. Both need host-rules content.\n2. INPUT: rules.toml examples from HOST_RULES.md §9, CLI flags from P5.M1.T1.S1.\n3. LOGIC: In examples.md: add a complete rules.toml example showing layer rules, callback rules, disable_firmware_config, and the stack/replace model. Show the before/after migration from DEFINE_* to rules.toml. In troubleshooting.md: add entries for 'Legacy firmware (proto_ver != 2) — host rules disabled', 'Callback name not found in registry', 'rules.toml parse error', and 'Device shows connected but rules not applying'.\n4. OUTPUT: Updated docs/examples.md and docs/troubleshooting.md.\n5. DOCS: This IS the documentation subtask."
+                },
+                {
+                  "type": "Subtask",
+                  "id": "P6.M1.T1.S4",
+                  "title": "Update README.md and regenerate docs/llms_full.txt",
+                  "status": "Planned",
+                  "story_points": 1,
+                  "dependencies": ["P6.M1.T1.S1", "P6.M1.T1.S2", "P6.M1.T1.S3", "P5.M2.T1.S1", "P5.M2.T1.S2"],
+                  "prd_selectors": ["h2.3", "h2.11", "h2.86"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: README.md (project root) is the top-level project overview. docs/llms_full.txt (73.6 KB) is a concatenated LLM reference of all docs. Both need to surface the host-rules feature.\n2. INPUT: All doc updates from P6.M1.T1.S1-S3, feature completion from P5.M2.\n3. LOGIC: In README.md: add a feature blurb for host-side window rules (F11/F12), mention rules.toml, link to docs/configuration.md. Update the feature list to include 'Host-side window rules (no reflash)'. In docs/llms_full.txt: regenerate the concatenation to include the updated docs/configuration.md, qmk-integration.md, examples.md, and troubleshooting.md sections.\n4. OUTPUT: Updated README.md and docs/llms_full.txt.\n5. DOCS: This IS the documentation subtask."
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
