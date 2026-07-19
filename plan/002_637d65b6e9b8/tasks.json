@@ -294,14 +294,14 @@
               "type": "Task",
               "id": "P2.M1.T1",
               "title": "Escape Processing & Pattern Parsing",
-              "status": "Planned",
+              "status": "Researching",
               "description": "Port process_escapes() (escape sequences, dot, + quantifier placeholder bytes) and parse_pattern() (anchor detection, core extraction, even-backslash-count rule).",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P2.M1.T1.S1",
                   "title": "Port process_escapes() to Rust — escape/class/quantifier byte transform",
-                  "status": "Researching",
+                  "status": "Complete",
                   "story_points": 2,
                   "dependencies": [],
                   "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: The firmware process_escapes() (pattern_match.c:15-75) transforms a pattern string into processed bytes: \\x01-\\x04 = escaped literals ^$*\\, \\x05-\\x0A = classes \\d\\D\\w\\W\\s\\S, \\x0B-\\x0C = assertions \\b\\B, \\x0D = dot, \\x0E = + quantifier marker, 0x2A = glob * (wildcard). Literal . and + (when not after a consumable element) are emitted as ordinary ASCII 0x2E/0x2B. The `last_consumable` flag tracks whether the previous element consumed a char (determines whether + is quantifier or literal). See architecture/external_deps.md §3 for the full byte contract.\n2. INPUT: None (greenfield module).\n3. LOGIC: Create src/core/pattern.rs. Implement `fn process_escapes(pattern: &str) -> Vec<u8>` that mirrors the C function exactly. Track `last_consumable: bool`. For each byte: if backslash + next char, emit the appropriate placeholder byte. If bare *, emit 0x2A and set last_consumable=false. If bare + after consumable, emit 0x0E and set last_consumable=false; if + after non-consumable, emit literal 0x2B. If bare ., emit 0x0D. Otherwise emit the byte literally. Register the module in src/core/mod.rs with `pub mod pattern;`.\n4. OUTPUT: process_escapes() function for consumption by P2.M1.T1.S2 (parse_pattern).\n5. DOCS: [Mode A] Add rustdoc on process_escapes explaining the placeholder byte contract. No external docs changed yet.",
@@ -314,7 +314,7 @@
                   "type": "Subtask",
                   "id": "P2.M1.T1.S2",
                   "title": "Port parse_pattern() — anchor detection and core extraction",
-                  "status": "Planned",
+                  "status": "Researching",
                   "story_points": 1,
                   "dependencies": [
                     "P2.M1.T1.S1"

@@ -1,4 +1,5 @@
 pub mod notifier;
+pub mod pattern;
 pub mod types;
 
 use std::error::Error;
