@@ -8,8 +8,8 @@ Version: 0.2.4 · Status: Beta · Owner: Mulletware · License: MIT
 > companion `HOST_RULES.md`; the **typed-command wire contract is owned by the
 > firmware spec** ([`dabstractor/qmk-notifier` `PRD.md`
 > §4.6](https://github.com/dabstractor/qmk-notifier/blob/main/PRD.md)), transported
-> by the `qmk_notifier` crate ([`SPEC.md`
-> §10](https://github.com/dabstractor/qmk_notifier/blob/main/SPEC.md)). See F11/F12
+> by the `qmk_notifier` crate ([`PRD.md`
+> §10](https://github.com/dabstractor/qmk_notifier/blob/main/PRD.md)). See F11/F12
 > below and the Document Map.
 
 > This is the **master** document for the QMKonnect desktop application. It

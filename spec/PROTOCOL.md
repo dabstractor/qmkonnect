@@ -284,7 +284,7 @@ changes or a write fails (stale handle after replug).
 > §4.6). This section mirrors the transport-relevant summary for desktop work; if
 > the two disagree, **the firmware PRD §4.6 wins**. The desktop orchestration
 > (handshake, per-window send logic, `rules.toml`) is in `HOST_RULES.md`; the
-> transport API is in the `qmk_notifier` crate `SPEC.md` §10.
+> transport API is in the `qmk_notifier` crate `PRD.md` §10.
 
 **Discriminator:** `data[2] == 0xF0` ⇒ typed command; anything else ⇒ legacy
 string (unchanged). `0xF0` can never begin a real matched string (sanitizer
@@ -331,7 +331,7 @@ first `QUERY_INFO` to keep a mid-session reconnect from clearing an active board
 layer against legacy firmware.
 
 The `qmk_notifier` crate (v0.3.0) frames these and returns a parsed
-`CommandResponse`; see the crate `SPEC.md` §10.
+`CommandResponse`; see the crate `PRD.md` §10.
 
 ---
 

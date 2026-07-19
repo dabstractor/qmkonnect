@@ -83,7 +83,7 @@ Because the wire protocol is shared, this feature touches **all three repos**:
 > **Round-B revision (authoritative).** This section supersedes the earlier
 > stack-only design. The wire contract is owned by the firmware spec
 > (`dabstractor/qmk-notifier`, `PRD.md` §4.6 — **canonical**); the transport by
-> the `qmk_notifier` crate (`SPEC.md` §10); the host-side orchestration by this
+> the `qmk_notifier` crate (`PRD.md` §10); the host-side orchestration by this
 > document. Implementation-detail sections §6–§8 and §10–§14 below reflect the
 > pre-revision draft and are reconciled against §3–§5 + §9 where they conflict.
 
@@ -180,7 +180,7 @@ update host state for next diff/logging
 > **Canonical: firmware `PRD.md` §4.6.** This section summarizes the
 > transport-relevant detail; the firmware owns the byte layout and this document
 > defers to it on disagreement. See `PROTOCOL.md` §8 for the desktop mirror and
-> the `qmk_notifier` crate `SPEC.md` §10 for the transport API.
+> the `qmk_notifier` crate `PRD.md` §10 for the transport API.
 
 - **Discriminator:** `data[2] == 0xF0` ⇒ typed command; else legacy string
   (unchanged). `0xF0` can never begin a real matched string (sanitizer allows
@@ -263,7 +263,7 @@ Round-B firmware additions (specified, not yet implemented):
 
 ## 7. Crate Spec (`qmk_notifier`, Rust)
 
-> **Canonical: the crate `SPEC.md` §10.** This section is a summary. The crate is
+> **Canonical: the crate `PRD.md` §10.** This section is a summary. The crate is
 > **transport-only** — it does no matching (the matcher lives in `qmkonnect`, §8).
 
 v0.3.0 API additions (specified; breaking vs v0.2.x's `run() -> Result<(), _>`):
@@ -578,4 +578,4 @@ quantifier; classes `\d \D \w \W \s \S \b \B`; `.`; escapes. All linear-time
 
 *Round B (targets v0.3.0); specified but not yet implemented. The wire contract is
 canonical in the firmware `PRD.md` §4.6; transport in the `qmk_notifier` crate
-`SPEC.md` §10. Return to `PRD.md` for the product-level overview and the Document Map.*
+`PRD.md` §10. Return to `PRD.md` for the product-level overview and the Document Map.*
