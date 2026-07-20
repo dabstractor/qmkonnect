@@ -187,6 +187,19 @@ impl ksni::Tray for QmkTray {
             }),
             ..Default::default()
         }));
+        // "Reload rules" — re-read rules.toml + refresh the firmware callback
+        // table (host-rules feature). Sits in the prefs group with Settings
+        // (parity with the macOS/Windows tray). ksni runs `activate` on its
+        // D-Bus thread and forbids blocking (the menu would freeze), so the
+        // 1-5 s handshake runs on a spawned thread (G2 — same invariant the poll
+        // thread in spawn() already follows: "HID I/O there would wedge the tray icon").
+        items.push(MenuItem::Standard(StandardItem {
+            label: "Reload rules".to_string(),
+            activate: Box::new(|_| {
+                std::thread::spawn(do_reload_rules);
+            }),
+            ..Default::default()
+        }));
         items.push(MenuItem::Separator);
         // §7 opt 2: surface the active window's class/title via a desktop
         // notification (`notify-send`). Shells out instead of using the
@@ -437,6 +450,88 @@ fn show_window_info_linux_zenity(rows: &[(String, String)]) {
 /// still reads naturally.
 fn sanitize_list_value(s: &str) -> String {
     s.replace('|', "\u{00A6}")
+}
+
+/// Re-read `rules.toml` and, if a device is connected, force a fresh capability
+/// handshake. Runs on a **detached background thread** spawned from the "Reload
+/// rules" menu item's `activate` closure — ksni runs `activate` on its D-Bus
+/// thread and forbids blocking there (the menu would freeze and the poll
+/// thread's `handle.update()` would stall for the whole 1-5 s HID sweep). This
+/// mirrors the invariant the poll thread in [`spawn`] already follows
+/// ("HID I/O there would wedge the tray icon").
+///
+/// There is no `RuleSet` cache to update: the debounce worker re-reads
+/// `rules.toml` live on every window change (P4.M3). This function's value is
+/// (a) immediate validation feedback and (b) a forced refresh of the firmware
+/// callback table (`reset_handshake_state` defeats the once-per-boot guard so
+/// `perform_handshake` actually re-sweeps `QueryCallback`).
+fn do_reload_rules() {
+    // 1. Re-read + validate rules.toml (the strict parse IS the schema check).
+    let (rules_ok, rules_detail) =
+        match crate::core::rules::get_rules_paths()
+            .into_iter()
+            .find(|p| p.exists())
+        {
+            None => (true, "No rules.toml (host rules disabled)".to_string()),
+            Some(p) => match crate::core::rules::parse_rules(&p) {
+                Ok(rs) => (
+                    true,
+                    format!(
+                        "rules.toml valid: {} layer rule(s), {} callback rule(s)",
+                        rs.layer_rules.len(),
+                        rs.callback_rules.len()
+                    ),
+                ),
+                Err(e) => (false, format!("rules.toml invalid: {e}")),
+            },
+        };
+
+    // 2. If a device is present, force-refresh the firmware callback table.
+    //    reset_handshake_state() clears the once-per-boot guard so perform_handshake
+    //    actually re-sweeps (otherwise it short-circuits and CALLBACK_NAMES is stale).
+    let (capable, callback_count) = if crate::core::notifier::is_device_connected() {
+        crate::core::notifier::reset_handshake_state();
+        crate::core::notifier::perform_handshake(false); // quiet; we log our own summary
+        (
+            Some(crate::core::notifier::host_capable()),
+            crate::core::notifier::callback_names().len(),
+        )
+    } else {
+        (None, 0)
+    };
+
+    // 3. Log the two-line summary (stdout for success, stderr for a parse error —
+    //    matches --validate-rules). Mirrors the macOS/Windows tray wording (S1)
+    //    so feedback is identical across platforms.
+    let summary = format_reload_result(rules_ok, &rules_detail, capable, callback_count);
+    // Prefix every line with "Reload rules: " for grep-able log output.
+    let prefixed = summary.replace('\n', "\nReload rules: ");
+    if rules_ok {
+        println!("Reload rules: {prefixed}");
+    } else {
+        eprintln!("Reload rules: {prefixed}");
+    }
+}
+
+/// Render the two-line "Reload rules" summary (pure — unit-tested). Line 1 is the
+/// rules detail (valid + counts / parse error / no-rules); line 2 is the handshake
+/// outcome (no device / legacy-timeout / OK + callback count). Mirrors the
+/// macOS/Windows tray's `format_reload_result` wording for cross-platform parity.
+fn format_reload_result(
+    rules_ok: bool,
+    rules_detail: &str,
+    capable: Option<bool>,
+    callback_count: usize,
+) -> String {
+    let _ = rules_ok; // rules_ok steers stdout/stderr at the call site, not the text.
+    let handshake = match capable {
+        None => "no device connected — handshake skipped.".to_string(),
+        Some(false) => "handshake ran — legacy/timeout (string-only mode).".to_string(),
+        Some(true) => {
+            format!("handshake OK — {callback_count} callback(s) discovered.")
+        }
+    };
+    format!("{rules_detail}\n{handshake}")
 }
 
 /// Copy `text` to the Wayland/X11 clipboard, preferring `wl-copy`
@@ -964,5 +1059,36 @@ mod tests {
                 (icon.width as usize) * (icon.height as usize) * 4
             );
         }
+    }
+
+    #[test]
+    fn format_reload_parse_error() {
+        let s = format_reload_result(false, "rules.toml invalid: bad toml", None, 0);
+        assert!(s.contains("rules.toml invalid: bad toml"));
+        assert!(s.contains("no device connected — handshake skipped."));
+    }
+
+    #[test]
+    fn format_reload_valid_capable() {
+        let s = format_reload_result(
+            true,
+            "rules.toml valid: 2 layer rule(s), 3 callback rule(s)",
+            Some(true),
+            5,
+        );
+        assert!(s.contains("valid: 2 layer"));
+        assert!(s.contains("handshake OK"));
+        assert!(s.contains("5 callback(s) discovered."));
+    }
+
+    #[test]
+    fn format_reload_legacy() {
+        let s = format_reload_result(
+            true,
+            "rules.toml valid: 1 layer rule(s), 0 callback rule(s)",
+            Some(false),
+            0,
+        );
+        assert!(s.contains("legacy/timeout (string-only mode)."));
     }
 }
