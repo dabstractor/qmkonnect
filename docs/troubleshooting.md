@@ -453,6 +453,107 @@ system_profiler SPUSBDataType | grep -A 10 -B 10 -i keyboard
 Get-WmiObject -Class Win32_USBHub | Where-Object {$_.Name -like "*keyboard*"}
 ```
 
+## Host Rules Issues
+
+Host-side rules (`rules.toml`) have a few distinct failure modes. If your board's
+firmware rules work but host rules don't, check these first. See the
+[Configuration Guide]({{ site.baseurl }}/configuration) for the schema and CLI flags.
+
+### Legacy firmware (`proto_ver != 2`) — host rules disabled
+
+**Symptoms**: `rules.toml` is present and valid, but host rules have no effect;
+the keyboard still switches layers via its firmware rules.
+
+**Cause**: host rules require firmware that advertises the typed-command
+capability (`proto_ver == 2`). With legacy firmware (or while the keyboard is
+disconnected) QMKonnect silently falls back to string-only mode and never sends
+host commands — your board's `DEFINE_*` rules keep working unchanged.
+
+**Diagnose**:
+```bash
+qmkonnect --list-callbacks
+# Legacy firmware prints exactly:
+#   Legacy firmware (no callback support) — host rules will run in string-only mode.
+# (exit 0 — this is expected, not an error)
+```
+
+**Fix**: flash firmware that defines `DEFINE_HOST_CALLBACKS` (which advertises
+`proto_ver == 2`). See the [QMK Integration Guide]({{ site.baseurl }}/qmk-integration).
+Until then, nothing is broken — your firmware rules work as before.
+
+### Callback name not found in registry
+
+**Symptoms**: a host callback doesn't fire, or `--validate-rules` warns about an
+unknown callback name.
+
+**Cause**: `rules.toml` references a callback **name** that isn't in your
+`DEFINE_HOST_CALLBACKS` registry — a typo, a name you haven't registered yet, or
+firmware that hasn't been reflashed with the new registry.
+
+**Diagnose**:
+```bash
+qmkonnect --validate-rules        # unknown names print:  ⚠  unknown callback: {name}
+                                  # (a WARNING — exit 0, NOT fatal)
+qmkonnect --list-callbacks        # prints the keyboard's real callback name -> id table
+```
+
+**Fix**: correct the name in `rules.toml` to match a name printed by
+`--list-callbacks`, **or** add it to `DEFINE_HOST_CALLBACKS` and reflash. Names
+are case-sensitive strings. See the
+[Configuration Guide]({{ site.baseurl }}/configuration) (`--validate-rules` /
+`--list-callbacks`) and the
+[QMK Integration Guide]({{ site.baseurl }}/qmk-integration) (`DEFINE_HOST_CALLBACKS`).
+
+### `rules.toml` parse error
+
+**Symptoms**: `--validate-rules` exits **non-zero** and prints `rules.toml
+invalid: …`; host rules are disabled (string-only fallback) until the file parses.
+
+**Cause**: malformed TOML, a missing required key, or a bad `match` form.
+
+**Diagnose**:
+```bash
+qmkonnect --validate-rules                  # prints:  rules.toml invalid: {error}  (exit non-zero)
+qmkonnect --validate-rules --rules-path ~/rules.draft.toml   # validate a draft elsewhere
+```
+
+**Fix**: every `[[layer_rules]]` entry **requires** `match` and `layer` (an entry
+missing either is an error); `match` is either a bare string (`"steam_app*"`,
+class-only) or a **2-element** array (`["*chrome*", "*youtube*"]` — class and
+title; 1- or 3-element arrays are errors); `layer` must be **≥ 224**. See the
+[Configuration Guide]({{ site.baseurl }}/configuration) for the full field table.
+
+### Device shows connected but rules not applying
+
+**Symptoms**: the keyboard is connected and firmware rules work, but your
+`rules.toml` rules have no effect.
+
+**Checklist**:
+1. **`rules.toml` present and valid?** `qmkonnect --validate-rules` (a missing
+   file prints `No rules.toml found (host rules disabled). Nothing to validate.`
+   and exits 0 — host rules are simply off; create it with `qmkonnect -c` or
+   hand-write it next to `config.toml`).
+2. **Firmware capable?** `qmkonnect --list-callbacks` — the "Legacy firmware …"
+   line means host rules are off (see *Legacy firmware* above).
+3. **Pattern matches the real window class?** The matcher is class-only for a
+   bare `match` string. Check what QMKonnect actually sees:
+   ```bash
+   qmkonnect -v | grep -i "window\|sending"     # the class\x1Dtitle string sent
+   ```
+   (or use the tray's "Show Window Information"). A `*chrome*` rule won't match a
+   class reported as `Google Chrome` — adjust the pattern or use a `[class, title]`
+   array.
+4. **Reloaded after editing?** Click the tray's **Reload rules** item (macOS,
+   Windows, and Linux all have it) or restart QMKonnect — `rules.toml` is not
+   re-read on every focus change.
+5. **Callback name correct?** `qmkonnect --list-callbacks` (see *Callback name
+   not found* above).
+6. **Layer ≥ 224?** Host layers must be ≥ 224 (`255` clears); a low number won't
+   resolve above your board layers.
+
+See the [Configuration Guide]({{ site.baseurl }}/configuration) for the schema and
+CLI flags, and the [Examples]({{ site.baseurl }}/examples) for a complete recipe.
+
 ## Performance Issues
 
 ### High CPU Usage
