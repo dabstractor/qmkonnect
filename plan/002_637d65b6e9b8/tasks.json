@@ -810,7 +810,7 @@
                   "type": "Subtask",
                   "id": "P6.M1.T1.S1",
                   "title": "Update docs/configuration.md with rules.toml schema and CLI flags",
-                  "status": "Ready",
+                  "status": "Complete",
                   "story_points": 1,
                   "dependencies": [
                     "P5.M1.T1.S1",
@@ -828,7 +828,7 @@
                   "type": "Subtask",
                   "id": "P6.M1.T1.S2",
                   "title": "Update docs/qmk-integration.md with host-rules migration guide",
-                  "status": "Planned",
+                  "status": "Researching",
                   "story_points": 1,
                   "dependencies": [
                     "P5.M1.T1.S1",

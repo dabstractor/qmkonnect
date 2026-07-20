@@ -215,12 +215,155 @@ All keys are optional. With your firmware already running qmk-notifier, QMKonnec
 
 | Flag | Description |
 | --- | --- |
-| `-c`, `--config` | Create a default (commented-out) configuration file. |
+| `-c`, `--config` | Create a default (commented-out) `config.toml` **and** a commented `rules.toml` template (no-op if either exists). |
 | `-r`, `--reload` | Re-read the config and write the matching udev rule (Linux; requires root). |
 | `-l`, `--list` | List the platforms supported by this build. |
 | `--list-devices` | List connected HID devices (VID/PID discovery). |
+| `--list-callbacks` | Handshake the connected keyboard and print its callback name→id table (sorted by id). With legacy firmware prints a string-only-mode notice; with no board prints a no-device notice (always exits 0). |
+| `--validate-rules` [`--rules-path <path>`] | Parse `rules.toml` and report schema/callback-name errors. A parse/schema error (or a `--rules-path` that doesn't exist) exits non-zero; unknown callback names are warnings (exit 0); a missing `rules.toml` is informational (exit 0). Use `--rules-path` to validate a file outside the default location. |
+| `--rules-path <path>` | Override the `rules.toml` location (used with `--validate-rules`). |
 | `-v`, `--verbose` | Enable verbose logging. |
 | `-h`, `--help` | Show help. |
+
+## Host Window Rules (`rules.toml`)
+
+Host rules let your keyboard switch layers and run callbacks based on the active
+window — **without reflashing**. They live in an editable `rules.toml` file on
+your computer and are matched by QMKonnect on the host. Host rules **stack on
+top of** your board's existing `DEFINE_SERIAL_LAYERS` / `DEFINE_SERIAL_COMMANDS`
+rules (the board's rules always run first, then host rules apply on top), unless
+a rule opts into "replace" mode (see
+[Stack vs. replace](#stack-vs-replace-disable_firmware_config) below).
+
+> **Firmware prerequisite.** Host rules require firmware that advertises the
+typed-command capability (`proto_ver == 2` + the `APPLY_HOST_CONTEXT` feature
+flag). With legacy firmware (or while the keyboard is disconnected) QMKonnect
+silently falls back to today's string-only behavior — your board's existing
+rules keep working unchanged. See the
+[QMK Integration Guide]({{ site.baseurl }}/qmk-integration) for the firmware
+side (including the `DEFINE_HOST_CALLBACKS` callback registry and migrating
+`DEFINE_*` rules to the host).
+
+### File location
+
+`rules.toml` lives **in the same directory as `config.toml`**, with the filename
+swapped from `config.toml` to `rules.toml`:
+
+| OS | `rules.toml` path |
+| --- | --- |
+| Linux | `~/.config/qmk-notifier/rules.toml` (also honors `$XDG_CONFIG_HOME` and `/etc/qmk-notifier/`) |
+| Windows | `%APPDATA%\QMKonnect\rules.toml` |
+| macOS | `~/Library/Application Support/QMKonnect/rules.toml` |
+
+The file is **optional**. If it is absent, host rules are disabled and QMKonnect
+behaves exactly as it does today (string-only). An empty or all-default
+`rules.toml` is also a no-op — host rules only activate when a rule matches the
+active window.
+
+### Schema reference
+
+`rules.toml` has one optional table and two table-arrays:
+
+| Section / Key | Required | Default | Description |
+| --- | :---: | --- | --- |
+| `[host]` table | no | — | Global host defaults. |
+| `[host] disable_firmware_config` | no | `false` | Global stack/replace default. `false` = the board runs its own rules too (**stack**); `true` = the host takes over (**replace**). Per-rule `disable_firmware_config` overrides this. See [Stack vs. replace](#stack-vs-replace-disable_firmware_config). |
+| `[[layer_rules]]` table-array | no | `[]` | Layer rules. **First match wins**; one host layer is active at a time. |
+| `[[layer_rules]] match` | **yes** | — | Window pattern. A bare string (`"alacritty"`) matches the **window class only**; a two-element array (`["*chrome*", "*youtube*"]`) matches **class and title** (equivalent to the firmware `WT(class, title)`). Supports `*`, `^`, `$`, `+`, character classes (`\d \w \s …`), and `.` — full parity with the firmware matcher. |
+| `[[layer_rules]] layer` | **yes** | — | The host layer number to activate. Must be **≥ 224** (the host layer range; `255` clears the layer). |
+| `[[layer_rules]] case_sensitive` | no | `false` | Whether `match` is case-sensitive. |
+| `[[layer_rules]] disable_firmware_config` | no | inherits `[host]` | Per-rule stack/replace override. Absent ⇒ uses the `[host]` default. |
+| `[[callback_rules]]` table-array | no | `[]` | Callback rules. **All matches fire.** Names come from your keyboard's callback registry (run `qmkonnect --list-callbacks` to see them). |
+| `[[callback_rules]] match` | **yes** | — | Window pattern (same form as `[[layer_rules]] match`). |
+| `[[callback_rules]] enable` | no | `[]` | Callback names to enable on focus-in. |
+| `[[callback_rules]] disable` | no | `[]` | Callback names to force off (explicit exclusion). Focus-out `on_disable` also fires automatically when a callback leaves the active set. |
+| `[[callback_rules]] case_sensitive` | no | `false` | Whether `match` is case-sensitive. |
+| `[[callback_rules]] disable_firmware_config` | no | inherits `[host]` | Per-rule stack/replace override. |
+
+**Creating the file.** Run `qmkonnect -c` to seed a fully-commented `rules.toml`
+template alongside your `config.toml` (it is a no-op if `rules.toml` already
+exists). The seeded template is the schema below with every active line commented
+out (`#`), so it parses to an all-default ruleset — host rules stay disabled until
+you uncomment and edit the lines. You can also hand-write the file. After editing,
+validate it with `qmkonnect --validate-rules` (see [CLI flags](#cli-flags)).
+
+Here is the complete annotated example (from `spec/HOST_RULES.md` §9) — what an
+**active** `rules.toml` looks like once you uncomment and edit it:
+
+```toml
+# rules.toml — host-side window rules.
+# disable_firmware_config chooses, per window, whether the board runs its own
+# rules (stack) or is cleared and driven solely by the host (replace). Global
+# default under [host]; per-rule override below. Host layers are >= 224.
+# Run `qmkonnect --validate-rules` after editing.
+
+[host]
+disable_firmware_config = false   # global default: false = stack (board runs), true = replace
+# On no match the host layer is always cleared and all host callbacks disabled.
+
+# Layer rules: FIRST match wins. One host layer active at a time (>= 224).
+[[layer_rules]]
+match = "alacritty"                       # class-only pattern
+layer = 224
+disable_firmware_config = true           # optional override (default inherits [host])
+
+[[layer_rules]]
+match = ["*chrome*", "*youtube*"]         # [class_pattern, title_pattern] (== WT())
+layer = 225
+case_sensitive = false                    # optional, default false
+
+# Callback rules: ALL matches fire. Names come from the keyboard's registry
+# (run `qmkonnect --list-callbacks` to see them). The disable list is an
+# explicit-exclusion override; focus-out on_disable fires automatically via the
+# desired-set diff.
+[[callback_rules]]
+match = "neovide"
+enable = ["vim_lazy", "disable_vim"]      # run on focus-in
+disable = ["vim_lazy"]                    # optional: force-off override
+
+[[callback_rules]]
+match = ["*chrome*", "*claude*"]
+enable = ["vim_lazy", "disable_vim"]
+disable_firmware_config = true           # for this window, skip the string -> board can't match
+```
+
+For ready-made `rules.toml` recipes, see the
+[Examples]({{ site.baseurl }}/examples).
+
+### Stack vs. replace (`disable_firmware_config`)
+
+`disable_firmware_config` decides, **per window**, whether your board runs its
+own rules:
+
+- **Stack** (`false`, the default): the board runs its own `DEFINE_*` rules.
+  QMKonnect sends the window string first (the board matches it and runs its
+  layer/command rules), then applies the host layer **on top** and syncs the host
+  callbacks. Board layer first → host layer on top; board callbacks first → host
+  callbacks after.
+- **Replace** (`true`): the host takes over for this window. QMKonnect sends
+  **no** string (so the board can't match), and the firmware clears its own board
+  layer/command before applying only the host layer + host callbacks.
+
+The value is resolved per rule:
+
+- The **global default** is `[host] disable_firmware_config` (default `false`).
+- Each `[[layer_rules]]` / `[[callback_rules]]` may set an optional
+  `disable_firmware_config` to override it. **Absent ⇒ inherits the `[host]`
+  default.**
+- A rule's **effective** flag is its override if set, else the `[host]` default.
+
+The per-window decision is an **AND** over all rules that matched that window:
+
+- The window is **replace** iff **every** matched rule's effective flag is `true`
+  — *or* the board has no rules of its own.
+- If even **one** matched rule is non-disabling, the window is **stack**.
+- **No match:** the host layer is always cleared (`255`) and all host callbacks
+  are disabled. (There is no "keep" option.)
+
+**Rule of thumb:** set `disable_firmware_config = true` on a rule when you want
+the host to fully own that window (e.g. a browser site where the board's app
+rules would interfere); leave it `false` when you want the board's own rules to
+keep running underneath.
 
 ## Validation
 
