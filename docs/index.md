@@ -17,7 +17,7 @@ Cross-platform window activity notifier for QMK keyboards
 QMKonnect watches which window is active and tells your QMK keyboard about it. Your keyboard can then switch layers or run commands based on what app you're using.
 
 > **⚠️ Firmware setup required.** QMKonnect only *sends* window data — your
-> keyboard needs the companion [**qmk-notifier**](https://github.com/dabstractor/qmk-notifier)
+> keyboard needs the companion [**qmk_notifier**](https://github.com/dabstractor/qmk_notifier)
 > module built into its firmware to actually react. Without it, QMKonnect does
 > nothing useful. See the [QMK Integration Guide]({{ site.baseurl }}/qmk-integration).
 
@@ -48,7 +48,7 @@ Complete reference documentation available for automated tools at [llms_full.txt
 
 ## Quick Start
 
-1. **Set up your QMK firmware** with the qmk-notifier module — **required** ([QMK Integration]({{ site.baseurl }}/qmk-integration))
+1. **Set up your QMK firmware** with the qmk_notifier module — **required** ([QMK Integration]({{ site.baseurl }}/qmk-integration))
 2. **Download** the latest QMKonnect release for your platform
 3. **Install** using the provided installer or package
 4. **Run** it — a single standard keyboard needs no configuration
@@ -61,8 +61,8 @@ Complete reference documentation available for automated tools at [llms_full.txt
 
 QMKonnect works alongside other tools in the QMK notification ecosystem:
 
-- **[qmk-notifier](https://github.com/dabstractor/qmk-notifier)**: **Required** QMK firmware module that receives notifications, pattern-matches them, and switches layers / runs callbacks
-- **[qmk_notifier](https://github.com/dabstractor/qmk_notifier)**: Core library for Raw HID communication
+- **[qmk_notifier](https://github.com/dabstractor/qmk_notifier)**: **Required** QMK firmware module that receives notifications, pattern-matches them, and switches layers / runs callbacks
+- **[qmk-notifier](https://github.com/dabstractor/qmk-notifier)**: Core library for Raw HID communication
 - **QMKonnect**: This application for cross-platform window detection
 
 ---

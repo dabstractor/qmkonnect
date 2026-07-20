@@ -153,8 +153,8 @@ pre-built `owner → title` map from the CG window list, sorts alphabetically.
 
 ### 3.4 Config paths
 1. `~/Library/Application Support/QMKonnect/config.toml` (primary)
-2. `~/.config/qmk-notifier/config.toml` (XDG-style fallback)
-3. `/etc/qmk-notifier/config.toml` (system-wide last resort)
+2. `~/.config/qmkonnect/config.toml` (XDG-style fallback)
+3. `/etc/qmkonnect/config.toml` (system-wide last resort)
 
 `create_config_dir()` → `~/Library/Application Support/QMKonnect`.
 

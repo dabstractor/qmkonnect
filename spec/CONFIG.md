@@ -97,19 +97,19 @@ A value is **explicit** when `Some` (uncommented), **commented-out** when `None`
 
 | OS | Primary | Secondary | System-wide |
 |---|---|---|---|
-| **Linux** | `$XDG_CONFIG_HOME/qmk-notifier/config.toml` | `~/.config/qmk-notifier/config.toml` | `/etc/qmk-notifier/config.toml` |
+| **Linux** | `$XDG_CONFIG_HOME/qmkonnect/config.toml` | `~/.config/qmkonnect/config.toml` | `/etc/qmkonnect/config.toml` |
 | **Windows** | `%APPDATA%\QMKonnect\config.toml` | `%LOCALAPPDATA%\QMKonnect\config.toml` | (exe dir fallback) |
-| **macOS** | `~/Library/Application Support/QMKonnect/config.toml` | `~/.config/qmk-notifier/config.toml` (XDG) | `/etc/qmk-notifier/config.toml` |
+| **macOS** | `~/Library/Application Support/QMKonnect/config.toml` | `~/.config/qmkonnect/config.toml` (XDG) | `/etc/qmkonnect/config.toml` |
 
-> Linux preserves the historical `qmk-notifier/` dir name so existing installs
-> keep working. Windows/macOS use `QMKonnect/`. The macOS XDG + `/etc` fallbacks
-> exist so a config written on one platform can be found on another.
+> All platforms use `QMKonnect/` (Linux: lowercase `qmkonnect/` per XDG
+> convention). The macOS XDG + `/etc` fallbacks exist so a config written on
+> one platform can be found on another.
 
 `create_config_dir()` returns the primary dir (creating it). The Settings
 dialogs call it before writing, so the directory always exists.
 
 > **Host-side `rules.toml`:** lives in the **same
-directory** as `config.toml` (e.g. `~/.config/qmk-notifier/rules.toml`,
+directory** as `config.toml` (e.g. `~/.config/qmkonnect/rules.toml`,
 `%APPDATA%\QMKonnect\rules.toml`,
 `~/Library/Application Support/QMKonnect/rules.toml`). Absent ⇒ host rules
 disabled (string-only). Schema: `HOST_RULES.md` §9.

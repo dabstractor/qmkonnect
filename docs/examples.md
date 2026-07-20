@@ -10,7 +10,7 @@ Complete examples showing how to configure your **QMK firmware** for different u
 
 > **These are firmware examples, not desktop-app configuration.** They assume
 > you've already integrated the
-> [qmk-notifier](https://github.com/dabstractor/qmk-notifier) module into your
+> [qmk_notifier](https://github.com/dabstractor/qmk_notifier) module into your
 > firmware (see the [QMK Integration Guide]({{ site.baseurl }}/qmk-integration)).
 > QMKonnect only sends the active-window string; these `DEFINE_SERIAL_LAYERS` /
 > `DEFINE_SERIAL_COMMANDS` rules are what make your keyboard actually react.
@@ -25,7 +25,7 @@ Complete examples showing how to configure your **QMK firmware** for different u
 
 ```c
 #include QMK_KEYBOARD_H
-#include "qmk-notifier/notifier.h"
+#include "qmk_notifier/notifier.h"
 
 void raw_hid_receive(uint8_t *data, uint8_t length) {
     hid_notify(data, length);
@@ -92,7 +92,7 @@ const uint16_t PROGMEM keymaps[][MATRIX_ROWS][MATRIX_COLS] = {
 
 ```c
 #include QMK_KEYBOARD_H
-#include "qmk-notifier/notifier.h"
+#include "qmk_notifier/notifier.h"
 
 void raw_hid_receive(uint8_t *data, uint8_t length) {
     hid_notify(data, length);
@@ -169,7 +169,7 @@ const uint16_t PROGMEM keymaps[][MATRIX_ROWS][MATRIX_COLS] = {
 
 ```c
 #include QMK_KEYBOARD_H
-#include "qmk-notifier/notifier.h"
+#include "qmk_notifier/notifier.h"
 
 void raw_hid_receive(uint8_t *data, uint8_t length) {
     hid_notify(data, length);

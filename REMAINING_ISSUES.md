@@ -89,10 +89,10 @@ The only genuinely irreducible platform constraint: macOS/Windows GUI loops must
 `qmk_notifier::list_hid_devices()` is already exported; a passthrough flag lets users discover their VID/PID without external tools.
 
 ### 18. Arch `post_install` interactive prompts
-`packaging/linux/arch/qmkonnect.install` prompts for IDs via stdin — pacman hooks aren't reliably interactive (breaks under AUR helpers), and `logname` fails in some contexts. With config-driven IDs working, stop prompting and print "edit ~/.config/qmk-notifier/config.toml" instead.
+`packaging/linux/arch/qmkonnect.install` prompts for IDs via stdin — pacman hooks aren't reliably interactive (breaks under AUR helpers), and `logname` fails in some contexts. With config-driven IDs working, stop prompting and print "edit ~/.config/qmkonnect/config.toml" instead.
 
-### 19. Config directory naming inconsistency
-Linux uses `qmk-notifier/`, Windows/macOS use `QMKonnect/`. Pick one (keeping `qmk-notifier` on Linux preserves existing installs; document the difference otherwise).
+### 19. Config directory naming inconsistency (RESOLVED)
+Unified ahead of the first beta: Linux now uses `qmkonnect/` to match Windows/macOS `QMKonnect/`. (Sole user, so no migration was needed.)
 
 ### 20. Linux tray builds have no settings UI
 The tray settings dialog exists for Windows/macOS only; X11 builds get a "not yet implemented" println. Fine to leave file-only, but the menu item shouldn't dead-end silently.

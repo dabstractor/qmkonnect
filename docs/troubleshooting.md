@@ -129,15 +129,15 @@ system_profiler SPUSBDataType | grep -A 10 -B 10 -i keyboard
 1. **Verify keyboard configuration**:
    - Check vendor_id and product_id in config
    - Ensure Raw HID is enabled in QMK firmware
-   - Confirm qmk-notifier module is included
+   - Confirm qmk_notifier module is included
 
-2. **Check QMK firmware** — qmk-notifier must be integrated (it is **required**, not optional):
+2. **Check QMK firmware** — qmk_notifier must be integrated (it is **required**, not optional):
    ```make
    # In your keymap's rules.mk — this enables Raw HID AND compiles notifier.c:
-   include keyboards/handwired/[manufacturer]/[keyboard]/qmk-notifier/rules.mk
+   include keyboards/handwired/[manufacturer]/[keyboard]/qmk_notifier/rules.mk
    ```
    You do **not** need to set `RAW_USAGE_PAGE` / `RAW_USAGE_ID` — QMK's defaults
-   (`0xFF60` / `0x61`) are exactly what qmk-notifier expects. See the
+   (`0xFF60` / `0x61`) are exactly what qmk_notifier expects. See the
    [QMK Integration Guide]({{ site.baseurl }}/qmk-integration).
 
 3. **Permission issues (Linux)**:
@@ -417,7 +417,7 @@ See the [installation guide]({{ site.baseurl }}/installation/#macos) for the ful
 2. **Reset to defaults**:
    ```bash
    # Backup current config
-   cp ~/.config/qmk-notifier/config.toml ~/.config/qmk-notifier/config.toml.bak
+   cp ~/.config/qmkonnect/config.toml ~/.config/qmkonnect/config.toml.bak
    
    # Create new default config
    qmkonnect -c
@@ -425,8 +425,8 @@ See the [installation guide]({{ site.baseurl }}/installation/#macos) for the ful
 
 3. **Check file permissions**:
    ```bash
-   ls -la ~/.config/qmk-notifier/config.toml
-   chmod 644 ~/.config/qmk-notifier/config.toml
+   ls -la ~/.config/qmkonnect/config.toml
+   chmod 644 ~/.config/qmkonnect/config.toml
    ```
 
 ### Wrong Keyboard IDs
@@ -554,6 +554,25 @@ title; 1- or 3-element arrays are errors); `layer` must be **≥ 224**. See the
 See the [Configuration Guide]({{ site.baseurl }}/configuration) for the schema and
 CLI flags, and the [Examples]({{ site.baseurl }}/examples) for a complete recipe.
 
+### Board rule not firing after enabling host rules (partial migration)
+
+**Symptoms**: after enabling host rules (capable board + a `rules.toml`), a
+window that is matched **only** by a rule still defined on the board (in the
+firmware's `DEFINE_SERIAL_LAYERS` / `DEFINE_SERIAL_COMMANDS`) stops triggering
+that board rule.
+
+**Why**: when host rules are enabled and a window matches **no** host rule,
+QMKonnect sends only an `APPLY_HOST_CONTEXT { layer: 0xFF, callbacks: [] }` and
+**no** legacy window string (HOST_RULES.md §8(4)). Because no string is sent,
+the board never re-evaluates its own `DEFINE_*` rules for that window, so the
+previously-active board layer/command persists.
+
+**Fix**: this is the documented behavior — host rules and board rules are not
+meant to run side by side for the same window. Finish the migration by moving
+that rule into `rules.toml` (the [migration guide](../qmk-integration) tells
+you to *remove* rules from `DEFINE_*` once they live on the host), then reload
+rules.
+
 ## Performance Issues
 
 ### High CPU Usage
@@ -617,20 +636,20 @@ leaks qmkonnect
    qmkonnect --test-connection
    ```
 
-2. **Check QMK firmware side** — make sure qmk-notifier is actually integrated:
-   - Your `rules.mk` includes `.../qmk-notifier/rules.mk` (this compiles
+2. **Check QMK firmware side** — make sure qmk_notifier is actually integrated:
+   - Your `rules.mk` includes `.../qmk_notifier/rules.mk` (this compiles
      `notifier.c` and enables Raw HID).
-   - Your `keymap.c` includes `"qmk-notifier/notifier.h"` and forwards
+   - Your `keymap.c` includes `"qmk_notifier/notifier.h"` and forwards
      `raw_hid_receive()` to `hid_notify()`.
    - See the [QMK Integration Guide]({{ site.baseurl }}/qmk-integration).
    
    To watch what the keyboard receives, add your own `printf` inside a callback
-   (there is no built-in `qmk_notifier_notify` callback — the firmware API is the
+   (there is no built-in `qmk-notifier_notify` callback — the firmware API is the
    `DEFINE_SERIAL_LAYERS` / `DEFINE_SERIAL_COMMANDS` macros):
    ```c
    #ifdef CONSOLE_ENABLE
    void disable_vim(void) {
-       printf("qmk-notifier: disable_vim fired\n");
+       printf("qmk_notifier: disable_vim fired\n");
        // ...your real logic...
    }
    #endif
@@ -641,10 +660,10 @@ leaks qmkonnect
    qmk console
    ```
 
-3. **Verify Raw HID setup** — the qmk-notifier module's `rules.mk` enables this
+3. **Verify Raw HID setup** — the qmk_notifier module's `rules.mk` enables this
    for you (`RAW_ENABLE = yes`), so just make sure that module is included:
    ```make
-   include keyboards/handwired/[manufacturer]/[keyboard]/qmk-notifier/rules.mk
+   include keyboards/handwired/[manufacturer]/[keyboard]/qmk_notifier/rules.mk
    ```
    (`RAW_USAGE_PAGE` / `RAW_USAGE_ID` are QMK defaults of `0xFF60` / `0x61` — no
    need to set them unless your firmware deliberately overrides them.)
@@ -652,9 +671,9 @@ leaks qmkonnect
 ### Raw HID Issues
 
 **Verify Raw HID setup**:
-1. **QMK firmware** — make sure qmk-notifier is integrated (its `rules.mk` sets `RAW_ENABLE = yes` for you):
+1. **QMK firmware** — make sure qmk_notifier is integrated (its `rules.mk` sets `RAW_ENABLE = yes` for you):
    ```make
-   include keyboards/handwired/[manufacturer]/[keyboard]/qmk-notifier/rules.mk
+   include keyboards/handwired/[manufacturer]/[keyboard]/qmk_notifier/rules.mk
    ```
 
 2. **Test Raw HID**:
@@ -697,7 +716,7 @@ When reporting issues, include:
 
 4. **Configuration file**:
    ```bash
-   cat ~/.config/qmk-notifier/config.toml
+   cat ~/.config/qmkonnect/config.toml
    ```
 
 ### Where to Get Help

@@ -10,7 +10,7 @@
 
 ```
 qmkonnect/
-├── Cargo.toml                 # deps + features; pinned qmk_notifier v0.2.1 (git tag)
+├── Cargo.toml                 # deps + features; pinned qmk-notifier v0.3.0 (git tag)
 ├── Cargo.lock
 ├── .cargo/config.toml         # windows-msvc: +crt-static (no VC++ Redist)
 ├── release.toml               # cargo-release: tag v<x.y.z>, push (no crates.io publish)
@@ -158,7 +158,7 @@ The codebase resolves this with:
  qmk_notifier::RunParameters::new(SendMessage(msg), vid, pid, page, usage, false)
  qmk_notifier::run(params)
         │
-        ▼  qmk_notifier crate (src/core.rs)
+        ▼  qmk-notifier crate (src/core.rs)
  append ETX (0x03)
  frame into 32-byte reports: [0x00, 0x81, 0x9F, <30 payload>]  (33-byte hidapi buffer)
  open_matching_devices (usage/page + optional vid/pid)  [cached]
@@ -295,7 +295,7 @@ string path (§5.4). The host-side matcher is ported into `src/core/pattern.rs`
 | macOS monitor | background thread running `CFRunLoopRun` | `AtomicBool VERBOSE` | tray/`tao` owns main |
 | Hyprland monitor | calling thread blocks on `EventListener::start_listener`; optional `poll_interval_ms` poller thread; transient poll-burst threads | `Arc<Mutex<Option<WindowState>>>` | reconnect backoff is local to `start()` |
 | Device-status poll | background thread | `EventLoopProxy<UserEvent>` (macOS/Win) / `handle.update()` (Linux ksni) | UI mutated only on main thread (muda `!Send`) |
-| qmk_notifier device cache | caller | `LazyLock<Mutex<Option<DeviceCache>>>` | invalidated on any write error |
+| qmk-notifier device cache | caller | `LazyLock<Mutex<Option<DeviceCache>>>` | invalidated on any write error |
 
 **Critical thread-safety invariants:**
 - `muda::MenuItem` / `CheckMenuItem` are backed by `Rc<RefCell<…>>` → **`!Send`**.
@@ -348,7 +348,7 @@ All three runners share the same skeleton:
   `Box<dyn Error + Send + Sync>` for the notifier). No bespoke error enum in the
   app core today (the historical `core/errors.rs` + `core/validation.rs` were
   orphaned and removed).
-- **`qmk_notifier` crate** has its own `QmkError` enum (`DeviceNotFound`,
+- **`qmk-notifier` crate** has its own `QmkError` enum (`DeviceNotFound`,
   `DeviceOpenError`, `PartialSendError`, `SendReportError`, …).
 - **Fail-loudly vs. fail-soft** is a deliberate, per-call-site choice:
   - *Fail loud*: `startup_device_probe` (typo'd VID), `resolve_config_for_reload`

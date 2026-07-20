@@ -1,7 +1,7 @@
-# SPEC — Firmware Integration (qmk-notifier module)
+# SPEC — Firmware Integration (qmk_notifier module)
 
 > Companion to `PRD.md` / `SPEC_PROTOCOL.md`. The **keyboard-side** contract: the
-> `qmk-notifier` C module (companion repo `dabstractor/qmk-notifier`), how a
+> `qmk_notifier` C module (companion repo `dabstractor/qmk_notifier`), how a
 > user's keymap integrates it, the pattern-matching syntax, and the reference
 > keymap this PRD was validated against. QMKonnect the desktop app does **not**
 > implement any of this — it is documented here so a dev agent understands the
@@ -11,7 +11,7 @@
 
 ## 1. The Module at a Glance
 
-`qmk-notifier` (hyphen) is a QMK **module** (a git submodule under a keyboard
+`qmk_notifier` (underscore) is a QMK **module** (a git submodule under a keyboard
 directory). It provides:
 - **`notifier.c`** — receives Raw HID, validates the magic header, reassembles
   multi-report messages, sanitizes, and dispatches to the user's maps.
@@ -21,7 +21,7 @@ directory). It provides:
 - **`rules.mk`** — the single line that wires it in:
   ```make
   RAW_ENABLE = yes
-  SRC += qmk-notifier/notifier.c
+  SRC += qmk_notifier/notifier.c
   ```
 
 The module is **coexistence-safe**: it inspects only messages beginning with the
@@ -30,7 +30,7 @@ magic bytes `0x81 0x9F` and ignores everything else, so other Raw HID modules
 
 > **Canonical firmware spec.** This document is the *desktop-facing* view of the
 firmware contract. The firmware repo's `PRD.md`
-([`dabstractor/qmk-notifier`](https://github.com/dabstractor/qmk-notifier)) is
+([`dabstractor/qmk_notifier`](https://github.com/dabstractor/qmk_notifier)) is
 **authoritative** — including per-OS `DEFINE_SERIAL_*_OS` maps (selected by the
 detected host OS) and the typed-command namespace
 §4.6: `QUERY_INFO` / `QUERY_CALLBACK` / `SET_OS` / `APPLY_HOST_CONTEXT` with the
@@ -44,22 +44,22 @@ Where this file and the firmware `PRD.md` disagree, the firmware wins.
 ### Step 1 — add the submodule
 ```bash
 cd <qmk_firmware>/keyboards/<your_keyboard>   # e.g. handwired/dactyl_manuform/5x7_1
-git submodule add https://github.com/dabstractor/qmk-notifier.git qmk-notifier
+git submodule add https://github.com/dabstractor/qmk_notifier.git qmk_notifier
 ```
 
 ### Step 2 — include the module's `rules.mk` (in your keymap's `rules.mk`)
 ```make
-include keyboards/handwired/<manufacturer>/<keyboard>/qmk-notifier/rules.mk
+include keyboards/handwired/<manufacturer>/<keyboard>/qmk_notifier/rules.mk
 ```
 That single line enables `RAW_ENABLE` **and** compiles `notifier.c`. Do **not**
-hand-write `SRC += lib/...` or point at a non-existent `qmk_notifier.c` — that
+hand-write `SRC += lib/...` or point at a non-existent `qmk-notifier.c` — that
 fails to link.
 
 > The reference keymap (`keyboards/handwired/dactyl_manuform/5x7_1/rules.mk`)
 > pulls in three modules this way:
 > ```make
 > include keyboards/handwired/dactyl_manuform/5x7_1/qmk-vim/rules.mk
-> include keyboards/handwired/dactyl_manuform/5x7_1/qmk-notifier/rules.mk
+> include keyboards/handwired/dactyl_manuform/5x7_1/qmk_notifier/rules.mk
 > include keyboards/handwired/dactyl_manuform/5x7_1/qmk-field-kit/rules.mk
 > SERIAL_DRIVER = vendor
 > ```
@@ -69,11 +69,11 @@ fails to link.
 ### Step 3 — wire `raw_hid_receive` (in your `keymap.c`)
 ```c
 #include QMK_KEYBOARD_H
-#include "./qmk-notifier/notifier.h"
+#include "./qmk_notifier/notifier.h"
 
 void raw_hid_receive(uint8_t *data, uint8_t length) {
-    hid_notify(data, length);   // qmk-notifier entry point
-    // (other Raw HID modules can be tried first/after; qmk-notifier
+    hid_notify(data, length);   // qmk_notifier entry point
+    // (other Raw HID modules can be tried first/after; qmk_notifier
     //  ignores anything not starting with 0x81 0x9F)
 }
 ```

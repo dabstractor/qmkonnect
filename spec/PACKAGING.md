@@ -89,8 +89,10 @@ install dir + shortcuts.
 an MSI that installs a **Session-0 service**. A service **cannot** show a tray
 icon in the interactive session, so this is the wrong vehicle for the tray app.
 It remains as a legacy build path only; the **tray app + Inno installer is what
-ships**. (CI's `windows` job currently uses the WiX path — flag for the dev
-agent to reconcile with the Inno path.)
+ships**. CI's `windows` job (`.github/workflows/release.yml`) runs the Inno
+path (`packaging/windows/inno/build.ps1`) and uploads the resulting
+`QMKonnect-<ver>-windows-x64.exe` as the primary Windows artifact — the WiX
+path is not referenced by CI.
 
 ### 3.4 Runtime dependencies
 **None.** The release binary statically links the C runtime (`+crt-static`), so
@@ -218,17 +220,16 @@ cargo clippy --all-targets -- -D warnings
 (builds **without** publishing — dry-run the whole pipeline and download real
 artifacts before cutting a tag).
 
-- `qmk_notifier` is a pinned git dep (`tag = "vX.Y.Z"`), so a plain
+- `qmk-notifier` is a pinned git dep (`tag = "vX.Y.Z"`), so a plain
   `actions/checkout` of this repo suffices.
 - **macOS job:** `cargo build`, `packaging/macos/build.sh`. If repo var
   `ENABLE_MACOS_NOTARIZE=true` + `APPLE_*` secrets: import Developer ID cert,
   set `CODESIGN_IDENTITY`, then `notarytool submit … --wait` + `stapler staple`.
   Renames `QMKonnect-<ver>-macos.dmg`, uploads artifact.
-- **Windows job:** `cargo build`, install WiX v3, `build-installer.ps1` → MSI.
-  *(Note: the shipped end-user artifact is the Inno `QMKonnect-Setup.exe`; the
-  CI Windows job currently builds the WiX MSI. A dev agent should reconcile
-  this — run `packaging/windows/inno/build.ps1` to produce the setup exe and
-  upload that as the primary artifact.)*
+- **Windows job:** `cargo build`, install Inno Setup,
+  `packaging/windows/inno/build.ps1` → `QMKonnect-<ver>-windows-x64.exe`
+  (uploaded as the primary Windows artifact). The legacy WiX MSI path
+  (`build-installer.ps1`) is not invoked by CI.
 - **Linux job:** Arch build via `makepkg`/docker → `.pkg.tar.zst` + standalone
   binary.
 - Version is read from `cargo metadata` (single source of truth in `Cargo.toml`);

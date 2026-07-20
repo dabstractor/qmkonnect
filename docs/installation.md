@@ -7,7 +7,7 @@ permalink: /installation/
 # Installation Guide
 
 > **Before you start:** QMKonnect only *sends* window data to your keyboard. Your
-> keyboard must be running the companion [**qmk-notifier**](https://github.com/dabstractor/qmk-notifier)
+> keyboard must be running the companion [**qmk_notifier**](https://github.com/dabstractor/qmk_notifier)
 > firmware module for anything to happen — that setup is **required**. Install
 > QMKonnect below, then follow the [QMK Integration Guide]({{ site.baseurl }}/qmk-integration).
 
@@ -207,7 +207,7 @@ cargo build --release
 ## Verification
 
 After installation, verify QMKonnect is working (this only confirms the desktop
-app talks to the keyboard — your **firmware** must also have qmk-notifier set up,
+app talks to the keyboard — your **firmware** must also have qmk_notifier set up,
 see [QMK Integration]({{ site.baseurl }}/qmk-integration)):
 
 1. **Check if running**:

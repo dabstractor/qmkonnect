@@ -123,7 +123,7 @@ path = "src/bin/hid_id.rs"
 
 ### 4.4 Root-aware config resolution (`resolve_config_for_reload`) — fixes #26
 Under plain `sudo`, `HOME=/root`, so the normal search never finds the invoking
-user's `~/.config/qmk-notifier/config.toml` and the old code **silently
+user's `~/.config/qmkonnect/config.toml` and the old code **silently
 no-op'd** without writing the rule. New resolution order:
 1. Explicit `--config <path>` wins.
 2. **When root:** prefer the *invoking* user's config — resolve a target
@@ -244,16 +244,15 @@ panics inside ksni's handler thread.
 ## 8. Config Paths (Linux)
 
 `get_config_paths()` (`src/platforms/linux.rs`), in order:
-1. `$XDG_CONFIG_HOME/qmk-notifier/config.toml`
-2. `~/.config/qmk-notifier/config.toml`
-3. `/etc/qmk-notifier/config.toml`
+1. `$XDG_CONFIG_HOME/qmkonnect/config.toml`
+2. `~/.config/qmkonnect/config.toml`
+3. `/etc/qmkonnect/config.toml`
 
-`create_config_dir()` → `$XDG_CONFIG_HOME/qmk-notifier` or
-`~/.config/qmk-notifier`.
+`create_config_dir()` → `$XDG_CONFIG_HOME/qmkonnect` or
+`~/.config/qmkonnect`.
 
-> **Naming:** Linux uses `qmk-notifier/` (historical; preserves existing
-> installs). Windows/macOS use `QMKonnect/`. This divergence is documented, not
-> a bug.
+> All platforms now use `QMKonnect/` (Linux: `qmkonnect/` per XDG convention) —
+> unified ahead of the first beta.
 
 ---
 

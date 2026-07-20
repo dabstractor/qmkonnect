@@ -1,9 +1,9 @@
 # SPEC — Raw HID Wire Protocol & Transport
 
 > Companion to `PRD.md` / `SPEC_ARCHITECTURE.md`. This is the **exact** contract
-> between the QMKonnect desktop app and the qmk-notifier firmware module. Get any
+> between the QMKonnect desktop app and the qmk_notifier firmware module. Get any
 > byte wrong and the two halves will not talk. Covers: message format, report
-> framing, all constants, device discovery/matching, the `qmk_notifier` crate
+> framing, all constants, device discovery/matching, the `qmk-notifier` crate
 > contract, retry/cache behavior.
 
 ---
@@ -26,7 +26,7 @@
 - Empty Hyprland workspace: `\x1D` (both empty)
 - macOS without Screen Recording: `Safari\x1D` (app name, empty title)
 
-> The desktop app builds the payload **without** a terminator. The `qmk_notifier`
+> The desktop app builds the payload **without** a terminator. The `qmk-notifier`
 > crate appends the terminator (§2.2).
 
 ---
@@ -47,7 +47,7 @@ interface of a typical QMK keyboard (which has ~4 interfaces) carries it.
 
 ```
 RAW_REPORT_SIZE = 32   (notifier.c)
-REPORT_LENGTH   = 32   (qmk_notifier crate, DEFAULT)
+REPORT_LENGTH   = 32   (qmk-notifier crate, DEFAULT)
 ```
 
 > **Critical:** 32 is the *logical* report on **every** QMK USB protocol — it is
@@ -60,7 +60,7 @@ REPORT_LENGTH   = 32   (qmk_notifier crate, DEFAULT)
 
 ### 2.3 On-the-wire layout (what `hidapi::HidDevice::write` receives)
 
-The `qmk_notifier` crate builds a **33-byte buffer** per report (hidapi's
+The `qmk-notifier` crate builds a **33-byte buffer** per report (hidapi's
 `write()` contract demands a leading report-ID byte; the interface has no
 report ID so it's `0x00`):
 
@@ -102,7 +102,7 @@ space frees. **Reports are never dropped**, so burst-write is safe for ANY title
 length.
 
 (The firmware sends a 32-byte reply per report via `raw_hid_send(response,
-RAW_REPORT_SIZE)` — fixed in qmk-notifier commit `01a51935`, which corrected the
+RAW_REPORT_SIZE)` — fixed in qmk_notifier commit `01a51935`, which corrected the
 response size from the header-stripped `30` to the full `32`. The older "ack is
 silently dropped by QMK because `length == RAW_EPSIZE`" wording was stale
 carryover from the pre-fix firmware. The crate drains pending IN-side reports
@@ -134,7 +134,7 @@ interface.usage_page == required_usage_page
 | **Disambiguation** | `vendor_id` and/or `product_id` set | Narrows to that VID/PID among multiple QMK boards. Either may be omitted (omitted ⇒ wildcard for that axis). |
 | **Custom usage** | `usage_page`/`usage` set | For firmware that overrode `RAW_USAGE_PAGE`/`RAW_USAGE_ID`. Rare. |
 
-### 3.3 Defaults exposed by the `qmk_notifier` crate
+### 3.3 Defaults exposed by the `qmk-notifier` crate
 
 ```rust
 pub const DEFAULT_VENDOR_ID:  u16 = 0xFEED;   // legacy; unused for matching when None
@@ -156,13 +156,13 @@ through and `None` always means wildcard.
 
 ---
 
-## 4. The `qmk_notifier` Crate Contract (v0.2.1)
+## 4. The `qmk-notifier` Crate Contract (v0.3.0)
 
-QMKonnect links `qmk_notifier` (underscore) as a git-tagged dependency:
+QMKonnect links `qmk-notifier` (hyphen) as a git-tagged dependency (its library
+identifier is `qmk_notifier` — Cargo derives `_` from the package's `-`):
 ```toml
-qmk_notifier = { package = "qmk_notifier",
-                 git = "https://github.com/dabstractor/qmk_notifier",
-                 tag = "v0.2.1" }
+qmk-notifier = { git = "https://github.com/dabstractor/qmk-notifier",
+                 tag = "v0.3.0" }
 ```
 
 ### 4.1 Public API surface (what QMKonnect calls)
@@ -234,7 +234,7 @@ changes or a write fails (stale handle after replug).
 
 `hid_notify(data, length)` in `notifier.c`:
 1. **Guard:** `length < 2 || data[0] != 0x81 || data[1] != 0x9F` ⇒ discard
-   (this is what makes qmk-notifier coexist with other Raw HID modules on the
+   (this is what makes qmk_notifier coexist with other Raw HID modules on the
    same interface).
 2. Strip the 2 header bytes; iterate the remaining bytes.
 3. Append each byte to a static 256-byte `msg_buffer` until an **ETX** (`0x03`):
@@ -246,7 +246,7 @@ changes or a write fails (stale handle after replug).
    then `activate_layer(layer_found)` / `enable_command(cmd_found)`.
 5. **Ack:** `raw_hid_send(response, RAW_REPORT_SIZE)` where `response[0] =
    match` (1 if something matched, else 0). The host receives this 32-byte reply
-   (fixed in qmk-notifier `01a51935`; see §2.5). The legacy `0`/`1` match-bool
+   (fixed in qmk_notifier `01a51935`; see §2.5). The legacy `0`/`1` match-bool
    reply is distinct from the typed `0x51`-marked reply (§8).
 
 ---
@@ -280,11 +280,11 @@ changes or a write fails (stale handle after replug).
 
 ## 8. Typed-Command Namespace
 
-> **Canonical owner: the firmware spec** (`dabstractor/qmk-notifier`, `PRD.md`
+> **Canonical owner: the firmware spec** (`dabstractor/qmk_notifier`, `PRD.md`
 > §4.6). This section mirrors the transport-relevant summary for desktop work; if
 > the two disagree, **the firmware PRD §4.6 wins**. The desktop orchestration
 > (handshake, per-window send logic, `rules.toml`) is in `HOST_RULES.md`; the
-> transport API is in the `qmk_notifier` crate `PRD.md` §10.
+> transport API is in the `qmk-notifier` crate `PRD.md` §10.
 
 **Discriminator:** `data[2] == 0xF0` ⇒ typed command; anything else ⇒ legacy
 string (unchanged). `0xF0` can never begin a real matched string (sanitizer
@@ -330,7 +330,7 @@ timeout) ⇒ legacy ⇒ string-only. The firmware sets `has_been_queried` on the
 first `QUERY_INFO` to keep a mid-session reconnect from clearing an active board
 layer against legacy firmware.
 
-The `qmk_notifier` crate frames these and returns a parsed
+The `qmk-notifier` crate frames these and returns a parsed
 `CommandResponse`; see the crate `PRD.md` §10.
 
 ---

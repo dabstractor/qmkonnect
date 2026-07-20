@@ -1,7 +1,7 @@
 # PRD — QMKonnect
 
 **Product Requirements Document & Master Specification**
-Version: 0.2.4 · Status: Beta · Owner: Mulletware · License: MIT
+Version: 0.2.8 · Status: Beta · Owner: Mulletware · License: MIT
 
 > **Host-side window rules:** edit
 > layer/callback rules in `rules.toml` with no reflash. Fully specified in the
@@ -357,7 +357,7 @@ PRD.
 > **Living source of truth:** the production codebase itself
 > (`src/`, `Cargo.toml`, `packaging/`). Where a spec and the code disagree, the
 > code wins; report the drift. The specs capture the *intended* design at
-> v0.2.4.
+> v0.2.8.
 
 ---
 

@@ -8,7 +8,7 @@ IMPORTANT REALITY CHECK
 -----------------------
 QMKonnect is only ONE HALF of a two-part system. It detects the active window
 and SENDS that information to your keyboard over Raw HID. Your keyboard cannot
-react to it unless the companion **qmk-notifier** module is built into your QMK
+react to it unless the companion **qmk_notifier** module is built into your QMK
 firmware. That firmware setup is REQUIRED, not optional.
 
 When the docs say "no configuration" or "zero-config", they refer ONLY to the
@@ -30,9 +30,9 @@ Detects window changes and tells your QMK keyboard what app you're using so it c
 QMKonnect watches which window is active and sends that info to your QMK keyboard. Your keyboard can then switch layers or run commands based on what app you're using.
 
 This tool is part of a broader ecosystem:
-- **[qmk-notifier](https://github.com/dabstractor/qmk-notifier)**: QMK module that receives commands and handles layer/feature toggling on your keyboard
-- **[qmk_notifier](https://github.com/dabstractor/qmk_notifier)**: The Rust transport library that QMKonnect links to send commands to your keyboard via Raw HID
-- **QMKonnect** (this tool): Cross-platform desktop daemon that detects window changes and streams them to your keyboard through `qmk_notifier`
+- **[qmk_notifier](https://github.com/dabstractor/qmk_notifier)**: QMK module that receives commands and handles layer/feature toggling on your keyboard
+- **[qmk-notifier](https://github.com/dabstractor/qmk-notifier)**: The Rust transport library that QMKonnect links to send commands to your keyboard via Raw HID
+- **QMKonnect** (this tool): Cross-platform desktop daemon that detects window changes and streams them to your keyboard through `qmk-notifier`
 
 ## Features
 
@@ -111,7 +111,7 @@ sudo install -m644 packaging/linux/udev/69-qmkonnect-rawhid.rules \
                     /usr/lib/udev/rules.d/69-qmkonnect-rawhid.rules
 sudo udevadm control --reload && sudo udevadm trigger
 ```
-Only set `vendor_id`/`product_id` (in `~/.config/qmk-notifier/config.toml`) to
+Only set `vendor_id`/`product_id` (in `~/.config/qmkonnect/config.toml`) to
 disambiguate among multiple QMK keyboards, then install the matching rule:
 ```bash
 qmkonnect -c          # writes a commented-out default config (edit as needed)
@@ -158,28 +158,28 @@ cargo build --release
 
 ## QMK Firmware Setup (REQUIRED)
 
-**IMPORTANT**: QMKonnect will not work at all without proper QMK firmware configuration. You must add the qmk-notifier module to your keyboard's firmware first.
+**IMPORTANT**: QMKonnect will not work at all without proper QMK firmware configuration. You must add the qmk_notifier module to your keyboard's firmware first.
 
 ### 1. Add the QMK Notifier Module
 
 In your QMK keymap directory:
 
 ```bash
-git submodule add https://github.com/dabstractor/qmk-notifier.git qmk-notifier
+git submodule add https://github.com/dabstractor/qmk_notifier.git qmk_notifier
 ```
 
 ### 2. Include the Module's Build Rules
 
 In your keymap's `rules.mk`, include the notifier's own `rules.mk` (path is
 relative to the `qmk_firmware` root). That single line pulls in both
-`RAW_ENABLE = yes` and `SRC += qmk-notifier/notifier.c` for you:
+`RAW_ENABLE = yes` and `SRC += qmk_notifier/notifier.c` for you:
 
 ```make
-include keyboards/handwired/<manufacturer>/<keyboard>/qmk-notifier/rules.mk
+include keyboards/handwired/<manufacturer>/<keyboard>/qmk_notifier/rules.mk
 ```
 
 > Adjust the path to wherever your keyboard lives under `qmk_firmware/keyboards/`. The module's `rules.mk` (which you can read in the
-> [qmk-notifier](https://github.com/dabstractor/qmk-notifier) repo) is what
+> [qmk_notifier](https://github.com/dabstractor/qmk_notifier) repo) is what
 > actually compiles `notifier.c` — without this `include`, the build will fail
 > to link `hid_notify`.
 
@@ -189,7 +189,7 @@ Add this to your `keymap.c`:
 
 ```c
 #include QMK_KEYBOARD_H
-#include "./qmk-notifier/notifier.h"
+#include "./qmk_notifier/notifier.h"
 
 void raw_hid_receive(uint8_t *data, uint8_t length) {
     hid_notify(data, length);
@@ -210,7 +210,7 @@ Build and flash your updated firmware to your keyboard. **QMKonnect cannot commu
 
 > **Prerequisite — firmware setup is required.** QMKonnect only *sends* window
 data to your keyboard over Raw HID. Your keyboard can't act on it unless the
-[**qmk-notifier**](https://github.com/dabstractor/qmk-notifier) module is built
+[**qmk_notifier**](https://github.com/dabstractor/qmk_notifier) module is built
 into your firmware. See [QMK Firmware Setup](#qmk-firmware-setup-required).
 > Everything below covers only the *desktop-side* configuration.
 
@@ -219,8 +219,8 @@ configuration** for a single standard QMK keyboard — QMKonnect auto-discovers 
 via the Raw HID usage page (0xFF60 / 0x61). You only set a Vendor/Product ID to
 disambiguate among multiple QMK keyboards.
 
-> **Config file locations** (historical naming is preserved so existing installs keep working):
-> - **Linux**: `~/.config/qmk-notifier/config.toml`
+> **Config file locations:**
+> - **Linux**: `~/.config/qmkonnect/config.toml`
 > - **Windows**: `%APPDATA%\QMKonnect\config.toml`
 > - **macOS**: `~/Library/Application Support/QMKonnect/config.toml`
 
@@ -240,7 +240,7 @@ qmkonnect --list-devices
 
 ### Linux
 
-Edit the configuration file at `~/.config/qmk-notifier/config.toml`.
+Edit the configuration file at `~/.config/qmkonnect/config.toml`.
 
 If no file exists, create it:
 
@@ -311,15 +311,15 @@ qmkonnect & disown
 ## Integration with QMK
 
 This tool works in conjunction with:
-- The [qmk-notifier](https://github.com/dabstractor/qmk-notifier) QMK module running on your keyboard
-- The [qmk_notifier](https://github.com/dabstractor/qmk_notifier) transport library that QMKonnect links to handle the Raw HID communication
+- The [qmk_notifier](https://github.com/dabstractor/qmk_notifier) QMK module running on your keyboard
+- The [qmk-notifier](https://github.com/dabstractor/qmk-notifier) transport library that QMKonnect links to handle the Raw HID communication
 
 When a window focus change is detected, this application formats the data as:
 `{application_class}{GS}{window_title}` where `{GS}` is the Group Separator character (0x1D).
 
 ## Default Configuration
 
-This is the **desktop-side** config only (your firmware still needs qmk-notifier — see above). QMKonnect auto-discovers standard QMK keyboards, so the default config leaves these commented out (uncomment only to pin a specific keyboard):
+This is the **desktop-side** config only (your firmware still needs qmk_notifier — see above). QMKonnect auto-discovers standard QMK keyboards, so the default config leaves these commented out (uncomment only to pin a specific keyboard):
 
 ```toml
 # Your QMK keyboard's vendor ID (in hex)
@@ -362,7 +362,7 @@ Cross-platform window activity notifier for QMK keyboards
 QMKonnect watches which window is active and tells your QMK keyboard about it. Your keyboard can then switch layers or run commands based on what app you're using.
 
 > **⚠️ Firmware setup required.** QMKonnect only *sends* window data — your
-> keyboard needs the companion [**qmk-notifier**](https://github.com/dabstractor/qmk-notifier)
+> keyboard needs the companion [**qmk_notifier**](https://github.com/dabstractor/qmk_notifier)
 > module built into its firmware to actually react. Without it, QMKonnect does
 > nothing useful. See the [QMK Integration Guide]({{ site.baseurl }}/qmk-integration).
 
@@ -393,7 +393,7 @@ Complete reference documentation available for automated tools at [llms_full.txt
 
 ## Quick Start
 
-1. **Set up your QMK firmware** with the qmk-notifier module — **required** ([QMK Integration]({{ site.baseurl }}/qmk-integration))
+1. **Set up your QMK firmware** with the qmk_notifier module — **required** ([QMK Integration]({{ site.baseurl }}/qmk-integration))
 2. **Download** the latest QMKonnect release for your platform
 3. **Install** using the provided installer or package
 4. **Run** it — a single standard keyboard needs no configuration
@@ -406,8 +406,8 @@ Complete reference documentation available for automated tools at [llms_full.txt
 
 QMKonnect works alongside other tools in the QMK notification ecosystem:
 
-- **[qmk-notifier](https://github.com/dabstractor/qmk-notifier)**: **Required** QMK firmware module that receives notifications, pattern-matches them, and switches layers / runs callbacks
-- **[qmk_notifier](https://github.com/dabstractor/qmk_notifier)**: Core library for Raw HID communication
+- **[qmk_notifier](https://github.com/dabstractor/qmk_notifier)**: **Required** QMK firmware module that receives notifications, pattern-matches them, and switches layers / runs callbacks
+- **[qmk-notifier](https://github.com/dabstractor/qmk-notifier)**: Core library for Raw HID communication
 - **QMKonnect**: This application for cross-platform window detection
 
 ---
@@ -424,7 +424,7 @@ QMKonnect works alongside other tools in the QMK notification ecosystem:
 # Installation Guide
 
 > **Before you start:** QMKonnect only *sends* window data to your keyboard. Your
-> keyboard must be running the companion [**qmk-notifier**](https://github.com/dabstractor/qmk-notifier)
+> keyboard must be running the companion [**qmk_notifier**](https://github.com/dabstractor/qmk_notifier)
 > firmware module for anything to happen — that setup is **required**. Install
 > QMKonnect below, then follow the [QMK Integration Guide]({{ site.baseurl }}/qmk-integration).
 
@@ -624,7 +624,7 @@ cargo build --release
 ## Verification
 
 After installation, verify QMKonnect is working (this only confirms the desktop
-app talks to the keyboard — your **firmware** must also have qmk-notifier set up,
+app talks to the keyboard — your **firmware** must also have qmk_notifier set up,
 see [QMK Integration]({{ site.baseurl }}/qmk-integration)):
 
 1. **Check if running**:
@@ -665,11 +665,11 @@ After installation:
 
 **This step is required.** QMKonnect only *sends* window information to your
 keyboard over Raw HID. Nothing will happen on the keyboard side until the
-[**qmk-notifier**](https://github.com/dabstractor/qmk-notifier) module is built
+[**qmk_notifier**](https://github.com/dabstractor/qmk_notifier) module is built
 into your firmware and you've defined how your keyboard should respond.
 
 > The instructions below mirror the upstream
-> [qmk-notifier README](https://github.com/dabstractor/qmk-notifier). That repo
+> [qmk_notifier README](https://github.com/dabstractor/qmk_notifier). That repo
 > is the source of truth for the firmware module; this page ties it to QMKonnect.
 
 ## Overview
@@ -679,25 +679,25 @@ QMKonnect works with the QMK ecosystem through Raw HID communication:
 1. **QMKonnect** (this application) detects the active window and sends
    `{application_class}{GS}{window_title}` (where `{GS}` is the Group Separator,
    `0x1D).
-2. **qmk-notifier** (a QMK module in your firmware) receives the message, checks
+2. **qmk_notifier** (a QMK module in your firmware) receives the message, checks
    for its `0x81 0x9F` header, reassembles strings longer than the 32-byte HID
    packet limit, and pattern-matches the result against your rules.
 3. Your **QMK keymap** switches layers and/or runs callbacks via the
    `DEFINE_SERIAL_LAYERS` / `DEFINE_SERIAL_COMMANDS` macros the module provides.
 
-The QMKonnect desktop app and the qmk-notifier firmware module are **companion
+The QMKonnect desktop app and the qmk_notifier firmware module are **companion
 projects** — you need both.
 
 ## Integration Steps
 
-### Step 1: Add qmk-notifier as a submodule to your keymap
+### Step 1: Add qmk_notifier as a submodule to your keymap
 
 ```bash
 cd /path/to/qmk_firmware/keyboards/your_keyboard
-git submodule add https://github.com/dabstractor/qmk-notifier.git
+git submodule add https://github.com/dabstractor/qmk_notifier.git
 ```
 
-This clones the module into `qmk-notifier/` inside your keyboard directory.
+This clones the module into `qmk_notifier/` inside your keyboard directory.
 
 ### Step 2: Include the module in your `rules.mk`
 
@@ -705,28 +705,28 @@ Add the module's own `rules.mk` to your keymap's `rules.mk`. The path is relativ
 to the `qmk_firmware` root:
 
 ```make
-include keyboards/handwired/[manufacturer]/[keyboard_name]/qmk-notifier/rules.mk
+include keyboards/handwired/[manufacturer]/[keyboard_name]/qmk_notifier/rules.mk
 ```
 
 That single line is what actually wires the module up. The included
-[`rules.mk`](https://github.com/dabstractor/qmk-notifier/blob/main/rules.mk)
+[`rules.mk`](https://github.com/dabstractor/qmk_notifier/blob/main/rules.mk)
 contains:
 
 ```make
 RAW_ENABLE = yes
-SRC += qmk-notifier/notifier.c
+SRC += qmk_notifier/notifier.c
 ```
 
 So it enables Raw HID **and** compiles `notifier.c` for you. Do **not** add
-`SRC += ... qmk_notifier.c` yourself — that source file does not exist, and
-duplicating `SRC += qmk-notifier/notifier.c` will cause a double-definition
+`SRC += ... qmk-notifier.c` yourself — that source file does not exist, and
+duplicating `SRC += qmk_notifier/notifier.c` will cause a double-definition
 error.
 
 ### Step 3: Include the module in your `keymap.c`
 
 ```c
 #include QMK_KEYBOARD_H
-#include "qmk-notifier/notifier.h"
+#include "qmk_notifier/notifier.h"
 
 // Forward Raw HID packets from the host (QMKonnect) into the notifier.
 void raw_hid_receive(uint8_t *data, uint8_t length) {
@@ -761,8 +761,8 @@ DEFINE_SERIAL_COMMANDS({
 ```
 
 See the [Examples]({{ site.baseurl }}/examples) page for complete keymaps, and
-the upstream qmk-notifier docs for the full
-[pattern matching syntax](https://github.com/dabstractor/qmk-notifier#pattern-matching-syntax)
+the upstream qmk_notifier docs for the full
+[pattern matching syntax](https://github.com/dabstractor/qmk_notifier#pattern-matching-syntax)
 (`*`, `^`, `$`, and `WT(class, title)`).
 
 ### Step 5: Build and flash
@@ -778,7 +778,7 @@ flashed.**
 ## About `RAW_USAGE_PAGE` / `RAW_USAGE_ID`
 
 You do **not** normally need to set these. QMK's defaults are already
-`0xFF60` / `0x61`, which is exactly what both qmk-notifier and QMKonnect expect,
+`0xFF60` / `0x61`, which is exactly what both qmk_notifier and QMKonnect expect,
 and what QMKonnect auto-discovers. Only set `RAW_USAGE_PAGE` / `RAW_USAGE_ID` in
 your `config.h` if your firmware deliberately overrides them — and in that case
 you must tell the QMKonnect desktop app the matching values (see the
@@ -809,13 +809,13 @@ firmware keymap, and `rules.toml` on the host):
 | Repo | What it is | Its job for host rules |
 | --- | --- | --- |
 | [`qmkonnect`](https://github.com/dabstractor/qmkonnect) | The desktop daemon (this project) | Detects the window; owns `rules.toml`, the host matcher, the capability handshake, and the send sequencing |
-| [`qmk_notifier`](https://github.com/dabstractor/qmk_notifier) *(underscore)* | The Rust transport crate QMKonnect links | Frames the typed commands over Raw HID and parses the replies |
-| [`qmk-notifier`](https://github.com/dabstractor/qmk-notifier) *(hyphen)* | The C firmware module in your keymap | Receives typed commands, tracks a separate host layer/callback set, and exposes your callbacks by name |
+| [`qmk-notifier`](https://github.com/dabstractor/qmk-notifier) *(hyphen)* | The Rust transport crate QMKonnect links | Frames the typed commands over Raw HID and parses the replies |
+| [`qmk_notifier`](https://github.com/dabstractor/qmk_notifier) *(underscore)* | The C firmware module in your keymap | Receives typed commands, tracks a separate host layer/callback set, and exposes your callbacks by name |
 
-> **Naming hazard:** `qmk-notifier` (hyphen) is the firmware C module;
-`qmk_notifier` (underscore) is the Rust transport crate. They talk over the
+> **Naming hazard:** `qmk_notifier` (underscore) is the firmware C module;
+`qmk-notifier` (hyphen) is the Rust transport crate. They talk over the
 fixed Raw HID wire protocol described in the
-[qmk-notifier README](https://github.com/dabstractor/qmk-notifier).
+[qmk_notifier README](https://github.com/dabstractor/qmk_notifier).
 
 ### Expose callbacks by name: `DEFINE_HOST_CALLBACKS` (one-time firmware change)
 
@@ -929,7 +929,7 @@ add your own `printf` inside a callback or temporarily inside `hid_notify`, with
 #ifdef CONSOLE_ENABLE
 // Example: log every time the vim-disable callback fires
 void disable_vim(void) {
-    printf("qmk-notifier: disabling vim\n");
+    printf("qmk_notifier: disabling vim\n");
     // ...your real logic...
 }
 #endif
@@ -950,8 +950,8 @@ sending the expected `{app_class}{GS}{title}` payload (see the
 If your integration isn't working:
 
 1. **Won't compile / `hid_notify` undefined**: you're missing the
-   `include .../qmk-notifier/rules.mk` line in your `rules.mk` (Step 2). Do not
-   hand-write `SRC += lib/...` or point at a non-existent `qmk_notifier.c`.
+   `include .../qmk_notifier/rules.mk` line in your `rules.mk` (Step 2). Do not
+   hand-write `SRC += lib/...` or point at a non-existent `qmk-notifier.c`.
 2. **No communication**: confirm QMKonnect detects the keyboard
    (`qmkonnect -v` / `--list-devices`), and that Raw HID is enabled (it is, once
    the module's `rules.mk` is included).
@@ -982,7 +982,7 @@ For detailed troubleshooting, see the
 
 > **Firmware setup is a hard prerequisite.** QMKonnect only *sends* window
 data to your keyboard over Raw HID — your keyboard cannot react to it unless the
-[**qmk-notifier**](https://github.com/dabstractor/qmk-notifier) module is built
+[**qmk_notifier**](https://github.com/dabstractor/qmk_notifier) module is built
 into your firmware and you've defined layer/command rules there. See the
 [QMK Integration Guide]({{ site.baseurl }}/qmk-integration) for that setup. This
 page covers only the **desktop-side** configuration.
@@ -1012,7 +1012,7 @@ Settings are saved automatically and work right away - no restart needed.
 
 ### Linux - Configuration File
 
-Linux uses a TOML configuration file located at `~/.config/qmk-notifier/config.toml`.
+Linux uses a TOML configuration file located at `~/.config/qmkonnect/config.toml`.
 
 #### Creating the Configuration File
 
@@ -1052,10 +1052,10 @@ Edit the file with your preferred text editor:
 
 ```bash
 # Using nano
-nano ~/.config/qmk-notifier/config.toml
+nano ~/.config/qmkonnect/config.toml
 
 # Using vim
-vim ~/.config/qmk-notifier/config.toml
+vim ~/.config/qmkonnect/config.toml
 ```
 
 Update the values:
@@ -1150,7 +1150,7 @@ systemctl --user restart qmkonnect
 ### Zero desktop config (Linux)
 
 This is the **desktop-side** default — no IDs are set, so QMKonnect
-auto-discovers any single QMK keyboard. (Your firmware still needs qmk-notifier
+auto-discovers any single QMK keyboard. (Your firmware still needs qmk_notifier
 built in — see [QMK Integration]({{ site.baseurl }}/qmk-integration).)
 ```toml
 # vendor_id  = 0xfeed   # unset: auto-discovery
@@ -1174,7 +1174,7 @@ poll_interval_ms = 200
 
 ## Configuration Reference
 
-All keys are optional. With your firmware already running qmk-notifier, QMKonnect auto-discovers any standard QMK keyboard by the QMK Raw HID signature, so a single-keyboard desktop install needs no IDs set. (The firmware itself is *not* optional — see the [QMK Integration Guide]({{ site.baseurl }}/qmk-integration).)
+All keys are optional. With your firmware already running qmk_notifier, QMKonnect auto-discovers any standard QMK keyboard by the QMK Raw HID signature, so a single-keyboard desktop install needs no IDs set. (The firmware itself is *not* optional — see the [QMK Integration Guide]({{ site.baseurl }}/qmk-integration).)
 
 | Key | Default | Description |
 | --- | --- | --- |
@@ -1225,7 +1225,7 @@ swapped from `config.toml` to `rules.toml`:
 
 | OS | `rules.toml` path |
 | --- | --- |
-| Linux | `~/.config/qmk-notifier/rules.toml` (also honors `$XDG_CONFIG_HOME` and `/etc/qmk-notifier/`) |
+| Linux | `~/.config/qmkonnect/rules.toml` (also honors `$XDG_CONFIG_HOME` and `/etc/qmkonnect/`) |
 | Windows | `%APPDATA%\QMKonnect\rules.toml` |
 | macOS | `~/Library/Application Support/QMKonnect/rules.toml` |
 
@@ -1370,7 +1370,7 @@ For detailed troubleshooting steps, see the [troubleshooting guide]({{ site.base
 
 Once QMKonnect can detect your keyboard, configure your QMK firmware to respond to window changes.
 
-The qmk-notifier framework provides two main configuration macros:
+The qmk_notifier framework provides two main configuration macros:
 
 ### Layer Switching with DEFINE_SERIAL_LAYERS
 
@@ -1465,7 +1465,7 @@ Examples:
 # Usage Guide
 
 > **Prerequisite:** This assumes you've already integrated the
-> [qmk-notifier](https://github.com/dabstractor/qmk-notifier) module into your
+> [qmk_notifier](https://github.com/dabstractor/qmk_notifier) module into your
 > firmware (see [QMK Integration]({{ site.baseurl }}/qmk-integration)). QMKonnect
 > only sends window data — without the firmware module, nothing will switch.
 
@@ -1572,7 +1572,7 @@ The behavior is entirely customized in your QMK firmware - QMKonnect just provid
 
 If your layers aren't switching as expected:
 1. Check that QMKonnect shows as "connected" in the system tray/menu bar
-2. Verify your QMK firmware is properly configured with the qmk-notifier module
+2. Verify your QMK firmware is properly configured with the qmk_notifier module
 3. Test by switching between different applications
 
 For detailed troubleshooting, see the [troubleshooting guide]({{ site.baseurl }}/troubleshooting).
@@ -1595,7 +1595,7 @@ Complete examples showing how to configure your **QMK firmware** for different u
 
 > **These are firmware examples, not desktop-app configuration.** They assume
 > you've already integrated the
-> [qmk-notifier](https://github.com/dabstractor/qmk-notifier) module into your
+> [qmk_notifier](https://github.com/dabstractor/qmk_notifier) module into your
 > firmware (see the [QMK Integration Guide]({{ site.baseurl }}/qmk-integration)).
 > QMKonnect only sends the active-window string; these `DEFINE_SERIAL_LAYERS` /
 > `DEFINE_SERIAL_COMMANDS` rules are what make your keyboard actually react.
@@ -1610,7 +1610,7 @@ Complete examples showing how to configure your **QMK firmware** for different u
 
 ```c
 #include QMK_KEYBOARD_H
-#include "qmk-notifier/notifier.h"
+#include "qmk_notifier/notifier.h"
 
 void raw_hid_receive(uint8_t *data, uint8_t length) {
     hid_notify(data, length);
@@ -1677,7 +1677,7 @@ const uint16_t PROGMEM keymaps[][MATRIX_ROWS][MATRIX_COLS] = {
 
 ```c
 #include QMK_KEYBOARD_H
-#include "qmk-notifier/notifier.h"
+#include "qmk_notifier/notifier.h"
 
 void raw_hid_receive(uint8_t *data, uint8_t length) {
     hid_notify(data, length);
@@ -1754,7 +1754,7 @@ const uint16_t PROGMEM keymaps[][MATRIX_ROWS][MATRIX_COLS] = {
 
 ```c
 #include QMK_KEYBOARD_H
-#include "qmk-notifier/notifier.h"
+#include "qmk_notifier/notifier.h"
 
 void raw_hid_receive(uint8_t *data, uint8_t length) {
     hid_notify(data, length);
@@ -2104,15 +2104,15 @@ system_profiler SPUSBDataType | grep -A 10 -B 10 -i keyboard
 1. **Verify keyboard configuration**:
    - Check vendor_id and product_id in config
    - Ensure Raw HID is enabled in QMK firmware
-   - Confirm qmk-notifier module is included
+   - Confirm qmk_notifier module is included
 
-2. **Check QMK firmware** — qmk-notifier must be integrated (it is **required**, not optional):
+2. **Check QMK firmware** — qmk_notifier must be integrated (it is **required**, not optional):
    ```make
    # In your keymap's rules.mk — this enables Raw HID AND compiles notifier.c:
-   include keyboards/handwired/[manufacturer]/[keyboard]/qmk-notifier/rules.mk
+   include keyboards/handwired/[manufacturer]/[keyboard]/qmk_notifier/rules.mk
    ```
    You do **not** need to set `RAW_USAGE_PAGE` / `RAW_USAGE_ID` — QMK's defaults
-   (`0xFF60` / `0x61`) are exactly what qmk-notifier expects. See the
+   (`0xFF60` / `0x61`) are exactly what qmk_notifier expects. See the
    [QMK Integration Guide]({{ site.baseurl }}/qmk-integration).
 
 3. **Permission issues (Linux)**:
@@ -2392,7 +2392,7 @@ See the [installation guide]({{ site.baseurl }}/installation/#macos) for the ful
 2. **Reset to defaults**:
    ```bash
    # Backup current config
-   cp ~/.config/qmk-notifier/config.toml ~/.config/qmk-notifier/config.toml.bak
+   cp ~/.config/qmkonnect/config.toml ~/.config/qmkonnect/config.toml.bak
    
    # Create new default config
    qmkonnect -c
@@ -2400,8 +2400,8 @@ See the [installation guide]({{ site.baseurl }}/installation/#macos) for the ful
 
 3. **Check file permissions**:
    ```bash
-   ls -la ~/.config/qmk-notifier/config.toml
-   chmod 644 ~/.config/qmk-notifier/config.toml
+   ls -la ~/.config/qmkonnect/config.toml
+   chmod 644 ~/.config/qmkonnect/config.toml
    ```
 
 ### Wrong Keyboard IDs
@@ -2529,6 +2529,25 @@ title; 1- or 3-element arrays are errors); `layer` must be **≥ 224**. See the
 See the [Configuration Guide]({{ site.baseurl }}/configuration) for the schema and
 CLI flags, and the [Examples]({{ site.baseurl }}/examples) for a complete recipe.
 
+### Board rule not firing after enabling host rules (partial migration)
+
+**Symptoms**: after enabling host rules (capable board + a `rules.toml`), a
+window that is matched **only** by a rule still defined on the board (in the
+firmware's `DEFINE_SERIAL_LAYERS` / `DEFINE_SERIAL_COMMANDS`) stops triggering
+that board rule.
+
+**Why**: when host rules are enabled and a window matches **no** host rule,
+QMKonnect sends only an `APPLY_HOST_CONTEXT { layer: 0xFF, callbacks: [] }` and
+**no** legacy window string (HOST_RULES.md §8(4)). Because no string is sent,
+the board never re-evaluates its own `DEFINE_*` rules for that window, so the
+previously-active board layer/command persists.
+
+**Fix**: this is the documented behavior — host rules and board rules are not
+meant to run side by side for the same window. Finish the migration by moving
+that rule into `rules.toml` (the [migration guide](../qmk-integration) tells
+you to *remove* rules from `DEFINE_*` once they live on the host), then reload
+rules.
+
 ## Performance Issues
 
 ### High CPU Usage
@@ -2592,20 +2611,20 @@ leaks qmkonnect
    qmkonnect --test-connection
    ```
 
-2. **Check QMK firmware side** — make sure qmk-notifier is actually integrated:
-   - Your `rules.mk` includes `.../qmk-notifier/rules.mk` (this compiles
+2. **Check QMK firmware side** — make sure qmk_notifier is actually integrated:
+   - Your `rules.mk` includes `.../qmk_notifier/rules.mk` (this compiles
      `notifier.c` and enables Raw HID).
-   - Your `keymap.c` includes `"qmk-notifier/notifier.h"` and forwards
+   - Your `keymap.c` includes `"qmk_notifier/notifier.h"` and forwards
      `raw_hid_receive()` to `hid_notify()`.
    - See the [QMK Integration Guide]({{ site.baseurl }}/qmk-integration).
    
    To watch what the keyboard receives, add your own `printf` inside a callback
-   (there is no built-in `qmk_notifier_notify` callback — the firmware API is the
+   (there is no built-in `qmk-notifier_notify` callback — the firmware API is the
    `DEFINE_SERIAL_LAYERS` / `DEFINE_SERIAL_COMMANDS` macros):
    ```c
    #ifdef CONSOLE_ENABLE
    void disable_vim(void) {
-       printf("qmk-notifier: disable_vim fired\n");
+       printf("qmk_notifier: disable_vim fired\n");
        // ...your real logic...
    }
    #endif
@@ -2616,10 +2635,10 @@ leaks qmkonnect
    qmk console
    ```
 
-3. **Verify Raw HID setup** — the qmk-notifier module's `rules.mk` enables this
+3. **Verify Raw HID setup** — the qmk_notifier module's `rules.mk` enables this
    for you (`RAW_ENABLE = yes`), so just make sure that module is included:
    ```make
-   include keyboards/handwired/[manufacturer]/[keyboard]/qmk-notifier/rules.mk
+   include keyboards/handwired/[manufacturer]/[keyboard]/qmk_notifier/rules.mk
    ```
    (`RAW_USAGE_PAGE` / `RAW_USAGE_ID` are QMK defaults of `0xFF60` / `0x61` — no
    need to set them unless your firmware deliberately overrides them.)
@@ -2627,9 +2646,9 @@ leaks qmkonnect
 ### Raw HID Issues
 
 **Verify Raw HID setup**:
-1. **QMK firmware** — make sure qmk-notifier is integrated (its `rules.mk` sets `RAW_ENABLE = yes` for you):
+1. **QMK firmware** — make sure qmk_notifier is integrated (its `rules.mk` sets `RAW_ENABLE = yes` for you):
    ```make
-   include keyboards/handwired/[manufacturer]/[keyboard]/qmk-notifier/rules.mk
+   include keyboards/handwired/[manufacturer]/[keyboard]/qmk_notifier/rules.mk
    ```
 
 2. **Test Raw HID**:
@@ -2672,7 +2691,7 @@ When reporting issues, include:
 
 4. **Configuration file**:
    ```bash
-   cat ~/.config/qmk-notifier/config.toml
+   cat ~/.config/qmkonnect/config.toml
    ```
 
 ### Where to Get Help

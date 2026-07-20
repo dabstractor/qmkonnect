@@ -8,7 +8,7 @@ permalink: /configuration/
 
 > **Firmware setup is a hard prerequisite.** QMKonnect only *sends* window
 data to your keyboard over Raw HID — your keyboard cannot react to it unless the
-[**qmk-notifier**](https://github.com/dabstractor/qmk-notifier) module is built
+[**qmk_notifier**](https://github.com/dabstractor/qmk_notifier) module is built
 into your firmware and you've defined layer/command rules there. See the
 [QMK Integration Guide]({{ site.baseurl }}/qmk-integration) for that setup. This
 page covers only the **desktop-side** configuration.
@@ -38,7 +38,7 @@ Settings are saved automatically and work right away - no restart needed.
 
 ### Linux - Configuration File
 
-Linux uses a TOML configuration file located at `~/.config/qmk-notifier/config.toml`.
+Linux uses a TOML configuration file located at `~/.config/qmkonnect/config.toml`.
 
 #### Creating the Configuration File
 
@@ -78,10 +78,10 @@ Edit the file with your preferred text editor:
 
 ```bash
 # Using nano
-nano ~/.config/qmk-notifier/config.toml
+nano ~/.config/qmkonnect/config.toml
 
 # Using vim
-vim ~/.config/qmk-notifier/config.toml
+vim ~/.config/qmkonnect/config.toml
 ```
 
 Update the values:
@@ -176,7 +176,7 @@ systemctl --user restart qmkonnect
 ### Zero desktop config (Linux)
 
 This is the **desktop-side** default — no IDs are set, so QMKonnect
-auto-discovers any single QMK keyboard. (Your firmware still needs qmk-notifier
+auto-discovers any single QMK keyboard. (Your firmware still needs qmk_notifier
 built in — see [QMK Integration]({{ site.baseurl }}/qmk-integration).)
 ```toml
 # vendor_id  = 0xfeed   # unset: auto-discovery
@@ -200,7 +200,7 @@ poll_interval_ms = 200
 
 ## Configuration Reference
 
-All keys are optional. With your firmware already running qmk-notifier, QMKonnect auto-discovers any standard QMK keyboard by the QMK Raw HID signature, so a single-keyboard desktop install needs no IDs set. (The firmware itself is *not* optional — see the [QMK Integration Guide]({{ site.baseurl }}/qmk-integration).)
+All keys are optional. With your firmware already running qmk_notifier, QMKonnect auto-discovers any standard QMK keyboard by the QMK Raw HID signature, so a single-keyboard desktop install needs no IDs set. (The firmware itself is *not* optional — see the [QMK Integration Guide]({{ site.baseurl }}/qmk-integration).)
 
 | Key | Default | Description |
 | --- | --- | --- |
@@ -251,7 +251,7 @@ swapped from `config.toml` to `rules.toml`:
 
 | OS | `rules.toml` path |
 | --- | --- |
-| Linux | `~/.config/qmk-notifier/rules.toml` (also honors `$XDG_CONFIG_HOME` and `/etc/qmk-notifier/`) |
+| Linux | `~/.config/qmkonnect/rules.toml` (also honors `$XDG_CONFIG_HOME` and `/etc/qmkonnect/`) |
 | Windows | `%APPDATA%\QMKonnect\rules.toml` |
 | macOS | `~/Library/Application Support/QMKonnect/rules.toml` |
 
@@ -396,7 +396,7 @@ For detailed troubleshooting steps, see the [troubleshooting guide]({{ site.base
 
 Once QMKonnect can detect your keyboard, configure your QMK firmware to respond to window changes.
 
-The qmk-notifier framework provides two main configuration macros:
+The qmk_notifier framework provides two main configuration macros:
 
 ### Layer Switching with DEFINE_SERIAL_LAYERS
 

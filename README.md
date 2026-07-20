@@ -9,9 +9,9 @@ Detects window changes and tells your QMK keyboard what app you're using so it c
 QMKonnect watches which window is active and sends that info to your QMK keyboard. Your keyboard can then switch layers or run commands based on what app you're using.
 
 This tool is part of a broader ecosystem:
-- **[qmk-notifier](https://github.com/dabstractor/qmk-notifier)**: QMK module that receives commands and handles layer/feature toggling on your keyboard
-- **[qmk_notifier](https://github.com/dabstractor/qmk_notifier)**: The Rust transport library that QMKonnect links to send commands to your keyboard via Raw HID
-- **QMKonnect** (this tool): Cross-platform desktop daemon that detects window changes and streams them to your keyboard through `qmk_notifier`
+- **[qmk_notifier](https://github.com/dabstractor/qmk_notifier)**: QMK module that receives commands and handles layer/feature toggling on your keyboard
+- **[qmk-notifier](https://github.com/dabstractor/qmk-notifier)**: The Rust transport library that QMKonnect links to send commands to your keyboard via Raw HID
+- **QMKonnect** (this tool): Cross-platform desktop daemon that detects window changes and streams them to your keyboard through `qmk-notifier`
 
 ## Features
 
@@ -90,7 +90,7 @@ sudo install -m644 packaging/linux/udev/69-qmkonnect-rawhid.rules \
                     /usr/lib/udev/rules.d/69-qmkonnect-rawhid.rules
 sudo udevadm control --reload && sudo udevadm trigger
 ```
-Only set `vendor_id`/`product_id` (in `~/.config/qmk-notifier/config.toml`) to
+Only set `vendor_id`/`product_id` (in `~/.config/qmkonnect/config.toml`) to
 disambiguate among multiple QMK keyboards, then install the matching rule:
 ```bash
 qmkonnect -c          # writes a commented-out default config (edit as needed)
@@ -137,28 +137,28 @@ cargo build --release
 
 ## QMK Firmware Setup (REQUIRED)
 
-**IMPORTANT**: QMKonnect will not work at all without proper QMK firmware configuration. You must add the qmk-notifier module to your keyboard's firmware first.
+**IMPORTANT**: QMKonnect will not work at all without proper QMK firmware configuration. You must add the qmk_notifier module to your keyboard's firmware first.
 
 ### 1. Add the QMK Notifier Module
 
 In your QMK keymap directory:
 
 ```bash
-git submodule add https://github.com/dabstractor/qmk-notifier.git qmk-notifier
+git submodule add https://github.com/dabstractor/qmk_notifier.git qmk_notifier
 ```
 
 ### 2. Include the Module's Build Rules
 
 In your keymap's `rules.mk`, include the notifier's own `rules.mk` (path is
 relative to the `qmk_firmware` root). That single line pulls in both
-`RAW_ENABLE = yes` and `SRC += qmk-notifier/notifier.c` for you:
+`RAW_ENABLE = yes` and `SRC += qmk_notifier/notifier.c` for you:
 
 ```make
-include keyboards/handwired/<manufacturer>/<keyboard>/qmk-notifier/rules.mk
+include keyboards/handwired/<manufacturer>/<keyboard>/qmk_notifier/rules.mk
 ```
 
 > Adjust the path to wherever your keyboard lives under `qmk_firmware/keyboards/`. The module's `rules.mk` (which you can read in the
-> [qmk-notifier](https://github.com/dabstractor/qmk-notifier) repo) is what
+> [qmk_notifier](https://github.com/dabstractor/qmk_notifier) repo) is what
 > actually compiles `notifier.c` — without this `include`, the build will fail
 > to link `hid_notify`.
 
@@ -168,7 +168,7 @@ Add this to your `keymap.c`:
 
 ```c
 #include QMK_KEYBOARD_H
-#include "./qmk-notifier/notifier.h"
+#include "./qmk_notifier/notifier.h"
 
 void raw_hid_receive(uint8_t *data, uint8_t length) {
     hid_notify(data, length);
@@ -189,7 +189,7 @@ Build and flash your updated firmware to your keyboard. **QMKonnect cannot commu
 
 > **Prerequisite — firmware setup is required.** QMKonnect only *sends* window
 data to your keyboard over Raw HID. Your keyboard can't act on it unless the
-[**qmk-notifier**](https://github.com/dabstractor/qmk-notifier) module is built
+[**qmk_notifier**](https://github.com/dabstractor/qmk_notifier) module is built
 into your firmware. See [QMK Firmware Setup](#qmk-firmware-setup-required).
 > Everything below covers only the *desktop-side* configuration.
 
@@ -198,8 +198,8 @@ configuration** for a single standard QMK keyboard — QMKonnect auto-discovers 
 via the Raw HID usage page (0xFF60 / 0x61). You only set a Vendor/Product ID to
 disambiguate among multiple QMK keyboards.
 
-> **Config file locations** (historical naming is preserved so existing installs keep working):
-> - **Linux**: `~/.config/qmk-notifier/config.toml`
+> **Config file locations:**
+> - **Linux**: `~/.config/qmkonnect/config.toml`
 > - **Windows**: `%APPDATA%\QMKonnect\config.toml`
 > - **macOS**: `~/Library/Application Support/QMKonnect/config.toml`
 
@@ -219,7 +219,7 @@ qmkonnect --list-devices
 
 ### Linux
 
-Edit the configuration file at `~/.config/qmk-notifier/config.toml`.
+Edit the configuration file at `~/.config/qmkonnect/config.toml`.
 
 If no file exists, create it:
 
@@ -290,15 +290,15 @@ qmkonnect & disown
 ## Integration with QMK
 
 This tool works in conjunction with:
-- The [qmk-notifier](https://github.com/dabstractor/qmk-notifier) QMK module running on your keyboard
-- The [qmk_notifier](https://github.com/dabstractor/qmk_notifier) transport library that QMKonnect links to handle the Raw HID communication
+- The [qmk_notifier](https://github.com/dabstractor/qmk_notifier) QMK module running on your keyboard
+- The [qmk-notifier](https://github.com/dabstractor/qmk-notifier) transport library that QMKonnect links to handle the Raw HID communication
 
 When a window focus change is detected, this application formats the data as:
 `{application_class}{GS}{window_title}` where `{GS}` is the Group Separator character (0x1D).
 
 ## Default Configuration
 
-This is the **desktop-side** config only (your firmware still needs qmk-notifier — see above). QMKonnect auto-discovers standard QMK keyboards, so the default config leaves these commented out (uncomment only to pin a specific keyboard):
+This is the **desktop-side** config only (your firmware still needs qmk_notifier — see above). QMKonnect auto-discovers standard QMK keyboards, so the default config leaves these commented out (uncomment only to pin a specific keyboard):
 
 ```toml
 # Your QMK keyboard's vendor ID (in hex)

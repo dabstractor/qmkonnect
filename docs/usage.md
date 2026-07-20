@@ -7,7 +7,7 @@ permalink: /usage/
 # Usage Guide
 
 > **Prerequisite:** This assumes you've already integrated the
-> [qmk-notifier](https://github.com/dabstractor/qmk-notifier) module into your
+> [qmk_notifier](https://github.com/dabstractor/qmk_notifier) module into your
 > firmware (see [QMK Integration]({{ site.baseurl }}/qmk-integration)). QMKonnect
 > only sends window data — without the firmware module, nothing will switch.
 
@@ -114,7 +114,7 @@ The behavior is entirely customized in your QMK firmware - QMKonnect just provid
 
 If your layers aren't switching as expected:
 1. Check that QMKonnect shows as "connected" in the system tray/menu bar
-2. Verify your QMK firmware is properly configured with the qmk-notifier module
+2. Verify your QMK firmware is properly configured with the qmk_notifier module
 3. Test by switching between different applications
 
 For detailed troubleshooting, see the [troubleshooting guide]({{ site.baseurl }}/troubleshooting).
