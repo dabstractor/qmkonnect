@@ -828,7 +828,7 @@
                   "type": "Subtask",
                   "id": "P6.M1.T1.S2",
                   "title": "Update docs/qmk-integration.md with host-rules migration guide",
-                  "status": "Researching",
+                  "status": "Ready",
                   "story_points": 1,
                   "dependencies": [
                     "P5.M1.T1.S1",
@@ -845,7 +845,7 @@
                   "type": "Subtask",
                   "id": "P6.M1.T1.S3",
                   "title": "Update docs/examples.md and docs/troubleshooting.md with host-rules content",
-                  "status": "Planned",
+                  "status": "Researching",
                   "story_points": 1,
                   "dependencies": [
                     "P5.M1.T1.S1",
