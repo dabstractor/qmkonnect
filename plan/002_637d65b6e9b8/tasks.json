@@ -810,7 +810,7 @@
                   "type": "Subtask",
                   "id": "P6.M1.T1.S1",
                   "title": "Update docs/configuration.md with rules.toml schema and CLI flags",
-                  "status": "Researching",
+                  "status": "Ready",
                   "story_points": 1,
                   "dependencies": [
                     "P5.M1.T1.S1",
