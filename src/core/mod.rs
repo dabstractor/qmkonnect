@@ -162,6 +162,112 @@ pub fn create_default_config(config_path: &Path) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+/// Render a fully-commented `rules.toml` template (the `spec/HOST_RULES.md` §9
+/// schema with every active line prefixed by `# `).
+///
+/// A freshly-seeded file therefore parses to an all-default `RuleSet` (host
+/// rules disabled) — a brand-new install behaves identically to today until
+/// the user uncomments and edits entries. Mirrors [`render_config_body`].
+///
+/// This is the host-rules counterpart to [`render_config_body`]: a pure renderer
+/// (no IO) kept here so the `-c` seeder (`create_default_rules`) and any future
+/// re-seeder (P5.M2 tray "Reload rules") agree on the file format.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use qmkonnect::core::render_rules_body;
+/// let body = render_rules_body();
+/// // Every active line is commented out, so:
+/// let rs: qmkonnect::core::rules::RuleSet = toml::from_str(&body).unwrap();
+/// assert!(rs.layer_rules.is_empty() && rs.callback_rules.is_empty());
+/// ```
+pub fn render_rules_body() -> String {
+    // Every active line is prefixed with `# ` (G7) so the seeded file parses to
+    // an all-default RuleSet (host rules disabled). The §9 schema verbatim, as a
+    // commented-out template the user can edit. A raw string (`r#"..."#`) keeps
+    // the embedded `"`s (TOML string values) literal without escaping.
+    r#"# QMKonnect Host Rules (rules.toml)
+#
+# Host rules map the active window to a keyboard layer + callback set.
+# See spec/HOST_RULES.md for the full schema. Everything here is commented
+# out: uncomment and edit to enable host rules. As-is, this file parses to
+# an all-default ruleset (host rules disabled) and a fresh install behaves
+# identically to today.
+#
+# Callback names come from your keyboard's registry — run
+# `qmkonnect --list-callbacks` with the keyboard connected to see them.
+
+# Global default for whether the board runs its own config (false = stack)
+# or is replaced by the host layer (true = replace). Per-rule overrides win.
+# On no match the host layer is always cleared and all host callbacks
+# disabled.
+# [host]
+# disable_firmware_config = false
+
+# Layer rules: FIRST match wins. One host layer active at a time (>= 224).
+# [[layer_rules]]
+# match = "alacritty"                       # class-only pattern
+# layer = 224
+# disable_firmware_config = true           # optional override (inherits [host])
+
+# [[layer_rules]]
+# match = ["*chrome*", "*youtube*"]         # [class_pattern, title_pattern]
+# layer = 225
+# case_sensitive = false                    # optional, default false
+
+# Callback rules: ALL matches fire. Names come from `--list-callbacks`.
+# [[callback_rules]]
+# match = "neovide"
+# enable = ["vim_lazy", "disable_vim"]      # run on focus-in
+# disable = ["vim_lazy"]                    # optional: force-off override
+
+# [[callback_rules]]
+# match = ["*chrome*", "*claude*"]
+# enable = ["vim_lazy", "disable_vim"]
+# disable_firmware_config = true           # skip the string -> board can't match
+"#
+    .to_string()
+}
+
+/// Create a default (commented) `rules.toml` next to `config.toml`.
+///
+/// No-op + message if it already exists (mirrors [`create_default_config`]).
+/// Creates the parent dir when needed. The rendered body is fully commented
+/// (see [`render_rules_body`]) so a fresh install's `rules.toml` parses to an
+/// all-default `RuleSet` — host rules stay disabled until the user opts in.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use qmkonnect::core::create_default_rules;
+/// create_default_rules(&config_dir.join("rules.toml"))?;  // no-op if it exists
+/// ```
+pub fn create_default_rules(rules_path: &Path) -> Result<(), Box<dyn Error>> {
+    if rules_path.exists() {
+        println!("rules.toml already exists at: {}", rules_path.display());
+        return Ok(());
+    }
+
+    // Make sure the directory exists (mirrors create_default_config).
+    if let Some(parent) = rules_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    fs::write(rules_path, render_rules_body())?;
+
+    println!("rules.toml template created at: {}", rules_path.display());
+    println!(
+        "Host rules are disabled by default (the template is fully commented
+\
+         out). Uncomment and edit entries to enable host rules, then run
+\
+         `qmkonnect --validate-rules` to check your file."
+    );
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -212,5 +318,89 @@ mod tests {
         let cfg: Config = toml::from_str(&body).unwrap();
         assert_eq!(cfg.vendor_id, Some(0xfeed));
         assert_eq!(cfg.product_id, Some(0x1234));
+    }
+
+    // ========================================================================
+    // P5.M1.T1.S1 — render_rules_body + create_default_rules
+    // ========================================================================
+
+    #[test]
+    fn test_render_rules_body_fully_commented() {
+        // G7: every non-blank line in the rendered template must start with `#`
+        // so the seeded file parses to an all-default (inert) RuleSet. An
+        // uncommented template would activate bogus example rules.
+        let body = render_rules_body();
+        for (i, line) in body.lines().enumerate() {
+            let trimmed = line.trim_start();
+            if trimmed.is_empty() {
+                continue;
+            }
+            assert!(
+                trimmed.starts_with('#'),
+                "line {} is not commented: {line:?}",
+                i + 1
+            );
+        }
+
+        // The template must contain the §9 section markers so the user sees
+        // the full schema shape to edit.
+        assert!(body.contains("[host]"));
+        assert!(body.contains("[[layer_rules]]"));
+        assert!(body.contains("[[callback_rules]]"));
+        assert!(body.contains("disable_firmware_config"));
+    }
+
+    #[test]
+    fn test_render_rules_body_parses_to_default_ruleset() {
+        // The commented template must deserialize to a valid all-default
+        // RuleSet (0 layer rules, 0 callback rules) — proves the seeded file is
+        // both valid AND inert on a fresh install (legacy parity).
+        let body = render_rules_body();
+        let rs: rules::RuleSet = toml::from_str(&body).expect(
+            "render_rules_body must parse to a valid all-default RuleSet",
+        );
+        assert!(rs.layer_rules.is_empty());
+        assert!(rs.callback_rules.is_empty());
+        assert_eq!(rs.host.disable_firmware_config, false);
+    }
+
+    #[test]
+    fn test_create_default_rules_noop_if_exists() {
+        // Pre-create the file with sentinel content; calling create_default_rules
+        // must be a no-op (content UNCHANGED), mirroring create_default_config.
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("rules.toml");
+        let sentinel = "# pre-existing sentinel\n";
+        std::fs::write(&path, sentinel).unwrap();
+
+        create_default_rules(&path).unwrap();
+
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(after, sentinel, "existing rules.toml must not be overwritten");
+    }
+
+    #[test]
+    fn test_create_default_rules_writes_when_absent() {
+        // Absent file => written with the rendered body; re-call is a no-op
+        // (idempotent, mirrors create_default_config).
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("nested").join("rules.toml");
+        assert!(!path.exists());
+
+        create_default_rules(&path).unwrap();
+        assert!(path.exists(), "rules.toml should be created when absent");
+        let written = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(written, render_rules_body());
+
+        // Re-call must be a no-op: overwrite the file with sentinel, re-call,
+        // sentinel must survive (idempotent).
+        let sentinel = "# sentinel after first write\n";
+        std::fs::write(&path, sentinel).unwrap();
+        create_default_rules(&path).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            sentinel,
+            "second create_default_rules must not overwrite"
+        );
     }
 }

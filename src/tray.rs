@@ -33,6 +33,30 @@ mod objc_types {
     }
 }
 
+/// Outcome of a "Reload rules" click. Produced on a background thread (the
+/// handshake does blocking HID I/O), consumed on the event-loop thread. Every
+/// field is `Send`, so the struct is auto-`Send` and can travel through the
+/// `EventLoopProxy<UserEvent>`. Carried by [`UserEvent::RulesReloaded`].
+///
+/// ```rust,ignore
+/// // built on tray.rs (binary crate); see #[cfg(test)] mod tests below
+/// let r = ReloadResult { rules_ok: true, rules_detail: "…".into(),
+///                        capable: Some(true), callback_count: Some(5) };
+/// assert!(format_reload_result(&r).contains("handshake OK"));
+/// ```
+struct ReloadResult {
+    /// `true` if `rules.toml` parsed cleanly (or was absent — host-rules-disabled
+    /// is valid); `false` on a hard parse/schema error.
+    rules_ok: bool,
+    /// One-line detail: rule counts on success, or the parse error message.
+    rules_detail: String,
+    /// `Some(host_capable())` if a device was connected and the handshake (re)ran;
+    /// `None` if no device (handshake skipped).
+    capable: Option<bool>,
+    /// `callback_names().len()` when a handshake ran; `None` otherwise.
+    callback_count: Option<usize>,
+}
+
 enum UserEvent {
     MenuEvent(MenuEvent),
     /// Latest device-presence probe result, delivered from the background
@@ -43,6 +67,11 @@ enum UserEvent {
     /// status, delivered after the deferred first-run register completes.
     #[cfg(target_os = "macos")]
     AutostartSync,
+    /// "Reload rules" finished on a background thread: re-read `rules.toml` and
+    /// (if a device is present) re-ran the capability handshake. The event-loop
+    /// arm logs a single clean summary. Ungated — works on every platform
+    /// `tray.rs` compiles for (macOS/Windows/fallback-X11-Linux).
+    RulesReloaded(ReloadResult),
 }
 
 // Shared result slot for the Windows settings dialog, replacing the former
@@ -283,6 +312,10 @@ pub fn setup_tray(verbose: bool) {
     let tray_menu = Menu::new();
 
     let settings_i = MenuItem::new("Settings", true, None);
+    // "Reload rules" — re-read rules.toml + refresh the firmware callback table
+    // (host-rules feature). Sits in the prefs group with Settings (ungated, like
+    // Settings/Quit, so the fallback X11-Linux build gets it too).
+    let reload_rules_i = MenuItem::new("Reload rules", true, None);
     let quit_i = MenuItem::new("Quit", true, None);
 
     // "Launch at Login" toggle (macOS only; backed by SMAppService). The
@@ -352,6 +385,10 @@ pub fn setup_tray(verbose: bool) {
     // (… Settings → Open at Login → sep → Show Window Information …).
     #[cfg(target_os = "windows")]
     menu_items.push(&open_at_login_i);
+
+    // "Reload rules" sits in the prefs group right after Settings (+ "Open at
+    // Login" on Windows), before the Show-Window-Information separator.
+    menu_items.push(&reload_rules_i);
 
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     {
@@ -465,6 +502,17 @@ pub fn setup_tray(verbose: bool) {
                     *control_flow = ControlFlow::Exit;
                 } else if event.id == settings_i.id() {
                     handle_settings_click();
+                } else if event.id == reload_rules_i.id() {
+                    // Re-read rules.toml + re-handshake on a background thread:
+                    // the handshake does BLOCKING HID I/O (1-5s w/ timeouts) that
+                    // would freeze the tray if run here. Report back via a new
+                    // UserEvent::RulesReloaded variant — the same off-loop pattern
+                    // the device-status poll thread above already uses.
+                    let rp = proxy.clone();
+                    std::thread::spawn(move || {
+                        let result = do_reload_rules(verbose);
+                        let _ = rp.send_event(UserEvent::RulesReloaded(result));
+                    });
                 }
 
                 #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -501,6 +549,21 @@ pub fn setup_tray(verbose: bool) {
             #[cfg(target_os = "macos")]
             Event::UserEvent(UserEvent::AutostartSync) => {
                 launch_at_login_i.set_checked(autostart::is_enabled());
+            }
+
+            // "Reload rules" finished on the background thread. This is the ONLY
+            // place we print, so the output is deterministic (never interleaved
+            // with the HID handshake, which runs on another thread). stdout for a
+            // valid parse, stderr for a parse error (mirrors --validate-rules).
+            Event::UserEvent(UserEvent::RulesReloaded(result)) => {
+                let summary = format_reload_result(&result);
+                // Prefix every line with "Reload rules: " for grep-able logs.
+                let prefixed = summary.replace('\n', "\nReload rules: ");
+                if result.rules_ok {
+                    println!("Reload rules: {}", prefixed);
+                } else {
+                    eprintln!("Reload rules: {}", prefixed);
+                }
             }
 
             _ => {}
@@ -651,6 +714,86 @@ fn device_status_text(connected: bool) -> String {
         // U+25CB WHITE CIRCLE — hollow dot.
         "\u{25CB}  No Device Connected".to_string()
     }
+}
+
+/// Re-read `rules.toml` and, if a device is connected, force a fresh capability
+/// handshake. Runs on a **background thread** (the handshake does blocking HID
+/// I/O that would freeze the tray if run on the event-loop thread). The caller
+/// delivers the returned [`ReloadResult`] back to the event loop via
+/// `EventLoopProxy::send_event(UserEvent::RulesReloaded(..))`.
+///
+/// There is no `RuleSet` cache to update: the debounce worker re-reads
+/// `rules.toml` live on every window change (P4.M3). This function's value is
+/// (a) immediate validation feedback and (b) a forced refresh of the firmware
+/// callback table — `reset_handshake_state()` defeats the handshake's
+/// once-per-session idempotency guard so the `QueryCallback` sweep actually
+/// re-runs.
+///
+/// ```rust,ignore
+/// // touches HID + the filesystem; validated manually, not unit-tested.
+/// ```
+fn do_reload_rules(verbose: bool) -> ReloadResult {
+    // 1. Re-read + validate rules.toml (the strict parse IS the schema check).
+    let (rules_ok, rules_detail) =
+        match crate::core::rules::get_rules_paths()
+            .into_iter()
+            .find(|p| p.exists())
+        {
+            None => (true, "No rules.toml (host rules disabled)".to_string()),
+            Some(p) => match crate::core::rules::parse_rules(&p) {
+                Ok(rs) => (
+                    true,
+                    format!(
+                        "rules.toml valid: {} layer rule(s), {} callback rule(s)",
+                        rs.layer_rules.len(),
+                        rs.callback_rules.len()
+                    ),
+                ),
+                Err(e) => (false, format!("rules.toml invalid: {e}")),
+            },
+        };
+
+    // 2. If a device is present, force-refresh the firmware callback table.
+    //    reset_handshake_state() clears the once-per-session guard so
+    //    perform_handshake actually re-sweeps (otherwise it short-circuits and
+    //    CALLBACK_NAMES is stale).
+    let (capable, callback_count) = if crate::core::notifier::is_device_connected() {
+        crate::core::notifier::reset_handshake_state();
+        crate::core::notifier::perform_handshake(verbose);
+        let names = crate::core::notifier::callback_names();
+        (
+            Some(crate::core::notifier::host_capable()),
+            Some(names.len()),
+        )
+    } else {
+        (None, None)
+    };
+
+    ReloadResult {
+        rules_ok,
+        rules_detail,
+        capable,
+        callback_count,
+    }
+}
+
+/// Render the two-line reload summary (pure — unit-tested). Line 1 is the rules
+/// detail; line 2 is the handshake outcome (no device / legacy-timeout /
+/// OK + callback count). The caller decides stdout-vs-stderr from `rules_ok`.
+///
+/// ```rust,ignore
+/// // pure helper; see #[cfg(test)] mod tests for the contract assertions.
+/// ```
+fn format_reload_result(result: &ReloadResult) -> String {
+    let handshake = match result.capable {
+        None => "no device connected — handshake skipped.".to_string(),
+        Some(false) => "handshake ran — legacy/timeout (string-only mode).".to_string(),
+        Some(true) => format!(
+            "handshake OK — {} callback(s) discovered.",
+            result.callback_count.unwrap_or(0)
+        ),
+    };
+    format!("{}\n{}", result.rules_detail, handshake)
 }
 
 fn handle_settings_click() {
@@ -2347,4 +2490,83 @@ fn show_macos_window_info_dialog_inner() -> Result<(), Box<dyn std::error::Error
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_result(
+        rules_ok: bool,
+        detail: &str,
+        capable: Option<bool>,
+        n: Option<usize>,
+    ) -> ReloadResult {
+        ReloadResult {
+            rules_ok,
+            rules_detail: detail.to_string(),
+            capable,
+            callback_count: n,
+        }
+    }
+
+    #[test]
+    fn test_format_reload_parse_error() {
+        // A malformed rules.toml + no device: the parse error is the detail,
+        // and the handshake is skipped (no device connected).
+        let r = make_result(
+            false,
+            "rules.toml invalid: missing field `match`",
+            None,
+            None,
+        );
+        let out = format_reload_result(&r);
+        assert!(out.contains("rules.toml invalid: missing field `match`"));
+        assert!(out.contains("no device connected — handshake skipped."));
+    }
+
+    #[test]
+    fn test_format_reload_valid_no_device() {
+        // Valid rules + no device: counts are logged and the handshake is skipped.
+        let r = make_result(
+            true,
+            "rules.toml valid: 1 layer rule(s), 2 callback rule(s)",
+            None,
+            None,
+        );
+        let out = format_reload_result(&r);
+        assert!(out.contains("rules.toml valid: 1 layer rule(s), 2 callback rule(s)"));
+        assert!(out.contains("no device connected — handshake skipped."));
+    }
+
+    #[test]
+    fn test_format_reload_valid_capable() {
+        // Valid rules + a capable board: the handshake succeeded and reports
+        // the discovered callback count.
+        let r = make_result(
+            true,
+            "rules.toml valid: 2 layer rule(s), 3 callback rule(s)",
+            Some(true),
+            Some(5),
+        );
+        let out = format_reload_result(&r);
+        assert!(out.contains("rules.toml valid: 2 layer rule(s), 3 callback rule(s)"));
+        assert!(out.contains("handshake OK"));
+        assert!(out.contains("5 callback(s) discovered."));
+    }
+
+    #[test]
+    fn test_format_reload_valid_legacy() {
+        // Valid rules + a legacy/timeout board: the handshake ran but the board
+        // is not v2-capable (string-only fallback).
+        let r = make_result(
+            true,
+            "rules.toml valid: 1 layer rule(s), 0 callback rule(s)",
+            Some(false),
+            Some(0),
+        );
+        let out = format_reload_result(&r);
+        assert!(out.contains("rules.toml valid: 1 layer rule(s), 0 callback rule(s)"));
+        assert!(out.contains("legacy/timeout (string-only mode)."));
+    }
 }

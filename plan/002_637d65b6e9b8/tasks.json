@@ -693,7 +693,7 @@
       "type": "Phase",
       "id": "P5",
       "title": "QMKonnect CLI & Tray Integration",
-      "status": "Planned",
+      "status": "Researching",
       "description": "Add the --list-callbacks, --validate-rules, --rules-path CLI flags and the 'Reload rules' tray menu item on all three platforms.",
       "milestones": [
         {
@@ -735,21 +735,21 @@
           "type": "Milestone",
           "id": "P5.M2",
           "title": "Tray 'Reload rules' Menu Item (all platforms)",
-          "status": "Planned",
+          "status": "Researching",
           "description": "Add a 'Reload rules' menu item to the macOS/Windows tray (src/tray.rs) and the Linux SNI tray (src/linux_tray.rs).",
           "tasks": [
             {
               "type": "Task",
               "id": "P5.M2.T1",
               "title": "Add 'Reload rules' to macOS/Windows tray and Linux SNI tray",
-              "status": "Planned",
+              "status": "Researching",
               "description": "Add the reload menu item to both tray implementations with appropriate event handling.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P5.M2.T1.S1",
                   "title": "Add 'Reload rules' MenuItem to src/tray.rs (macOS/Windows)",
-                  "status": "Researching",
+                  "status": "Complete",
                   "story_points": 1,
                   "dependencies": [
                     "P4.M2.T1.S2",
@@ -766,7 +766,7 @@
                   "type": "Subtask",
                   "id": "P5.M2.T1.S2",
                   "title": "Add 'Reload rules' to src/linux_tray.rs (Linux SNI)",
-                  "status": "Planned",
+                  "status": "Researching",
                   "story_points": 1,
                   "dependencies": [
                     "P4.M2.T1.S2",
