@@ -214,8 +214,8 @@ A single TOML file, **all fields optional** (zero-config by default):
 | `debounce_ms` | `50` | Burst-coalescing window (ms); `0` disables debouncing |
 | `poll_interval_ms` | `0` | (Hyprland only) active-window poll cadence; `0` = rely on IPC events |
 
-**Paths** (historical naming preserved):
-- Linux: `~/.config/qmk-notifier/config.toml`
+**Paths:**
+- Linux: `~/.config/qmkonnect/config.toml`
 - Windows: `%APPDATA%\QMKonnect\config.toml`
 - macOS: `~/Library/Application Support/QMKonnect/config.toml`
 
