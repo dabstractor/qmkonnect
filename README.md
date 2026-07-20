@@ -30,6 +30,18 @@ This tool is part of a broader ecosystem:
   - Easy to configure
   - Reloads settings automatically
 
+- **Host-Side Window Rules**:
+  - **Change layers & callbacks without reflashing** — edit a `rules.toml` file
+    on your computer, then click **Reload rules** in the tray/menu bar; no
+    firmware rebuild needed
+  - Host rules **stack on top of** your board's existing `DEFINE_SERIAL_*`
+    rules (the board's rules run first, then host rules apply on top)
+  - Requires firmware that advertises the typed-command capability
+    (`proto_ver == 2`); legacy firmware keeps working in today's string-only mode
+  - Full schema, CLI flags (`--list-callbacks`, `--validate-rules`), and
+    per-OS file location: see the [Configuration Guide](docs/configuration.md)
+    (firmware-side setup: [QMK Integration Guide](docs/qmk-integration.md))
+
 ## Installation
 
 ### Windows
