@@ -693,28 +693,28 @@
       "type": "Phase",
       "id": "P5",
       "title": "QMKonnect CLI & Tray Integration",
-      "status": "Ready",
+      "status": "Complete",
       "description": "Add the --list-callbacks, --validate-rules, --rules-path CLI flags and the 'Reload rules' tray menu item on all three platforms.",
       "milestones": [
         {
           "type": "Milestone",
           "id": "P5.M1",
           "title": "CLI Flags (--list-callbacks, --validate-rules, --rules-path)",
-          "status": "Ready",
+          "status": "Complete",
           "description": "Add the new CLI subcommands for host-rules diagnostics and validation.",
           "tasks": [
             {
               "type": "Task",
               "id": "P5.M1.T1",
               "title": "Implement --list-callbacks, --validate-rules, --rules-path CLI flags",
-              "status": "Ready",
+              "status": "Complete",
               "description": "Add the new CLI flags to the hand-rolled CLI scanner in src/main.rs.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P5.M1.T1.S1",
                   "title": "Add --list-callbacks and --validate-rules dispatch in main.rs",
-                  "status": "Ready",
+                  "status": "Complete",
                   "story_points": 2,
                   "dependencies": [
                     "P4.M2.T1.S1",
