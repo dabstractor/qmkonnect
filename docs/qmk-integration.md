@@ -127,6 +127,130 @@ your `config.h` if your firmware deliberately overrides them — and in that cas
 you must tell the QMKonnect desktop app the matching values (see the
 [Configuration Guide]({{ site.baseurl }}/configuration#configuration-reference)).
 
+## Host-Side Rules (Optional): Moving Window Rules to the Desktop
+
+So far this guide covers the **board-side** rules — `DEFINE_SERIAL_LAYERS` and
+`DEFINE_SERIAL_COMMANDS`, baked into your firmware. QMKonnect can also drive
+layer and callback decisions **from the host**, in an editable `rules.toml`
+file, so you can change them **without reflashing**. Host rules are an opt-in
+overlay: your existing board rules keep working, and host rules either stack on
+top of them or take over per window (see [Stack vs. replace](#stack-vs-replace)
+below).
+
+> **Firmware prerequisite.** Host rules require firmware that advertises the
+typed-command capability (`proto_ver == 2` with the `APPLY_HOST_CONTEXT`
+feature). With legacy firmware — or while the keyboard is disconnected —
+QMKonnect silently falls back to today's string-only behavior, and your
+board's existing `DEFINE_*` rules keep working exactly as before. Nothing
+breaks if you don't opt in.
+
+### The three repositories
+
+Host rules span three companion repos. You only ever edit two of them (your
+firmware keymap, and `rules.toml` on the host):
+
+| Repo | What it is | Its job for host rules |
+| --- | --- | --- |
+| [`qmkonnect`](https://github.com/dabstractor/qmkonnect) | The desktop daemon (this project) | Detects the window; owns `rules.toml`, the host matcher, the capability handshake, and the send sequencing |
+| [`qmk_notifier`](https://github.com/dabstractor/qmk_notifier) *(underscore)* | The Rust transport crate QMKonnect links | Frames the typed commands over Raw HID and parses the replies |
+| [`qmk-notifier`](https://github.com/dabstractor/qmk-notifier) *(hyphen)* | The C firmware module in your keymap | Receives typed commands, tracks a separate host layer/callback set, and exposes your callbacks by name |
+
+> **Naming hazard:** `qmk-notifier` (hyphen) is the firmware C module;
+`qmk_notifier` (underscore) is the Rust transport crate. They talk over the
+fixed Raw HID wire protocol described in the
+[qmk-notifier README](https://github.com/dabstractor/qmk-notifier).
+
+### Expose callbacks by name: `DEFINE_HOST_CALLBACKS` (one-time firmware change)
+
+Host rules reference your callbacks **by name** (a string), not by pointer. So
+that the host can look them up, you declare a small named registry in your
+firmware. This is a **one-time** change — add it once, reflash once, and you
+never touch it again when iterating on rules.
+
+Each row is `{ name, on_enable, on_disable }`, where `on_disable` may be `NULL`.
+The callback's `id` is its **array index** (stable per build); QMKonnect queries
+the names at every (re)connect, so renumbering across flashes is harmless. It
+needs **no `rules.mk` change** — define it anywhere `#include`-d from
+`keymap.c`, just like `DEFINE_SERIAL_COMMANDS`:
+
+```c
+static void mute_on(void)  { /* unmute / show mute OSD */ }
+static void mute_off(void) { /* restore */ }
+
+DEFINE_HOST_CALLBACKS({
+    { "mute", &mute_on, &mute_off },
+});
+```
+
+These are the **same C functions** you already pass to `DEFINE_SERIAL_COMMANDS`
+— you're just listing them by name so the host can address them. Omit the macro
+entirely and the firmware provides empty defaults (`callback_count == 0`), the
+feature stays off, and your keymap behaves byte-for-byte as it does today.
+
+### Migration: from `DEFINE_*` to `rules.toml`
+
+Migration is **incremental and optional** — move one rule at a time, or none at
+all. Board rules keep working throughout.
+
+1. **Expose your callbacks by name** — add `DEFINE_HOST_CALLBACKS({ … })`
+   (above) listing the functions you already use in `DEFINE_SERIAL_COMMANDS`.
+   Reflash **once**. (This is the only step that ever requires a reflash.)
+2. **Move a layer rule to the host** — add a `[[layer_rules]]` entry to
+   `rules.toml`, then **remove** the matching row from `DEFINE_SERIAL_LAYERS`.
+   (Keeping it in both isn't harmful, but it means the same layer is driven by
+   two trackers at once, which is confusing.) No reflash needed for this or any
+   later edit.
+3. **Move a callback rule to the host** — add a `[[callback_rules]]` entry,
+   then **remove** the matching row from `DEFINE_SERIAL_COMMANDS`. Here removal
+   matters: callbacks are additive, so if a rule stays in both, the same
+   `on_enable` would fire twice.
+4. **Iterate without reflashing** — edit `rules.toml` and click the tray's
+   **Reload rules** (or restart QMKonnect). Every future rule change is a host
+   edit, no firmware rebuild.
+
+For example, the firmware callback rule
+`{ WT("steam_app*", "*"), &disable_vim }` (already listed in
+`DEFINE_HOST_CALLBACKS` as `{ "disable_vim", &disable_vim, NULL }`) becomes a
+host rule:
+
+```toml
+[[callback_rules]]
+match = ["steam_app*", "*"]        # [class, title]  == WT(class, title)
+enable = ["disable_vim"]
+```
+
+The full `rules.toml` schema (every field, the layer range, the `match`
+string-vs-array forms), the per-OS file location, and the
+`--validate-rules` / `--list-callbacks` / `--rules-path` CLI flags are
+documented in the [Configuration Guide]({{ site.baseurl }}/configuration).
+
+### Stack vs. replace
+
+The firmware keeps **two independent state planes**: your **board** layer and
+callbacks (driven by the legacy string + `DEFINE_*`, exactly as today) and a
+separate **host** layer and callback set (driven by `rules.toml`). Host layers
+are reserved **≥ 224** so they always resolve above your board layers; `255`
+clears the host layer. The two planes touch only at two seams, and QMKonnect
+picks which one per window:
+
+- **Stack** (the default): QMKonnect sends the window **string first** — so your
+  board runs its own `DEFINE_*` rules as usual — and then applies the host
+  layer **on top** and syncs the host callbacks. Board callbacks fire first,
+  then host callbacks.
+- **Replace**: for a window where you want the host to fully take over,
+  QMKonnect sends **only** the host context (no string, so the board can't
+  match). The firmware clears its board layer/command for that window and
+  applies only the host layer + callbacks. Board rules re-engage normally on
+  the host's next string send.
+
+Which mode a window uses is decided by each rule's `disable_firmware_config`
+flag in `rules.toml`: a window is *replace* only when **every** rule that
+matches it is disabling (or the board has no rules of its own); if even one
+matched rule is non-disabling, the window *stacks*. See the
+[Configuration Guide]({{ site.baseurl }}/configuration) for the field-level
+detail. If no window matches, the host layer is cleared and all host callbacks
+are disabled (there is no "keep" option).
+
 ## Testing Your Integration
 
 ### Basic verification
@@ -190,3 +314,4 @@ For detailed troubleshooting, see the
 - [Configure the QMKonnect desktop app]({{ site.baseurl }}/configuration)
 - [Learn how to use QMKonnect]({{ site.baseurl }}/usage)
 - [See real-world examples]({{ site.baseurl }}/examples)
+- [Move rules to the host (optional)]({{ site.baseurl }}/qmk-integration#host-side-rules-optional-moving-window-rules-to-the-desktop)
