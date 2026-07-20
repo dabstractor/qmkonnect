@@ -83,14 +83,14 @@ pub struct RuleSet {
 /// explicitly override them.
 ///
 /// `disable_firmware_config` defaults to `false` (the board runs its own config:
-/// the "stack" default). A manual [`Default`] impl makes that intent explicit
-/// rather than relying on `bool`'s derive default (see `spec/HOST_RULES.md` §9).
+/// the "stack" default). The derived `Default` makes that intent explicit
+/// rather than relying on `bool`'s own default (see `spec/HOST_RULES.md` §9).
 ///
 /// ```toml
 /// [host]
 /// disable_firmware_config = false   # global default: false = stack (board runs), true = replace
 /// ```
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 pub struct HostDefaults {
     /// Global default for whether the board runs its own config (`false` = stack)
     /// or is replaced by the host layer (`true`). Per-rule
@@ -98,14 +98,6 @@ pub struct HostDefaults {
     /// overrides this; `None` inherits this value.
     #[serde(default)]
     pub disable_firmware_config: bool, // default false (stack)
-}
-
-impl Default for HostDefaults {
-    fn default() -> Self {
-        Self {
-            disable_firmware_config: false,
-        }
-    }
 }
 
 /// A `[[layer_rules]]` entry — maps a window [`Pattern`] to a host layer number.
@@ -240,8 +232,8 @@ pub fn parse_rules(path: &Path) -> Result<RuleSet, Box<dyn Error>> {
 /// [`crate::platforms::get_config_paths`] and swapping each entry's final
 /// filename component to `rules.toml` (via [`PathBuf::with_file_name`]).
 ///
-/// On Linux this is `$XDG_CONFIG_HOME/qmk-notifier/rules.toml`,
-/// `~/.config/qmk-notifier/rules.toml`, `/etc/qmk-notifier/rules.toml`; on
+/// On Linux this is `$XDG_CONFIG_HOME/qmkonnect/rules.toml`,
+/// `~/.config/qmkonnect/rules.toml`, `/etc/qmkonnect/rules.toml`; on
 /// macOS `~/Library/Application Support/QMKonnect/rules.toml` (+ fallbacks); on
 /// Windows `%APPDATA%\QMKonnect\rules.toml` (+ fallbacks). An absent file at
 /// every candidate ⇒ the caller disables host rules (string-only, legacy path).
@@ -303,7 +295,8 @@ pub struct HostContext {
 ///    `false` (HOST_RULES.md §4: "replace = all-disabling OR board-has-no-rules").
 ///
 /// **No match** (no layer rule and no callback rule matched) short-circuits to
-/// `{ layer: None, callback_ids: vec![], clear_board: false, any_match: false }`.
+/// `{ layer: None, callback_ids: vec![], clear_board: <[host].disable_firmware_config>, any_match: false }`
+/// — the `clear_board` bit carries the global default (HOST_RULES.md §8(4) "<per flag>").
 ///
 /// This function is **pure** — no IO, no logging, no global state.
 ///
@@ -365,12 +358,15 @@ pub fn evaluate(
     }
 
     // No match -> short-circuit BEFORE the formula (G2: all() is vacuously true
-    // on an empty Vec, which would wrongly yield clear_board=true).
+    // on an empty Vec, which would wrongly yield clear_board=true). The
+    // `clear_board` bit carries the global `[host].disable_firmware_config`
+    // default (HOST_RULES.md §8(4) "<per flag>"), so a user who globally opts
+    // into replace still clears the board on a no-match window.
     if matched_effective.is_empty() {
         return HostContext {
             layer: None,
             callback_ids: vec![],
-            clear_board: false,
+            clear_board: host_default,
             any_match: false,
         };
     }
@@ -421,7 +417,7 @@ disable_firmware_config = true
         let rs: RuleSet = toml::from_str(SECTION_9_TOML).unwrap();
 
         // [host] defaults
-        assert_eq!(rs.host.disable_firmware_config, false);
+        assert!(!(rs.host.disable_firmware_config));
 
         // layer_rules: first-match-wins ordering preserved.
         assert_eq!(rs.layer_rules.len(), 2);
@@ -432,7 +428,7 @@ disable_firmware_config = true
             Pattern::Single("alacritty".into())
         );
         assert_eq!(rs.layer_rules[0].layer, 224);
-        assert_eq!(rs.layer_rules[0].case_sensitive, false);
+        assert!(!(rs.layer_rules[0].case_sensitive));
         assert_eq!(rs.layer_rules[0].disable_firmware_config, Some(true));
 
         // layer_rules[1]: class+title Parts + no override (inherits [host]).
@@ -441,7 +437,7 @@ disable_firmware_config = true
             Pattern::Parts("*chrome*".into(), "*youtube*".into())
         );
         assert_eq!(rs.layer_rules[1].layer, 225);
-        assert_eq!(rs.layer_rules[1].case_sensitive, false);
+        assert!(!(rs.layer_rules[1].case_sensitive));
         assert_eq!(rs.layer_rules[1].disable_firmware_config, None);
 
         // callback_rules: all-match ordering preserved.
@@ -457,7 +453,7 @@ disable_firmware_config = true
             vec!["vim_lazy".to_string(), "disable_vim".to_string()]
         );
         assert_eq!(rs.callback_rules[0].disable, vec!["vim_lazy".to_string()]);
-        assert_eq!(rs.callback_rules[0].case_sensitive, false);
+        assert!(!(rs.callback_rules[0].case_sensitive));
         assert_eq!(rs.callback_rules[0].disable_firmware_config, None);
 
         // callback_rules[1]: Parts + override.
@@ -483,18 +479,21 @@ match = "firefox"
 layer = 224
 "#;
         let rs: RuleSet = toml::from_str(toml).unwrap();
-        assert_eq!(rs.host.disable_firmware_config, false);
+        assert!(!(rs.host.disable_firmware_config));
         assert_eq!(rs.layer_rules.len(), 1);
     }
 
     #[test]
     fn test_rules_empty_toml_is_all_default() {
         let rs: RuleSet = toml::from_str("").unwrap();
-        assert_eq!(rs.host.disable_firmware_config, false);
+        assert!(!(rs.host.disable_firmware_config));
         assert!(rs.layer_rules.is_empty());
         assert!(rs.callback_rules.is_empty());
         // Equivalent to RuleSet::default().
-        assert_eq!(rs.host.disable_firmware_config, RuleSet::default().host.disable_firmware_config);
+        assert_eq!(
+            rs.host.disable_firmware_config,
+            RuleSet::default().host.disable_firmware_config
+        );
     }
 
     #[test]
@@ -584,7 +583,7 @@ layer = 224
         // RuleSet::default() proves Default propagation: manual HostDefaults::default()
         // (=> false) + empty Vecs (G4).
         let rs = RuleSet::default();
-        assert_eq!(rs.host.disable_firmware_config, false);
+        assert!(!(rs.host.disable_firmware_config));
         assert!(rs.layer_rules.is_empty());
         assert!(rs.callback_rules.is_empty());
     }
@@ -598,25 +597,25 @@ layer = 224
     #[test]
     fn test_rules_effective_some_true_wins() {
         // Some(true) overrides host_default=false.
-        assert_eq!(effective_disable_firmware_config(Some(true), false), true);
+        assert!(effective_disable_firmware_config(Some(true), false));
     }
 
     #[test]
     fn test_rules_effective_some_false_wins() {
         // Some(false) overrides host_default=true.
-        assert_eq!(effective_disable_firmware_config(Some(false), true), false);
+        assert!(!effective_disable_firmware_config(Some(false), true));
     }
 
     #[test]
     fn test_rules_effective_none_inherits_false() {
         // None inherits host_default=false.
-        assert_eq!(effective_disable_firmware_config(None, false), false);
+        assert!(!effective_disable_firmware_config(None, false));
     }
 
     #[test]
     fn test_rules_effective_none_inherits_true() {
         // None inherits host_default=true.
-        assert_eq!(effective_disable_firmware_config(None, true), true);
+        assert!(effective_disable_firmware_config(None, true));
     }
 
     // ---- parse_rules: end-to-end file IO (tempfile, G9 single-threaded) ----
@@ -632,7 +631,7 @@ layer = 224
         let rs = parse_rules(&path).unwrap();
 
         // [host] default
-        assert_eq!(rs.host.disable_firmware_config, false);
+        assert!(!(rs.host.disable_firmware_config));
 
         // layer_rules[0]: class-only Single + explicit override.
         assert_eq!(rs.layer_rules.len(), 2);
@@ -711,7 +710,7 @@ match = "x"
         // this is an explicit positive assertion behind a cfg guard so it never
         // falsely fails on a future non-Linux/macOS/Windows CI target.)
         assert!(
-            get_rules_paths().len() >= 1,
+            !get_rules_paths().is_empty(),
             "supported platform should return at least one rules.toml candidate"
         );
     }
@@ -725,10 +724,7 @@ match = "x"
 
     /// Helper: build a name→id map from (&str, u8) pairs.
     fn name_map(pairs: &[(&str, u8)]) -> HashMap<String, u8> {
-        pairs
-            .iter()
-            .map(|(n, id)| (n.to_string(), *id))
-            .collect()
+        pairs.iter().map(|(n, id)| (n.to_string(), *id)).collect()
     }
 
     // ---- A. Basic / no-match (G2 no-match early-return) ----
@@ -776,7 +772,33 @@ enable = ["vim_lazy"]
         );
     }
 
-    // ---- B. Layer (first-match-wins, break) ----
+    /// B5 regression: the no-match `clear_board` bit must carry the global
+    /// `[host].disable_firmware_config` default (HOST_RULES.md §8(4) "<per flag>"),
+    /// not be hardcoded to `false`. With the global default set to `true`, a
+    /// no-match window must clear the board.
+    #[test]
+    fn test_evaluate_no_match_carries_global_default_true() {
+        let toml = r#"
+[host]
+disable_firmware_config = true
+
+[[layer_rules]]
+match = "firefox"
+layer = 224
+"#;
+        let rules: RuleSet = toml::from_str(toml).unwrap();
+        let n2i = name_map(&[]);
+        let ctx = evaluate(&rules, "Alacritty", "vim", &n2i, true);
+        assert_eq!(
+            ctx,
+            HostContext {
+                layer: None,
+                callback_ids: vec![],
+                clear_board: true, // inherits [host].disable_firmware_config = true
+                any_match: false,
+            }
+        );
+    }
 
     #[test]
     fn test_evaluate_layer_first_match_wins() {

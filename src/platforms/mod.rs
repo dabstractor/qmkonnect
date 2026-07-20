@@ -111,9 +111,9 @@ pub fn create_config_dir() -> Result<std::path::PathBuf, Box<dyn Error>> {
     {
         // Default implementation for other platforms
         let config_dir = if let Ok(xdg_config) = std::env::var("XDG_CONFIG_HOME") {
-            std::path::PathBuf::from(xdg_config).join("qmk-notifier")
+            std::path::PathBuf::from(xdg_config).join("qmkonnect")
         } else if let Some(home) = dirs::home_dir() {
-            home.join(".config").join("qmk-notifier")
+            home.join(".config").join("qmkonnect")
         } else {
             return Err("Could not determine configuration directory".into());
         };

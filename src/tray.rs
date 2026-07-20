@@ -734,24 +734,23 @@ fn device_status_text(connected: bool) -> String {
 /// ```
 fn do_reload_rules(verbose: bool) -> ReloadResult {
     // 1. Re-read + validate rules.toml (the strict parse IS the schema check).
-    let (rules_ok, rules_detail) =
-        match crate::core::rules::get_rules_paths()
-            .into_iter()
-            .find(|p| p.exists())
-        {
-            None => (true, "No rules.toml (host rules disabled)".to_string()),
-            Some(p) => match crate::core::rules::parse_rules(&p) {
-                Ok(rs) => (
-                    true,
-                    format!(
-                        "rules.toml valid: {} layer rule(s), {} callback rule(s)",
-                        rs.layer_rules.len(),
-                        rs.callback_rules.len()
-                    ),
+    let (rules_ok, rules_detail) = match crate::core::rules::get_rules_paths()
+        .into_iter()
+        .find(|p| p.exists())
+    {
+        None => (true, "No rules.toml (host rules disabled)".to_string()),
+        Some(p) => match crate::core::rules::parse_rules(&p) {
+            Ok(rs) => (
+                true,
+                format!(
+                    "rules.toml valid: {} layer rule(s), {} callback rule(s)",
+                    rs.layer_rules.len(),
+                    rs.callback_rules.len()
                 ),
-                Err(e) => (false, format!("rules.toml invalid: {e}")),
-            },
-        };
+            ),
+            Err(e) => (false, format!("rules.toml invalid: {e}")),
+        },
+    };
 
     // 2. If a device is present, force-refresh the firmware callback table.
     //    reset_handshake_state() clears the once-per-session guard so

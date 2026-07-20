@@ -356,12 +356,11 @@ mod tests {
         // RuleSet (0 layer rules, 0 callback rules) — proves the seeded file is
         // both valid AND inert on a fresh install (legacy parity).
         let body = render_rules_body();
-        let rs: rules::RuleSet = toml::from_str(&body).expect(
-            "render_rules_body must parse to a valid all-default RuleSet",
-        );
+        let rs: rules::RuleSet = toml::from_str(&body)
+            .expect("render_rules_body must parse to a valid all-default RuleSet");
         assert!(rs.layer_rules.is_empty());
         assert!(rs.callback_rules.is_empty());
-        assert_eq!(rs.host.disable_firmware_config, false);
+        assert!(!(rs.host.disable_firmware_config));
     }
 
     #[test]
@@ -376,7 +375,10 @@ mod tests {
         create_default_rules(&path).unwrap();
 
         let after = std::fs::read_to_string(&path).unwrap();
-        assert_eq!(after, sentinel, "existing rules.toml must not be overwritten");
+        assert_eq!(
+            after, sentinel,
+            "existing rules.toml must not be overwritten"
+        );
     }
 
     #[test]

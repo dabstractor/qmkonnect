@@ -124,7 +124,7 @@ pub fn get_config_paths() -> Vec<PathBuf> {
         if !xdg_config.is_empty() {
             paths.push(
                 PathBuf::from(xdg_config)
-                    .join("qmk-notifier")
+                    .join("qmkonnect")
                     .join("config.toml"),
             );
         }
@@ -132,15 +132,11 @@ pub fn get_config_paths() -> Vec<PathBuf> {
 
     // Try home directory paths as fallback
     if let Some(home) = dirs::home_dir() {
-        paths.push(
-            home.join(".config")
-                .join("qmk-notifier")
-                .join("config.toml"),
-        );
+        paths.push(home.join(".config").join("qmkonnect").join("config.toml"));
     }
 
     // Try system-wide config as last resort
-    paths.push(PathBuf::from("/etc/qmk-notifier/config.toml"));
+    paths.push(PathBuf::from("/etc/qmkonnect/config.toml"));
 
     paths
 }
@@ -148,7 +144,7 @@ pub fn get_config_paths() -> Vec<PathBuf> {
 /// Resolve the config file path for a reload, **root-aware**. Used instead of
 /// the plain [`get_config_paths`] when we may be running as root (sudo/pkexec),
 /// which is the heart of fixing #26: under `sudo`, `HOME=/root`, so the normal
-/// search would never find the invoking user's `~/.config/qmk-notifier/config.toml`
+/// search would never find the invoking user's `~/.config/qmkonnect/config.toml`
 /// and `reload_config` would silently no-op without writing any rule.
 ///
 /// Resolution order:
@@ -192,7 +188,7 @@ pub fn resolve_config_for_reload(
         let target_user = user.or_else(|| std::env::var("SUDO_USER").ok());
 
         for home in resolve_homes(target_uid, target_user) {
-            let p = home.join(".config/qmk-notifier/config.toml");
+            let p = home.join(".config/qmkonnect/config.toml");
             if p.exists() {
                 return Ok(p);
             }
@@ -203,7 +199,7 @@ pub fn resolve_config_for_reload(
         let mut found = Vec::new();
         if let Ok(entries) = std::fs::read_dir("/home") {
             for e in entries.flatten() {
-                let p = e.path().join(".config/qmk-notifier/config.toml");
+                let p = e.path().join(".config/qmkonnect/config.toml");
                 if p.exists() {
                     found.push(p);
                 }
@@ -422,9 +418,9 @@ pub fn create_config_dir() -> Result<PathBuf, Box<dyn Error>> {
     let config_dir = match std::env::var("XDG_CONFIG_HOME") {
         // Treat an empty XDG_CONFIG_HOME as unset — an empty value would make
         // PathBuf::from("").join(...) a *relative* path (CWD), not $HOME/.config.
-        Ok(xdg_config) if !xdg_config.is_empty() => PathBuf::from(xdg_config).join("qmk-notifier"),
+        Ok(xdg_config) if !xdg_config.is_empty() => PathBuf::from(xdg_config).join("qmkonnect"),
         _ => match dirs::home_dir() {
-            Some(home) => home.join(".config").join("qmk-notifier"),
+            Some(home) => home.join(".config").join("qmkonnect"),
             None => return Err("Could not determine configuration directory".into()),
         },
     };

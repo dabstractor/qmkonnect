@@ -27,7 +27,7 @@ IMPORTANT REALITY CHECK
 -----------------------
 QMKonnect is only ONE HALF of a two-part system. It detects the active window
 and SENDS that information to your keyboard over Raw HID. Your keyboard cannot
-react to it unless the companion **qmk-notifier** module is built into your QMK
+react to it unless the companion **qmk_notifier** module is built into your QMK
 firmware. That firmware setup is REQUIRED, not optional.
 
 When the docs say "no configuration" or "zero-config", they refer ONLY to the

@@ -205,8 +205,7 @@ static HOST_CAPABLE: AtomicBool = AtomicBool::new(false);
 /// `QUERY_CALLBACK` sweep in [`perform_handshake`]. P4.M3.T1.S1's
 /// [`crate::core::rules::evaluate`] resolves `rules.toml` callback names through
 /// it; P5.M1's `--list-callbacks` prints it. Read via [`callback_names`].
-static CALLBACK_NAMES: Lazy<Mutex<HashMap<String, u8>>> =
-    Lazy::new(|| Mutex::new(HashMap::new()));
+static CALLBACK_NAMES: Lazy<Mutex<HashMap<String, u8>>> = Lazy::new(|| Mutex::new(HashMap::new()));
 
 /// Dedup guard: the handshake runs **at most once per board boot** (the firmware
 /// sets `has_been_queried` on the first `QUERY_INFO`). [`perform_handshake`]
@@ -307,14 +306,21 @@ pub fn perform_handshake(verbose: bool) {
                     }
                     Ok(qmk_notifier::CommandResponse::CallbackName { name: None, .. }) => {
                         if verbose {
-                            eprintln!("[{}ms] perform_handshake: callback {} has no name — skipped",
-                                crate::core::now_ms(), i);
+                            eprintln!(
+                                "[{}ms] perform_handshake: callback {} has no name — skipped",
+                                crate::core::now_ms(),
+                                i
+                            );
                         }
                     }
                     Ok(other) => {
                         if verbose {
-                            eprintln!("[{}ms] perform_handshake: callback {} unexpected reply {:?}",
-                                crate::core::now_ms(), i, other);
+                            eprintln!(
+                                "[{}ms] perform_handshake: callback {} unexpected reply {:?}",
+                                crate::core::now_ms(),
+                                i,
+                                other
+                            );
                         }
                     }
                     Err(e) => {
@@ -496,9 +502,9 @@ pub enum HandshakeAction {
 /// | `Some(true)`    | `false` | `Loss`  | (real disconnect)
 pub fn handshake_action(prev: Option<bool>, now: bool) -> HandshakeAction {
     match (prev, now) {
-        (Some(true), false) => HandshakeAction::Loss,           // real disconnect
-        (p, true) if p != Some(true) => HandshakeAction::Gain,  // None→true OR false→true
-        _ => HandshakeAction::None,                              // no change OR None→false
+        (Some(true), false) => HandshakeAction::Loss, // real disconnect
+        (p, true) if p != Some(true) => HandshakeAction::Gain, // None→true OR false→true
+        _ => HandshakeAction::None,                   // no change OR None→false
     }
 }
 // NOTE: the Gain arm is GUARDED (`if p != Some(true)`) — the naive `(_, true)
@@ -584,15 +590,42 @@ struct PendingMessage {
 
 // Debounce state. A single, long-lived worker thread (see WORKER) consumes
 // `pending` messages, replacing the former "spawn a thread per burst" scheme.
+//
+// `debounce_ms` (and `poll_interval_ms`) are hot config (PRD §8,
+// ARCHITECTURE.md §10 #4, CONFIG.md §1.2): they are re-read from
+// `configured_debounce_ms()` on every notification and every status poll, so
+// they are intentionally NOT cached here — editing `config.toml` takes effect
+// within ~3 s with no restart.
 struct DebounceState {
     /// `None` until the first notification has actually been sent.
     last_sent_time: Option<Instant>,
     /// Latest message queued for a debounced send.
     pending: Option<PendingMessage>,
     verbose: bool,
-    /// Debounce window; 0 disables coalescing (every change sends immediately).
-    /// Loaded from config at init.
-    interval: Duration,
+    /// Test-only override of the debounce window; when `Some`, used instead of
+    /// re-reading `configured_debounce_ms()`. Production code leaves this
+    /// `None` so the window is genuinely hot-config.
+    #[cfg(test)]
+    interval_override: Option<Duration>,
+}
+
+#[cfg(not(test))]
+impl DebounceState {
+    /// Effective debounce window, re-read fresh from config each call (hot).
+    fn interval(&self) -> Duration {
+        Duration::from_millis(crate::core::configured_debounce_ms())
+    }
+}
+
+#[cfg(test)]
+impl DebounceState {
+    /// Effective debounce window: the test override if set, else the live
+    /// config value (so tests that don't pin the interval still observe
+    /// hot-config behavior).
+    fn interval(&self) -> Duration {
+        self.interval_override
+            .unwrap_or_else(|| Duration::from_millis(crate::core::configured_debounce_ms()))
+    }
 }
 
 static STATE: Lazy<Mutex<DebounceState>> = Lazy::new(|| {
@@ -600,7 +633,8 @@ static STATE: Lazy<Mutex<DebounceState>> = Lazy::new(|| {
         last_sent_time: None,
         pending: None,
         verbose: false,
-        interval: Duration::from_millis(crate::core::configured_debounce_ms()),
+        #[cfg(test)]
+        interval_override: None,
     })
 });
 static COND: Lazy<Condvar> = Lazy::new(Condvar::new);
@@ -628,7 +662,7 @@ fn debounce_worker() {
             let mut to_send: Option<(PendingMessage, bool)> = None;
             while to_send.is_none() {
                 let last = state.last_sent_time.unwrap_or_else(Instant::now);
-                let target = last + state.interval;
+                let target = last + state.interval();
                 let now = Instant::now();
                 if now >= target {
                     let pm = state.pending.take().unwrap();
@@ -696,7 +730,7 @@ pub fn notify_qmk(
         state.verbose = verbose;
 
         let now = Instant::now();
-        let interval = state.interval;
+        let interval = state.interval();
         let due = state
             .last_sent_time
             .map(|t| now.duration_since(t) >= interval)
@@ -723,8 +757,7 @@ pub fn notify_qmk(
         let ctx = host_context_for_window(window_info, verbose);
         let notifier = get_notifier();
         let notifier = notifier.lock().unwrap();
-        let _res =
-            dispatch_window_send(&**notifier, &filter, &message, ctx, "immediate", verbose);
+        let _res = dispatch_window_send(&**notifier, &filter, &message, ctx, "immediate", verbose);
         _res?;
     } else if verbose {
         let sanitized = message.replace('\x1D', "|");
@@ -858,8 +891,10 @@ fn dispatch_window_send(
         }
 
         // No match: clear host layer + disable all callbacks. No string.
-        Some(_) => {
-            send_host_context(notifier, filter, clear_host_context_command(), verbose);
+        // `ctx.clear_board` carries the global `[host].disable_firmware_config`
+        // default (HOST_RULES.md §8(4) "<per flag>").
+        Some(ctx) => {
+            send_host_context(notifier, filter, host_context_command(&ctx), verbose);
             Ok(())
         }
     }
@@ -958,16 +993,6 @@ fn host_context_command(ctx: &crate::core::rules::HostContext) -> qmk_notifier::
     }
 }
 
-/// Build the no-match `ApplyHostContext` command: always clear the host layer
-/// (`None` / 0xFF) + disable all host callbacks. Per §8(4) no-match contract.
-fn clear_host_context_command() -> qmk_notifier::RunCommand {
-    qmk_notifier::RunCommand::ApplyHostContext {
-        layer: None,
-        callbacks: vec![],
-        clear_board: false,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1050,7 +1075,7 @@ mod tests {
             state.last_sent_time = None;
             state.pending = None;
             state.verbose = false;
-            state.interval = Duration::from_millis(50);
+            state.interval_override = Some(Duration::from_millis(50));
             // Wake the worker so it re-evaluates (pending is now None -> it waits).
             COND.notify_all();
         }
@@ -1102,7 +1127,7 @@ mod tests {
         // runner a 20ms sleep can overshoot the 50ms window and the worker
         // flushes early (count jumps to 2). Widen this test's window so that
         // can't happen; production interval is unaffected.
-        STATE.lock().unwrap().interval = Duration::from_millis(200);
+        STATE.lock().unwrap().interval_override = Some(Duration::from_millis(200));
 
         // First message - sent immediately
         let window1 = WindowInfo::new("App1".to_string(), "Title1".to_string());
@@ -1124,6 +1149,49 @@ mod tests {
         assert_eq!(
             MockNotifier::get_last_message(),
             Some(format!("{}\x1D{}", window2.app_class, window2.title))
+        );
+    }
+
+    /// B3 regression: `debounce_ms` must be hot-config — the window is re-read
+    /// from `configured_debounce_ms()` on every send, not cached at startup.
+    /// Here `interval_override` stands in for the live config value: after a
+    /// short-window burst, widening it mid-flight must extend the coalescing
+    /// window (the queued message does NOT flush under the old, short window).
+    #[test]
+    fn test_debounce_ms_is_hot_config() {
+        reset_test_state();
+        set_notifier(Box::new(MockNotifier::new()));
+
+        // Start with a short window, send the first message immediately.
+        STATE.lock().unwrap().interval_override = Some(Duration::from_millis(200));
+        let window1 = WindowInfo::new("App1".to_string(), "Title1".to_string());
+        let _ = notify_qmk(&window1, true);
+        assert!(wait_for_count(1, Duration::from_millis(500)));
+        assert_eq!(MockNotifier::get_call_count(), 1);
+
+        // Second message within the (current) 200ms window — queued.
+        let window2 = WindowInfo::new("App2".to_string(), "Title2".to_string());
+        let _ = notify_qmk(&window2, true);
+        thread::sleep(Duration::from_millis(20));
+        assert_eq!(MockNotifier::get_call_count(), 1); // still pending
+
+        // Edit "config" (the override) to a much wider window mid-flight. If the
+        // interval were cached at startup, the queued message would flush ~200ms
+        // after the first send. Because it is hot, the wider window takes over
+        // and the message stays pending past the old 200ms deadline.
+        STATE
+            .lock()
+            .unwrap()
+            .interval_override
+            .replace(Duration::from_secs(30));
+        COND.notify_all(); // wake the worker so it re-reads the new window
+
+        // Well past the old 200ms window — must NOT have flushed.
+        thread::sleep(Duration::from_millis(400));
+        assert_eq!(
+            MockNotifier::get_call_count(),
+            1,
+            "queued message must respect the hot-configured (widened) window"
         );
     }
 
@@ -1159,7 +1227,7 @@ mod tests {
         // runner can overrun mid-burst (the entire burst must land *inside* the
         // window for it to collapse to a single send). Widen it here so the rapid
         // updates reliably coalesce regardless of scheduler jitter.
-        STATE.lock().unwrap().interval = Duration::from_millis(200);
+        STATE.lock().unwrap().interval_override = Some(Duration::from_millis(200));
 
         // First message - sent immediately
         let _ = notify_qmk(
@@ -1232,7 +1300,7 @@ mod tests {
         reset_test_state();
         set_notifier(Box::new(MockNotifier::new()));
         // Long window: the worker will NOT flush while we inspect `pending`.
-        STATE.lock().unwrap().interval = Duration::from_secs(10);
+        STATE.lock().unwrap().interval_override = Some(Duration::from_secs(10));
 
         // Prime last_sent_time with an immediate send (so the next call debounces).
         let _ = notify_qmk(&WindowInfo::new("App1".into(), "Title1".into()), false);
@@ -1259,7 +1327,7 @@ mod tests {
         // interval + Some(..) pending would race reset's `pending = None`: the
         // worker's wait_timeout would later reach `take().unwrap()` on an empty
         // pending and poison the shared mutex.
-        STATE.lock().unwrap().interval = Duration::from_millis(50);
+        STATE.lock().unwrap().interval_override = Some(Duration::from_millis(50));
         assert!(wait_for_count(2, Duration::from_millis(500)));
     }
 
@@ -1294,7 +1362,10 @@ mod tests {
         assert_eq!(calls[0], qmk_notifier::RunCommand::QueryInfo);
         assert!(matches!(
             calls[1],
-            qmk_notifier::RunCommand::ApplyHostContext { layer: Some(224), .. }
+            qmk_notifier::RunCommand::ApplyHostContext {
+                layer: Some(224),
+                ..
+            }
         ));
     }
 
@@ -1645,13 +1716,15 @@ disable = ["known_b", "phantom"]
         {
             let notifier = get_notifier();
             let n = notifier.lock().unwrap();
-            let _res =
-                dispatch_window_send(&**n, &f, message, None, "debounced", false);
+            let _res = dispatch_window_send(&**n, &f, message, None, "debounced", false);
             assert!(_res.is_ok());
         }
 
         assert_eq!(MockNotifier::get_call_count(), 1);
-        assert_eq!(MockNotifier::get_last_message().as_deref(), Some("App\x1DTitle"));
+        assert_eq!(
+            MockNotifier::get_last_message().as_deref(),
+            Some("App\x1DTitle")
+        );
         assert!(MockNotifier::get_send_command_calls().is_empty());
     }
 
@@ -1674,20 +1747,16 @@ disable = ["known_b", "phantom"]
         {
             let notifier = get_notifier();
             let n = notifier.lock().unwrap();
-            let _res = dispatch_window_send(
-                &**n,
-                &f,
-                message,
-                Some(ctx),
-                "immediate",
-                false,
-            );
+            let _res = dispatch_window_send(&**n, &f, message, Some(ctx), "immediate", false);
             assert!(_res.is_ok());
         }
 
         // String sent (count 1) + one ApplyHostContext{layer:Some(224),clear:false}.
         assert_eq!(MockNotifier::get_call_count(), 1);
-        assert_eq!(MockNotifier::get_last_message().as_deref(), Some("App\x1DTitle"));
+        assert_eq!(
+            MockNotifier::get_last_message().as_deref(),
+            Some("App\x1DTitle")
+        );
         let calls = MockNotifier::get_send_command_calls();
         assert_eq!(calls.len(), 1);
         assert!(matches!(
@@ -1719,14 +1788,7 @@ disable = ["known_b", "phantom"]
         {
             let notifier = get_notifier();
             let n = notifier.lock().unwrap();
-            let _res = dispatch_window_send(
-                &**n,
-                &f,
-                message,
-                Some(ctx),
-                "debounced",
-                false,
-            );
+            let _res = dispatch_window_send(&**n, &f, message, Some(ctx), "debounced", false);
             assert!(_res.is_ok());
         }
 
@@ -1763,14 +1825,7 @@ disable = ["known_b", "phantom"]
         {
             let notifier = get_notifier();
             let n = notifier.lock().unwrap();
-            let _res = dispatch_window_send(
-                &**n,
-                &f,
-                message,
-                Some(ctx),
-                "immediate",
-                false,
-            );
+            let _res = dispatch_window_send(&**n, &f, message, Some(ctx), "immediate", false);
             assert!(_res.is_ok());
         }
 

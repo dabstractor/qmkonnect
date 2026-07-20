@@ -24,7 +24,7 @@
 
 #define MyAppName      "QMKonnect"
 #define MyAppPublisher "Mulletware"
-#define MyAppURL       "https://github.com/dabstractor/qmk_notifier"
+#define MyAppURL       "https://github.com/dabstractor/qmkonnect"
 #define MyAppExeName   "QMKonnect.exe"
 
 #ifndef MyAppVersion

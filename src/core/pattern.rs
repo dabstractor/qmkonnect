@@ -1,5 +1,5 @@
 //! Pattern escape processing — byte-for-byte port of the firmware
-//! `process_escapes()` (qmk-notifier `pattern_match.c:30-75`).
+//! `process_escapes()` (qmk_notifier `pattern_match.c:30-75`).
 //!
 //! This is the first stage of the P2.M1 "Pattern Matcher Port" pipeline:
 //! `parse_pattern` → `process_escapes` → `nfa_compile` → `nfa_match`. It is a
@@ -36,8 +36,8 @@ pub(crate) const ASSERT_NBOUND: u8 = 0x0C; // \B  zero-width non-boundary assert
 pub(crate) const DOT_META: u8 = 0x0D; // bare .  (any char except \n/\r)
 pub(crate) const PLUS_QUANT: u8 = 0x0E; // bare + after a consuming element
 pub(crate) const GLOB_STAR: u8 = 0x2A; // bare *  glob wildcard
-// Literal '.' (0x2E), '+' (0x2B), '\' (0x5C) are emitted as their ASCII bytes.
-// Literal '.' (0x2E), '+' (0x2B), '\' (0x5C) are emitted as their ASCII bytes.
+                                       // Literal '.' (0x2E), '+' (0x2B), '\' (0x5C) are emitted as their ASCII bytes.
+                                       // Literal '.' (0x2E), '+' (0x2B), '\' (0x5C) are emitted as their ASCII bytes.
 
 /// Transform a human-authored pattern string into the processed byte stream the
 /// Thompson NFA compiler consumes — a faithful, byte-for-byte port of the
@@ -311,7 +311,7 @@ pub(crate) fn parse_pattern(pattern: &str) -> ParsedPattern {
                 break;
             }
         }
-        if bs % 2 == 0 {
+        if bs.is_multiple_of(2) {
             // even (0,2,4,...) => unescaped '$'
             end_anchored = true;
             end -= 1; // drop the '$'
@@ -342,7 +342,7 @@ pub(crate) fn parse_pattern(pattern: &str) -> ParsedPattern {
 // Compiles the processed-pattern byte stream (`parse_pattern().core` /
 // `process_escapes()` output) into a `Vec<NfaOp>` the NFA simulator
 // (P2.M1.T2.S2) runs against a candidate string. Faithful port of the firmware
-// `nfa_compile` + `State` struct + `OP_*` opcodes (`qmk-notifier/pattern_match.c`
+// `nfa_compile` + `State` struct + `OP_*` opcodes (`qmk_notifier/pattern_match.c`
 // ~lines 300-430). See architecture `external_deps.md` §3 point 3 and PRD §4.
 // =========================================================================
 
@@ -430,12 +430,7 @@ enum DanglingExit {
 /// (`tail == Start`) sets the function's `start` to the first unit's entry
 /// (always index 0 by the glob SPLIT-first reorder). Mirrors the firmware
 /// `*tail = entry` pointer write.
-fn resolve(
-    states: &mut [NfaOp],
-    start: &mut Option<usize>,
-    tail: &DanglingExit,
-    entry_idx: usize,
-) {
+fn resolve(states: &mut [NfaOp], start: &mut Option<usize>, tail: &DanglingExit, entry_idx: usize) {
     match tail {
         DanglingExit::Start => *start = Some(entry_idx),
         DanglingExit::Out(idx) => states[*idx].set_out(entry_idx),
@@ -475,7 +470,7 @@ fn resolve(
 ///
 /// The start state is **always index 0**. The firmware allocates `any`-then-
 /// `sp` for the glob, so a *leading* `*` would land its entry `Split` at index
-/// 1. This port REORDERS to `sp`-then-`any` (allocate `Split` first) so the
+/// one. This port REORDERS to `sp`-then-`any` (allocate `Split` first) so the
 /// unit entry is the lowest index — keeping `start == 0` for EVERY pattern.
 /// The edge graph is byte-for-byte identical to the firmware (same opcodes,
 /// same `out`/`out1` targets modulo the swapped glob indices); only the two
@@ -519,7 +514,7 @@ pub(crate) fn nfa_compile(pat: &[u8]) -> Vec<NfaOp> {
             states.push(NfaOp::Split { out: 0, out1: 0 }); // both edges filled below
             let any_idx = states.len();
             states.push(NfaOp::Any { out: 0 }); // filled below
-            // sp.out = ANY ; any.out = sp (GOTCHA-2: BACKWARD loop-back edge)
+                                                // sp.out = ANY ; any.out = sp (GOTCHA-2: BACKWARD loop-back edge)
             states[sp_idx].set_out(any_idx);
             states[any_idx].set_out(sp_idx);
             resolve(&mut states, &mut start, &tail, sp_idx); // *tail = sp (entry)
@@ -543,7 +538,10 @@ pub(crate) fn nfa_compile(pat: &[u8]) -> Vec<NfaOp> {
             if i + 1 < pat.len() && pat[i + 1] == PLUS_QUANT {
                 // X+ : LINEAR (exactly 2 states — Char + Split loop-back).
                 let sp_idx = states.len();
-                states.push(NfaOp::Split { out: c_idx, out1: 0 }); // out1 filled by next resolve
+                states.push(NfaOp::Split {
+                    out: c_idx,
+                    out1: 0,
+                }); // out1 filled by next resolve
                 states[c_idx].set_out(sp_idx); // after one X -> split
                 resolve(&mut states, &mut start, &tail, c_idx);
                 tail = DanglingExit::SplitSecond(sp_idx); // exit via split.out1
@@ -639,7 +637,7 @@ fn is_word_boundary(string: &[u8], pos: usize) -> bool {
 /// [`pattern_char_matches`]. Any other byte passes through unchanged.
 fn decoded_literal(pc: u8) -> u8 {
     match pc {
-        ESC_CARET => b'^',  // 0x01 -> \^
+        ESC_CARET => b'^',   // 0x01 -> \^
         ESC_DOLLAR => b'$',  // 0x02 -> \$
         ESC_STAR => b'*',    // 0x03 -> \*
         ESC_BSLASH => b'\\', // 0x04 -> \\
@@ -667,29 +665,29 @@ fn decoded_literal(pc: u8) -> u8 {
 /// identity for all other bytes (including UTF-8 continuation bytes).
 fn pattern_char_matches(pc: u8, sc: u8, case_sensitive: bool) -> bool {
     // Escaped literal: decode THEN compare (GOTCHA-9: never fold the placeholder).
-    if pc >= ESC_CARET && pc <= ESC_BSLASH {
+    if (ESC_CARET..=ESC_BSLASH).contains(&pc) {
         // 0x01..=0x04
         let lit = decoded_literal(pc);
         return if case_sensitive {
             lit == sc
         } else {
-            lit.to_ascii_lowercase() == sc.to_ascii_lowercase()
+            lit.eq_ignore_ascii_case(&sc)
         };
     }
     match pc {
-        CLASS_DIGIT => is_digit_char(sc),          // \d
-        CLASS_NDIGIT => !is_digit_char(sc),         // \D
-        CLASS_WORD => is_word_char(sc),             // \w
-        CLASS_NWORD => !is_word_char(sc),           // \W
-        CLASS_SPACE => is_whitespace_char(sc),      // \s
-        CLASS_NSPACE => !is_whitespace_char(sc),    // \S
-        DOT_META => sc != b'\n' && sc != b'\r',    // .  (dot excludes newline/CR)
+        CLASS_DIGIT => is_digit_char(sc),        // \d
+        CLASS_NDIGIT => !is_digit_char(sc),      // \D
+        CLASS_WORD => is_word_char(sc),          // \w
+        CLASS_NWORD => !is_word_char(sc),        // \W
+        CLASS_SPACE => is_whitespace_char(sc),   // \s
+        CLASS_NSPACE => !is_whitespace_char(sc), // \S
+        DOT_META => sc != b'\n' && sc != b'\r',  // .  (dot excludes newline/CR)
         _ => {
             // ordinary literal
             if case_sensitive {
                 pc == sc
             } else {
-                pc.to_ascii_lowercase() == sc.to_ascii_lowercase()
+                pc.eq_ignore_ascii_case(&sc)
             }
         }
     }
@@ -770,9 +768,7 @@ fn nfa_addstate(
             // is_word_boundary; this short-circuit is independent of the
             // is_word_boundary implementation.)
             let want_boundary = arg == ASSERT_BOUND;
-            if !string_start.is_empty()
-                && is_word_boundary(string_start, abspos) == want_boundary
-            {
+            if !string_start.is_empty() && is_word_boundary(string_start, abspos) == want_boundary {
                 nfa_addstate(states, out, list, seen, generation, string_start, abspos);
             }
             // Never collect an Assert itself (firmware `return` with no list add).
@@ -867,11 +863,27 @@ pub(crate) fn nfa_match(
             match states[s] {
                 NfaOp::Any { out } => {
                     // glob '*': ANY byte incl '\n'/'\r' (PRD §13 #8). Unconditional add.
-                    nfa_addstate(states, out, &mut nlist, &mut seen, generation, string, pos + 1);
+                    nfa_addstate(
+                        states,
+                        out,
+                        &mut nlist,
+                        &mut seen,
+                        generation,
+                        string,
+                        pos + 1,
+                    );
                 }
                 NfaOp::Char { arg, out } => {
                     if pattern_char_matches(arg, c, case_sensitive) {
-                        nfa_addstate(states, out, &mut nlist, &mut seen, generation, string, pos + 1);
+                        nfa_addstate(
+                            states,
+                            out,
+                            &mut nlist,
+                            &mut seen,
+                            generation,
+                            string,
+                            pos + 1,
+                        );
                     }
                 }
                 // Match/Assert/Split are never on the LIVE list (nfa_addstate
@@ -1175,8 +1187,7 @@ pub fn match_pattern(
         // "message has no GS → match only the left half" branch, because the
         // host always knows both halves).
         Pattern::Parts(c, t) => {
-            pattern_match(c, app_class, case_sensitive)
-                && pattern_match(t, title, case_sensitive)
+            pattern_match(c, app_class, case_sensitive) && pattern_match(t, title, case_sensitive)
         }
     }
 }
@@ -1836,7 +1847,10 @@ mod tests {
         assert_eq!(
             nfa_compile(&[DOT_META, GLOB_STAR]),
             vec![
-                NfaOp::Char { arg: DOT_META, out: 1 },
+                NfaOp::Char {
+                    arg: DOT_META,
+                    out: 1
+                },
                 NfaOp::Split { out: 2, out1: 3 },
                 NfaOp::Any { out: 1 },
                 NfaOp::Match,
@@ -1866,7 +1880,10 @@ mod tests {
         assert_eq!(
             nfa_compile(&[CLASS_DIGIT, PLUS_QUANT]),
             vec![
-                NfaOp::Char { arg: CLASS_DIGIT, out: 1 },
+                NfaOp::Char {
+                    arg: CLASS_DIGIT,
+                    out: 1
+                },
                 NfaOp::Split { out: 0, out1: 2 },
                 NfaOp::Match,
             ]
@@ -1879,7 +1896,10 @@ mod tests {
         assert_eq!(
             nfa_compile(&[DOT_META, PLUS_QUANT]),
             vec![
-                NfaOp::Char { arg: DOT_META, out: 1 },
+                NfaOp::Char {
+                    arg: DOT_META,
+                    out: 1
+                },
                 NfaOp::Split { out: 0, out1: 2 },
                 NfaOp::Match,
             ]
@@ -1896,7 +1916,11 @@ mod tests {
         // the old backtracker exponential (PRD §7.8); Thompson construction
         // compiles it in linear space and simulates in O(states × strlen).
         let got = nfa_compile(&[0x61, PLUS_QUANT, 0x61, PLUS_QUANT, 0x61, PLUS_QUANT]);
-        assert_eq!(got.len(), 7, "a+a+a+ must compile to exactly 7 states (2k+1)");
+        assert_eq!(
+            got.len(),
+            7,
+            "a+a+a+ must compile to exactly 7 states (2k+1)"
+        );
         assert_eq!(
             got,
             vec![
@@ -1919,7 +1943,10 @@ mod tests {
         assert_eq!(
             nfa_compile(&[ASSERT_BOUND]),
             vec![
-                NfaOp::Assert { arg: ASSERT_BOUND, out: 1 },
+                NfaOp::Assert {
+                    arg: ASSERT_BOUND,
+                    out: 1
+                },
                 NfaOp::Match,
             ]
         );
@@ -1931,7 +1958,10 @@ mod tests {
         assert_eq!(
             nfa_compile(&[ASSERT_NBOUND]),
             vec![
-                NfaOp::Assert { arg: ASSERT_NBOUND, out: 1 },
+                NfaOp::Assert {
+                    arg: ASSERT_NBOUND,
+                    out: 1
+                },
                 NfaOp::Match,
             ]
         );
@@ -1943,7 +1973,10 @@ mod tests {
         assert_eq!(
             nfa_compile(&[ASSERT_BOUND, 0x77, 0x6F, 0x72, 0x64]),
             vec![
-                NfaOp::Assert { arg: ASSERT_BOUND, out: 1 },
+                NfaOp::Assert {
+                    arg: ASSERT_BOUND,
+                    out: 1
+                },
                 NfaOp::Char { arg: 0x77, out: 2 },
                 NfaOp::Char { arg: 0x6F, out: 3 },
                 NfaOp::Char { arg: 0x72, out: 4 },
@@ -1986,7 +2019,10 @@ mod tests {
             nfa_compile(&[0x61, DOT_META]),
             vec![
                 NfaOp::Char { arg: 0x61, out: 1 },
-                NfaOp::Char { arg: DOT_META, out: 2 },
+                NfaOp::Char {
+                    arg: DOT_META,
+                    out: 2
+                },
                 NfaOp::Match,
             ]
         );
@@ -2666,7 +2702,12 @@ mod tests {
     #[test]
     fn test_mp_single_empty_pattern_non_empty_core() {
         // empty pattern, non-empty class → empty-core special case (T3.S1)
-        assert!(!match_pattern(&Pattern::Single("".into()), "Firefox", "", false));
+        assert!(!match_pattern(
+            &Pattern::Single("".into()),
+            "Firefox",
+            "",
+            false
+        ));
     }
 
     #[test]
@@ -2848,8 +2889,8 @@ mod tests {
         // G5: int matches no variant → error
         assert!(toml::from_str::<Wrap>(r#"match = 42"#).is_err());
     }
-// ===== FIRMWARE PARITY CORPUS (P2.M1.T4.S1) =====
-    // Ports the firmware qmk-notifier/test_*.c pattern_match corpus (8 files,
+    // ===== FIRMWARE PARITY CORPUS (P2.M1.T4.S1) =====
+    // Ports the firmware qmk_notifier/test_*.c pattern_match corpus (8 files,
     // 1225 assertion cases) as Rust parity tests. Source of truth: the C files
     // (PRD §14). A failure = the Rust leaf `pattern_match` diverged from the
     // firmware → fix the Rust, NOT the test.
@@ -2874,7 +2915,7 @@ mod tests {
 
     /// Assert `pattern_match(pattern, input, cs) == exp` for EVERY case,
     /// printing a precise, indexed failure message on the first divergence.
-    /// Mirrors the firmware `run_test()` loop (qmk-notifier/test_pattern_match.c).
+    /// Mirrors the firmware `run_test()` loop (qmk_notifier/test_pattern_match.c).
     fn assert_parity(cases: &[Case]) {
         for (i, c) in cases.iter().enumerate() {
             let got = pattern_match(c.pattern, c.input, c.cs);
@@ -2897,57 +2938,222 @@ mod tests {
     #[test]
     fn test_parity_pm_start_anchor() {
         assert_parity(&[
-            Case { pattern: "^searchterm", input: "searchterm", cs: true, exp: true },
-            Case { pattern: "^searchterm", input: "presearchterm", cs: true, exp: false },
-            Case { pattern: "^searchterm", input: "searchtermpost", cs: true, exp: true },
-            Case { pattern: "^test", input: "test123", cs: true, exp: true },
-            Case { pattern: "^test", input: "pretest", cs: true, exp: false },
-            Case { pattern: "^", input: "", cs: true, exp: true },
-            Case { pattern: "^abc", input: "ABC", cs: false, exp: true },
-            Case { pattern: "^abc", input: "ABC", cs: true, exp: false },
+            Case {
+                pattern: "^searchterm",
+                input: "searchterm",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "^searchterm",
+                input: "presearchterm",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "^searchterm",
+                input: "searchtermpost",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "^test",
+                input: "test123",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "^test",
+                input: "pretest",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "^",
+                input: "",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "^abc",
+                input: "ABC",
+                cs: false,
+                exp: true,
+            },
+            Case {
+                pattern: "^abc",
+                input: "ABC",
+                cs: true,
+                exp: false,
+            },
         ]);
     }
 
     #[test]
     fn test_parity_pm_end_anchor() {
         assert_parity(&[
-            Case { pattern: "searchterm$", input: "searchterm", cs: true, exp: true },
-            Case { pattern: "searchterm$", input: "searchtermpost", cs: true, exp: false },
-            Case { pattern: "searchterm$", input: "presearchterm", cs: true, exp: true },
-            Case { pattern: "test$", input: "pretest", cs: true, exp: true },
-            Case { pattern: "test$", input: "test123", cs: true, exp: false },
-            Case { pattern: "$", input: "", cs: true, exp: true },
-            Case { pattern: "abc$", input: "ABC", cs: false, exp: true },
-            Case { pattern: "abc$", input: "ABC", cs: true, exp: false },
+            Case {
+                pattern: "searchterm$",
+                input: "searchterm",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "searchterm$",
+                input: "searchtermpost",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "searchterm$",
+                input: "presearchterm",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "test$",
+                input: "pretest",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "test$",
+                input: "test123",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "$",
+                input: "",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "abc$",
+                input: "ABC",
+                cs: false,
+                exp: true,
+            },
+            Case {
+                pattern: "abc$",
+                input: "ABC",
+                cs: true,
+                exp: false,
+            },
         ]);
     }
 
     #[test]
     fn test_parity_pm_full_anchor() {
         assert_parity(&[
-            Case { pattern: "^searchterm$", input: "searchterm", cs: true, exp: true },
-            Case { pattern: "^searchterm$", input: "presearchterm", cs: true, exp: false },
-            Case { pattern: "^searchterm$", input: "searchtermpost", cs: true, exp: false },
-            Case { pattern: "^searchterm$", input: "presearchtermpost", cs: true, exp: false },
-            Case { pattern: "^test$", input: "test", cs: true, exp: true },
-            Case { pattern: "^$", input: "", cs: true, exp: true },
-            Case { pattern: "^abc$", input: "ABC", cs: false, exp: true },
-            Case { pattern: "^abc$", input: "ABC", cs: true, exp: false },
+            Case {
+                pattern: "^searchterm$",
+                input: "searchterm",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "^searchterm$",
+                input: "presearchterm",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "^searchterm$",
+                input: "searchtermpost",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "^searchterm$",
+                input: "presearchtermpost",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "^test$",
+                input: "test",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "^$",
+                input: "",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "^abc$",
+                input: "ABC",
+                cs: false,
+                exp: true,
+            },
+            Case {
+                pattern: "^abc$",
+                input: "ABC",
+                cs: true,
+                exp: false,
+            },
         ]);
     }
 
     #[test]
     fn test_parity_pm_anchors_with_wildcards() {
         assert_parity(&[
-            Case { pattern: "^sear*term$", input: "searchterm", cs: true, exp: true },
-            Case { pattern: "^sear*term$", input: "searedsalmonterm", cs: true, exp: true },
-            Case { pattern: "^sear*term$", input: "somesearchterm", cs: true, exp: false },
-            Case { pattern: "^sear*term$", input: "searchtermhere", cs: true, exp: false },
-            Case { pattern: "^*test", input: "anytest", cs: true, exp: true },
-            Case { pattern: "test*$", input: "testany", cs: true, exp: true },
-            Case { pattern: "^*$", input: "anything", cs: true, exp: true },
-            Case { pattern: "^a*b*c$", input: "abc", cs: true, exp: true },
-            Case { pattern: "^a*b*c$", input: "aabbcc", cs: true, exp: true },
+            Case {
+                pattern: "^sear*term$",
+                input: "searchterm",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "^sear*term$",
+                input: "searedsalmonterm",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "^sear*term$",
+                input: "somesearchterm",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "^sear*term$",
+                input: "searchtermhere",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "^*test",
+                input: "anytest",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "test*$",
+                input: "testany",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "^*$",
+                input: "anything",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "^a*b*c$",
+                input: "abc",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "^a*b*c$",
+                input: "aabbcc",
+                cs: true,
+                exp: true,
+            },
         ]);
     }
 
@@ -2956,20 +3162,90 @@ mod tests {
     #[test]
     fn test_parity_pm_basic_metacharacter_escapes() {
         assert_parity(&[
-            Case { pattern: "\\d", input: "\\d", cs: true, exp: false },
-            Case { pattern: "\\d", input: "d", cs: true, exp: false },
-            Case { pattern: "\\D", input: "5", cs: true, exp: false },
-            Case { pattern: "\\D", input: "D", cs: true, exp: true },
-            Case { pattern: "\\w", input: " ", cs: true, exp: false },
-            Case { pattern: "\\w", input: "w", cs: true, exp: true },
-            Case { pattern: "\\W", input: "a", cs: true, exp: false },
-            Case { pattern: "\\W", input: "W", cs: true, exp: false },
-            Case { pattern: "\\s", input: "\\s", cs: true, exp: false },
-            Case { pattern: "\\s", input: "s", cs: true, exp: false },
-            Case { pattern: "\\S", input: " ", cs: true, exp: false },
-            Case { pattern: "\\S", input: "S", cs: true, exp: true },
-            Case { pattern: "\\x", input: "\\x", cs: true, exp: true },
-            Case { pattern: "\\z", input: "\\z", cs: true, exp: true },
+            Case {
+                pattern: "\\d",
+                input: "\\d",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\d",
+                input: "d",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\D",
+                input: "5",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\D",
+                input: "D",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\w",
+                input: " ",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\w",
+                input: "w",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\W",
+                input: "a",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\W",
+                input: "W",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\s",
+                input: "\\s",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\s",
+                input: "s",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\S",
+                input: " ",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\S",
+                input: "S",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\x",
+                input: "\\x",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\z",
+                input: "\\z",
+                cs: true,
+                exp: true,
+            },
         ]);
     }
 
@@ -2977,217 +3253,1052 @@ mod tests {
     fn test_parity_pm_basic_metacharacter_matching() {
         assert_parity(&[
             // \d
-            Case { pattern: "\\d", input: "0", cs: true, exp: true },
-            Case { pattern: "\\d", input: "1", cs: true, exp: true },
-            Case { pattern: "\\d", input: "5", cs: true, exp: true },
-            Case { pattern: "\\d", input: "9", cs: true, exp: true },
-            Case { pattern: "\\d", input: "a", cs: true, exp: false },
-            Case { pattern: "\\d", input: "A", cs: true, exp: false },
-            Case { pattern: "\\d", input: " ", cs: true, exp: false },
-            Case { pattern: "\\d", input: "_", cs: true, exp: false },
-            Case { pattern: "\\d", input: "!", cs: true, exp: false },
+            Case {
+                pattern: "\\d",
+                input: "0",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\d",
+                input: "1",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\d",
+                input: "5",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\d",
+                input: "9",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\d",
+                input: "a",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\d",
+                input: "A",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\d",
+                input: " ",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\d",
+                input: "_",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\d",
+                input: "!",
+                cs: true,
+                exp: false,
+            },
             // \D
-            Case { pattern: "\\D", input: "a", cs: true, exp: true },
-            Case { pattern: "\\D", input: "A", cs: true, exp: true },
-            Case { pattern: "\\D", input: " ", cs: true, exp: true },
-            Case { pattern: "\\D", input: "_", cs: true, exp: true },
-            Case { pattern: "\\D", input: "!", cs: true, exp: true },
-            Case { pattern: "\\D", input: "0", cs: true, exp: false },
-            Case { pattern: "\\D", input: "5", cs: true, exp: false },
-            Case { pattern: "\\D", input: "9", cs: true, exp: false },
+            Case {
+                pattern: "\\D",
+                input: "a",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\D",
+                input: "A",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\D",
+                input: " ",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\D",
+                input: "_",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\D",
+                input: "!",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\D",
+                input: "0",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\D",
+                input: "5",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\D",
+                input: "9",
+                cs: true,
+                exp: false,
+            },
             // \w
-            Case { pattern: "\\w", input: "a", cs: true, exp: true },
-            Case { pattern: "\\w", input: "z", cs: true, exp: true },
-            Case { pattern: "\\w", input: "A", cs: true, exp: true },
-            Case { pattern: "\\w", input: "Z", cs: true, exp: true },
-            Case { pattern: "\\w", input: "0", cs: true, exp: true },
-            Case { pattern: "\\w", input: "9", cs: true, exp: true },
-            Case { pattern: "\\w", input: "_", cs: true, exp: true },
-            Case { pattern: "\\w", input: " ", cs: true, exp: false },
-            Case { pattern: "\\w", input: "!", cs: true, exp: false },
-            Case { pattern: "\\w", input: "-", cs: true, exp: false },
+            Case {
+                pattern: "\\w",
+                input: "a",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\w",
+                input: "z",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\w",
+                input: "A",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\w",
+                input: "Z",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\w",
+                input: "0",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\w",
+                input: "9",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\w",
+                input: "_",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\w",
+                input: " ",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\w",
+                input: "!",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\w",
+                input: "-",
+                cs: true,
+                exp: false,
+            },
             // \W
-            Case { pattern: "\\W", input: " ", cs: true, exp: true },
-            Case { pattern: "\\W", input: "!", cs: true, exp: true },
-            Case { pattern: "\\W", input: "-", cs: true, exp: true },
-            Case { pattern: "\\W", input: ".", cs: true, exp: true },
-            Case { pattern: "\\W", input: "a", cs: true, exp: false },
-            Case { pattern: "\\W", input: "Z", cs: true, exp: false },
-            Case { pattern: "\\W", input: "5", cs: true, exp: false },
-            Case { pattern: "\\W", input: "_", cs: true, exp: false },
+            Case {
+                pattern: "\\W",
+                input: " ",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\W",
+                input: "!",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\W",
+                input: "-",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\W",
+                input: ".",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\W",
+                input: "a",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\W",
+                input: "Z",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\W",
+                input: "5",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\W",
+                input: "_",
+                cs: true,
+                exp: false,
+            },
             // \s — G1: C "\f"→"\x0C", C "\v"→"\x0B"
-            Case { pattern: "\\s", input: " ", cs: true, exp: true },
-            Case { pattern: "\\s", input: "\t", cs: true, exp: true },
-            Case { pattern: "\\s", input: "\n", cs: true, exp: true },
-            Case { pattern: "\\s", input: "\r", cs: true, exp: true },
-            Case { pattern: "\\s", input: "\x0C", cs: true, exp: true }, // C "\f"
-            Case { pattern: "\\s", input: "\x0B", cs: true, exp: true }, // C "\v"
-            Case { pattern: "\\s", input: "a", cs: true, exp: false },
-            Case { pattern: "\\s", input: "0", cs: true, exp: false },
-            Case { pattern: "\\s", input: "_", cs: true, exp: false },
-            Case { pattern: "\\s", input: "!", cs: true, exp: false },
+            Case {
+                pattern: "\\s",
+                input: " ",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\s",
+                input: "\t",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\s",
+                input: "\n",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\s",
+                input: "\r",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\s",
+                input: "\x0C",
+                cs: true,
+                exp: true,
+            }, // C "\f"
+            Case {
+                pattern: "\\s",
+                input: "\x0B",
+                cs: true,
+                exp: true,
+            }, // C "\v"
+            Case {
+                pattern: "\\s",
+                input: "a",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\s",
+                input: "0",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\s",
+                input: "_",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\s",
+                input: "!",
+                cs: true,
+                exp: false,
+            },
             // \S — G1: C "\f"→"\x0C", C "\v"→"\x0B"
-            Case { pattern: "\\S", input: "a", cs: true, exp: true },
-            Case { pattern: "\\S", input: "0", cs: true, exp: true },
-            Case { pattern: "\\S", input: "_", cs: true, exp: true },
-            Case { pattern: "\\S", input: "!", cs: true, exp: true },
-            Case { pattern: "\\S", input: " ", cs: true, exp: false },
-            Case { pattern: "\\S", input: "\t", cs: true, exp: false },
-            Case { pattern: "\\S", input: "\n", cs: true, exp: false },
-            Case { pattern: "\\S", input: "\r", cs: true, exp: false },
-            Case { pattern: "\\S", input: "\x0C", cs: true, exp: false }, // C "\f"
-            Case { pattern: "\\S", input: "\x0B", cs: true, exp: false }, // C "\v"
+            Case {
+                pattern: "\\S",
+                input: "a",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\S",
+                input: "0",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\S",
+                input: "_",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\S",
+                input: "!",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\S",
+                input: " ",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\S",
+                input: "\t",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\S",
+                input: "\n",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\S",
+                input: "\r",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\S",
+                input: "\x0C",
+                cs: true,
+                exp: false,
+            }, // C "\f"
+            Case {
+                pattern: "\\S",
+                input: "\x0B",
+                cs: true,
+                exp: false,
+            }, // C "\v"
             // case sensitivity for \w/\W
-            Case { pattern: "\\w", input: "A", cs: true, exp: true },
-            Case { pattern: "\\w", input: "a", cs: true, exp: true },
-            Case { pattern: "\\W", input: "A", cs: true, exp: false },
-            Case { pattern: "\\W", input: "a", cs: true, exp: false },
+            Case {
+                pattern: "\\w",
+                input: "A",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\w",
+                input: "a",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\W",
+                input: "A",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\W",
+                input: "a",
+                cs: true,
+                exp: false,
+            },
             // multiple chars (first only)
-            Case { pattern: "\\d", input: "123", cs: true, exp: true },
-            Case { pattern: "\\w", input: "abc", cs: true, exp: true },
-            Case { pattern: "\\s", input: "   ", cs: true, exp: true },
+            Case {
+                pattern: "\\d",
+                input: "123",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\w",
+                input: "abc",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\s",
+                input: "   ",
+                cs: true,
+                exp: true,
+            },
             // special chars
-            Case { pattern: "\\d", input: "@", cs: true, exp: false },
-            Case { pattern: "\\w", input: "@", cs: true, exp: false },
-            Case { pattern: "\\s", input: "@", cs: true, exp: false },
-            Case { pattern: "\\D", input: "@", cs: true, exp: true },
-            Case { pattern: "\\W", input: "@", cs: true, exp: true },
-            Case { pattern: "\\S", input: "@", cs: true, exp: true },
+            Case {
+                pattern: "\\d",
+                input: "@",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\w",
+                input: "@",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\s",
+                input: "@",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\D",
+                input: "@",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\W",
+                input: "@",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\S",
+                input: "@",
+                cs: true,
+                exp: true,
+            },
         ]);
     }
 
     #[test]
     fn test_parity_pm_word_boundary_escape_processing() {
         assert_parity(&[
-            Case { pattern: "\\B", input: "B", cs: true, exp: false },
-            Case { pattern: "\\x", input: "\\x", cs: true, exp: true },
-            Case { pattern: "\\z", input: "\\z", cs: true, exp: true },
-            Case { pattern: "\\btest", input: "\\btest", cs: true, exp: false },
-            Case { pattern: "test\\B", input: "test\\B", cs: true, exp: false },
-            Case { pattern: "\\b\\B", input: "\\b\\B", cs: true, exp: false },
-            Case { pattern: "\\B\\b", input: "\\B\\b", cs: true, exp: false },
-            Case { pattern: "\\^\\b", input: "^\\b", cs: true, exp: false },
-            Case { pattern: "\\*\\b", input: "*\\b", cs: true, exp: false },
+            Case {
+                pattern: "\\B",
+                input: "B",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\x",
+                input: "\\x",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\z",
+                input: "\\z",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\btest",
+                input: "\\btest",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "test\\B",
+                input: "test\\B",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\b\\B",
+                input: "\\b\\B",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\B\\b",
+                input: "\\B\\b",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\^\\b",
+                input: "^\\b",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\*\\b",
+                input: "*\\b",
+                cs: true,
+                exp: false,
+            },
         ]);
     }
 
     #[test]
     fn test_parity_pm_escape_sequences() {
         assert_parity(&[
-            Case { pattern: "\\^searchterm", input: "^searchterm", cs: true, exp: true },
-            Case { pattern: "\\^searchterm", input: "searchterm", cs: true, exp: false },
-            Case { pattern: "searchterm\\$", input: "searchterm$", cs: true, exp: true },
-            Case { pattern: "searchterm\\$", input: "searchterm", cs: true, exp: false },
-            Case { pattern: "search\\*term", input: "search*term", cs: true, exp: true },
-            Case { pattern: "search\\*term", input: "searchanyterm", cs: true, exp: false },
-            Case { pattern: "\\\\^searchterm", input: "\\^searchterm", cs: true, exp: true },
-            Case { pattern: "\\^test\\$", input: "^test$", cs: true, exp: true },
-            Case { pattern: "test\\*\\*test", input: "test**test", cs: true, exp: true },
-            Case { pattern: "\\\\test", input: "\\test", cs: true, exp: true },
-            Case { pattern: "test\\", input: "test\\", cs: true, exp: true },
-            Case { pattern: "\\^Test", input: "^test", cs: false, exp: true },
-            Case { pattern: "\\^Test", input: "^test", cs: true, exp: false },
-            Case { pattern: "\\a", input: "\\a", cs: true, exp: true },
-            Case { pattern: "\\\\\\^", input: "\\^", cs: true, exp: true },
-            Case { pattern: "\\\\\\\\", input: "\\\\", cs: true, exp: true },
-            Case { pattern: "test\\\\", input: "test\\", cs: true, exp: true },
-            Case { pattern: "\\", input: "\\", cs: true, exp: true },
-            Case { pattern: "\\\\", input: "\\", cs: true, exp: true },
-            Case { pattern: "\\^\\$\\*\\\\", input: "^$*\\", cs: true, exp: true },
-            Case { pattern: "pre\\^mid\\$post", input: "pre^mid$post", cs: true, exp: true },
-            Case { pattern: "\\^start", input: "^start", cs: true, exp: true },
-            Case { pattern: "end\\$", input: "end$", cs: true, exp: true },
-            Case { pattern: "normal", input: "normal", cs: true, exp: true },
-            Case { pattern: "nor\\*mal", input: "nor*mal", cs: true, exp: true },
+            Case {
+                pattern: "\\^searchterm",
+                input: "^searchterm",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\^searchterm",
+                input: "searchterm",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "searchterm\\$",
+                input: "searchterm$",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "searchterm\\$",
+                input: "searchterm",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "search\\*term",
+                input: "search*term",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "search\\*term",
+                input: "searchanyterm",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\\\^searchterm",
+                input: "\\^searchterm",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\^test\\$",
+                input: "^test$",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "test\\*\\*test",
+                input: "test**test",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\\\test",
+                input: "\\test",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "test\\",
+                input: "test\\",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\^Test",
+                input: "^test",
+                cs: false,
+                exp: true,
+            },
+            Case {
+                pattern: "\\^Test",
+                input: "^test",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\a",
+                input: "\\a",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\\\\\^",
+                input: "\\^",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\\\\\\\",
+                input: "\\\\",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "test\\\\",
+                input: "test\\",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\",
+                input: "\\",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\\\",
+                input: "\\",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\^\\$\\*\\\\",
+                input: "^$*\\",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "pre\\^mid\\$post",
+                input: "pre^mid$post",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\^start",
+                input: "^start",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "end\\$",
+                input: "end$",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "normal",
+                input: "normal",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "nor\\*mal",
+                input: "nor*mal",
+                cs: true,
+                exp: true,
+            },
         ]);
     }
 
     #[test]
     fn test_parity_pm_backward_compatibility() {
         assert_parity(&[
-            Case { pattern: "searchterm", input: "presearchtermpost", cs: true, exp: true },
-            Case { pattern: "sear*term", input: "presearchtermpost", cs: true, exp: true },
-            Case { pattern: "*term", input: "searchterm", cs: true, exp: true },
-            Case { pattern: "search*", input: "searchterm", cs: true, exp: true },
-            Case { pattern: "test", input: "test", cs: true, exp: true },
-            Case { pattern: "test", input: "testing", cs: true, exp: true },
-            Case { pattern: "*", input: "anything", cs: true, exp: true },
-            Case { pattern: "", input: "", cs: true, exp: true },
-            Case { pattern: "abc", input: "ABC", cs: false, exp: true },
-            Case { pattern: "abc", input: "ABC", cs: true, exp: false },
-            Case { pattern: "a*b*c", input: "aabbcc", cs: true, exp: true },
-            Case { pattern: "*test*", input: "pretestpost", cs: true, exp: true },
-            Case { pattern: "a*", input: "a", cs: true, exp: true },
+            Case {
+                pattern: "searchterm",
+                input: "presearchtermpost",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "sear*term",
+                input: "presearchtermpost",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "*term",
+                input: "searchterm",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "search*",
+                input: "searchterm",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "test",
+                input: "test",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "test",
+                input: "testing",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "*",
+                input: "anything",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "",
+                input: "",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "abc",
+                input: "ABC",
+                cs: false,
+                exp: true,
+            },
+            Case {
+                pattern: "abc",
+                input: "ABC",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "a*b*c",
+                input: "aabbcc",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "*test*",
+                input: "pretestpost",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "a*",
+                input: "a",
+                cs: true,
+                exp: true,
+            },
         ]);
     }
 
     #[test]
     fn test_parity_pm_case_sensitivity() {
         assert_parity(&[
-            Case { pattern: "^SearchTerm$", input: "searchterm", cs: false, exp: true },
-            Case { pattern: "^SearchTerm$", input: "searchterm", cs: true, exp: false },
-            Case { pattern: "\\^SearchTerm", input: "^searchterm", cs: false, exp: true },
-            Case { pattern: "\\^SearchTerm", input: "^searchterm", cs: true, exp: false },
-            Case { pattern: "^Test*", input: "testany", cs: false, exp: true },
-            Case { pattern: "^Test*", input: "testany", cs: true, exp: false },
-            Case { pattern: "*Test$", input: "anytest", cs: false, exp: true },
-            Case { pattern: "*Test$", input: "anytest", cs: true, exp: false },
-            Case { pattern: "Test\\*", input: "test*", cs: false, exp: true },
-            Case { pattern: "Test\\*", input: "test*", cs: true, exp: false },
+            Case {
+                pattern: "^SearchTerm$",
+                input: "searchterm",
+                cs: false,
+                exp: true,
+            },
+            Case {
+                pattern: "^SearchTerm$",
+                input: "searchterm",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\^SearchTerm",
+                input: "^searchterm",
+                cs: false,
+                exp: true,
+            },
+            Case {
+                pattern: "\\^SearchTerm",
+                input: "^searchterm",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "^Test*",
+                input: "testany",
+                cs: false,
+                exp: true,
+            },
+            Case {
+                pattern: "^Test*",
+                input: "testany",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "*Test$",
+                input: "anytest",
+                cs: false,
+                exp: true,
+            },
+            Case {
+                pattern: "*Test$",
+                input: "anytest",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "Test\\*",
+                input: "test*",
+                cs: false,
+                exp: true,
+            },
+            Case {
+                pattern: "Test\\*",
+                input: "test*",
+                cs: true,
+                exp: false,
+            },
         ]);
     }
 
     #[test]
     fn test_parity_pm_pattern_parsing() {
         assert_parity(&[
-            Case { pattern: "^test", input: "test", cs: true, exp: true },
-            Case { pattern: "^test", input: "pretest", cs: true, exp: false },
-            Case { pattern: "test$", input: "test", cs: true, exp: true },
-            Case { pattern: "test$", input: "testpost", cs: true, exp: false },
-            Case { pattern: "^test$", input: "test", cs: true, exp: true },
-            Case { pattern: "^test$", input: "pretest", cs: true, exp: false },
-            Case { pattern: "^test$", input: "testpost", cs: true, exp: false },
-            Case { pattern: "\\^test", input: "^test", cs: true, exp: true },
-            Case { pattern: "\\^test", input: "test", cs: true, exp: false },
-            Case { pattern: "test\\$", input: "test$", cs: true, exp: true },
-            Case { pattern: "test\\$", input: "test", cs: true, exp: false },
-            Case { pattern: "test\\*test", input: "test*test", cs: true, exp: true },
-            Case { pattern: "test\\*test", input: "testanytest", cs: true, exp: false },
-            Case { pattern: "\\\\test", input: "\\test", cs: true, exp: true },
-            Case { pattern: "\\^test\\$", input: "^test$", cs: true, exp: true },
-            Case { pattern: "^\\^test", input: "^test", cs: true, exp: true },
-            Case { pattern: "test\\$$", input: "test$", cs: true, exp: true },
-            Case { pattern: "^test\\*$", input: "test*", cs: true, exp: true },
-            Case { pattern: "^", input: "", cs: true, exp: true },
-            Case { pattern: "$", input: "", cs: true, exp: true },
-            Case { pattern: "^$", input: "", cs: true, exp: true },
-            Case { pattern: "\\", input: "\\", cs: true, exp: true },
-            Case { pattern: "\\^", input: "^", cs: true, exp: true },
-            Case { pattern: "\\$", input: "$", cs: true, exp: true },
-            Case { pattern: "\\*", input: "*", cs: true, exp: true },
-            Case { pattern: "^Test", input: "test", cs: false, exp: true },
-            Case { pattern: "^Test", input: "test", cs: true, exp: false },
-            Case { pattern: "\\^Test", input: "^test", cs: false, exp: true },
-            Case { pattern: "\\^Test", input: "^test", cs: true, exp: false },
+            Case {
+                pattern: "^test",
+                input: "test",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "^test",
+                input: "pretest",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "test$",
+                input: "test",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "test$",
+                input: "testpost",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "^test$",
+                input: "test",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "^test$",
+                input: "pretest",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "^test$",
+                input: "testpost",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\^test",
+                input: "^test",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\^test",
+                input: "test",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "test\\$",
+                input: "test$",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "test\\$",
+                input: "test",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "test\\*test",
+                input: "test*test",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "test\\*test",
+                input: "testanytest",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\\\test",
+                input: "\\test",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\^test\\$",
+                input: "^test$",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "^\\^test",
+                input: "^test",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "test\\$$",
+                input: "test$",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "^test\\*$",
+                input: "test*",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "^",
+                input: "",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "$",
+                input: "",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "^$",
+                input: "",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\",
+                input: "\\",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\^",
+                input: "^",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\$",
+                input: "$",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\*",
+                input: "*",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "^Test",
+                input: "test",
+                cs: false,
+                exp: true,
+            },
+            Case {
+                pattern: "^Test",
+                input: "test",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\^Test",
+                input: "^test",
+                cs: false,
+                exp: true,
+            },
+            Case {
+                pattern: "\\^Test",
+                input: "^test",
+                cs: true,
+                exp: false,
+            },
         ]);
     }
 
     #[test]
     fn test_parity_pm_edge_cases() {
         assert_parity(&[
-            Case { pattern: "", input: "", cs: true, exp: true },
-            Case { pattern: "test", input: "", cs: true, exp: false },
-            Case { pattern: "", input: "test", cs: true, exp: false },
-            Case { pattern: "^^test", input: "^test", cs: true, exp: true },
-            Case { pattern: "test$$", input: "test$", cs: true, exp: true },
-            Case { pattern: "^$", input: "", cs: true, exp: true },
-            Case { pattern: "^$", input: "a", cs: true, exp: false },
-            Case { pattern: "\\\\\\^", input: "\\^", cs: true, exp: true },
-            Case { pattern: "test\\", input: "test\\", cs: true, exp: true },
-            Case { pattern: "\\", input: "\\", cs: true, exp: true },
-            Case { pattern: "^*", input: "anything", cs: true, exp: true },
-            Case { pattern: "*$", input: "anything", cs: true, exp: true },
-            Case { pattern: "^**$", input: "test", cs: true, exp: true },
+            Case {
+                pattern: "",
+                input: "",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "test",
+                input: "",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "",
+                input: "test",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "^^test",
+                input: "^test",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "test$$",
+                input: "test$",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "^$",
+                input: "",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "^$",
+                input: "a",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\\\\\^",
+                input: "\\^",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "test\\",
+                input: "test\\",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\",
+                input: "\\",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "^*",
+                input: "anything",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "*$",
+                input: "anything",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "^**$",
+                input: "test",
+                cs: true,
+                exp: true,
+            },
         ]);
     }
 
@@ -3195,68 +4306,343 @@ mod tests {
     fn test_parity_pm_metacharacters_with_anchors() {
         assert_parity(&[
             // \d anchors
-            Case { pattern: "^\\d", input: "5", cs: true, exp: true },
-            Case { pattern: "^\\d", input: "a5", cs: true, exp: false },
-            Case { pattern: "\\d$", input: "5", cs: true, exp: true },
-            Case { pattern: "\\d$", input: "5a", cs: true, exp: false },
-            Case { pattern: "^\\d$", input: "7", cs: true, exp: true },
-            Case { pattern: "^\\d$", input: "77", cs: true, exp: false },
-            Case { pattern: "^\\d$", input: "a", cs: true, exp: false },
+            Case {
+                pattern: "^\\d",
+                input: "5",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "^\\d",
+                input: "a5",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\d$",
+                input: "5",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\d$",
+                input: "5a",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "^\\d$",
+                input: "7",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "^\\d$",
+                input: "77",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "^\\d$",
+                input: "a",
+                cs: true,
+                exp: false,
+            },
             // \D anchors
-            Case { pattern: "^\\D", input: "a", cs: true, exp: true },
-            Case { pattern: "^\\D", input: "5a", cs: true, exp: false },
-            Case { pattern: "\\D$", input: "a", cs: true, exp: true },
-            Case { pattern: "\\D$", input: "a5", cs: true, exp: false },
-            Case { pattern: "^\\D$", input: "x", cs: true, exp: true },
-            Case { pattern: "^\\D$", input: "5", cs: true, exp: false },
+            Case {
+                pattern: "^\\D",
+                input: "a",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "^\\D",
+                input: "5a",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\D$",
+                input: "a",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\D$",
+                input: "a5",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "^\\D$",
+                input: "x",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "^\\D$",
+                input: "5",
+                cs: true,
+                exp: false,
+            },
             // \w anchors
-            Case { pattern: "^\\w", input: "a", cs: true, exp: true },
-            Case { pattern: "^\\w", input: " a", cs: true, exp: false },
-            Case { pattern: "\\w$", input: "a", cs: true, exp: true },
-            Case { pattern: "\\w$", input: "a ", cs: true, exp: false },
-            Case { pattern: "^\\w$", input: "z", cs: true, exp: true },
-            Case { pattern: "^\\w$", input: "_", cs: true, exp: true },
-            Case { pattern: "^\\w$", input: "5", cs: true, exp: true },
-            Case { pattern: "^\\w$", input: " ", cs: true, exp: false },
+            Case {
+                pattern: "^\\w",
+                input: "a",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "^\\w",
+                input: " a",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\w$",
+                input: "a",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\w$",
+                input: "a ",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "^\\w$",
+                input: "z",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "^\\w$",
+                input: "_",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "^\\w$",
+                input: "5",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "^\\w$",
+                input: " ",
+                cs: true,
+                exp: false,
+            },
             // \W anchors
-            Case { pattern: "^\\W", input: " ", cs: true, exp: true },
-            Case { pattern: "^\\W", input: "a ", cs: true, exp: false },
-            Case { pattern: "\\W$", input: " ", cs: true, exp: true },
-            Case { pattern: "\\W$", input: " a", cs: true, exp: false },
-            Case { pattern: "^\\W$", input: "!", cs: true, exp: true },
-            Case { pattern: "^\\W$", input: "a", cs: true, exp: false },
+            Case {
+                pattern: "^\\W",
+                input: " ",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "^\\W",
+                input: "a ",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\W$",
+                input: " ",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\W$",
+                input: " a",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "^\\W$",
+                input: "!",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "^\\W$",
+                input: "a",
+                cs: true,
+                exp: false,
+            },
             // \s anchors
-            Case { pattern: "^\\s", input: " ", cs: true, exp: true },
-            Case { pattern: "^\\s", input: "a ", cs: true, exp: false },
-            Case { pattern: "\\s$", input: " ", cs: true, exp: true },
-            Case { pattern: "\\s$", input: " a", cs: true, exp: false },
-            Case { pattern: "^\\s$", input: "\t", cs: true, exp: true },
-            Case { pattern: "^\\s$", input: "\n", cs: true, exp: true },
-            Case { pattern: "^\\s$", input: "a", cs: true, exp: false },
+            Case {
+                pattern: "^\\s",
+                input: " ",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "^\\s",
+                input: "a ",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\s$",
+                input: " ",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\s$",
+                input: " a",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "^\\s$",
+                input: "\t",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "^\\s$",
+                input: "\n",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "^\\s$",
+                input: "a",
+                cs: true,
+                exp: false,
+            },
             // \S anchors
-            Case { pattern: "^\\S", input: "a", cs: true, exp: true },
-            Case { pattern: "^\\S", input: " a", cs: true, exp: false },
-            Case { pattern: "\\S$", input: "a", cs: true, exp: true },
-            Case { pattern: "\\S$", input: "a ", cs: true, exp: false },
-            Case { pattern: "^\\S$", input: "x", cs: true, exp: true },
-            Case { pattern: "^\\S$", input: " ", cs: true, exp: false },
+            Case {
+                pattern: "^\\S",
+                input: "a",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "^\\S",
+                input: " a",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\S$",
+                input: "a",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\S$",
+                input: "a ",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "^\\S$",
+                input: "x",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "^\\S$",
+                input: " ",
+                cs: true,
+                exp: false,
+            },
             // multiple metachars + anchors
-            Case { pattern: "^\\d\\w", input: "5a", cs: true, exp: true },
-            Case { pattern: "^\\d\\w", input: "a5", cs: true, exp: false },
-            Case { pattern: "\\w\\d$", input: "a5", cs: true, exp: true },
-            Case { pattern: "\\w\\d$", input: "5a", cs: true, exp: false },
-            Case { pattern: "^\\s\\S$", input: " a", cs: true, exp: true },
-            Case { pattern: "^\\S\\s$", input: "a ", cs: true, exp: true },
-            Case { pattern: "^a\\d", input: "a5", cs: true, exp: true },
-            Case { pattern: "^a\\d", input: "5a", cs: true, exp: false },
-            Case { pattern: "\\db$", input: "5b", cs: true, exp: true },
-            Case { pattern: "\\db$", input: "b5", cs: true, exp: false },
-            Case { pattern: "^x\\sy$", input: "x y", cs: true, exp: true },
+            Case {
+                pattern: "^\\d\\w",
+                input: "5a",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "^\\d\\w",
+                input: "a5",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\w\\d$",
+                input: "a5",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\w\\d$",
+                input: "5a",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "^\\s\\S$",
+                input: " a",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "^\\S\\s$",
+                input: "a ",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "^a\\d",
+                input: "a5",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "^a\\d",
+                input: "5a",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\db$",
+                input: "5b",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\db$",
+                input: "b5",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "^x\\sy$",
+                input: "x y",
+                cs: true,
+                exp: true,
+            },
             // @-literal regression guard
-            Case { pattern: "^\\w+@\\w+$", input: "user@host", cs: true, exp: true },
-            Case { pattern: "^\\w+@\\w+$", input: "user_host", cs: true, exp: false },
-            Case { pattern: "^\\w+_\\w+$", input: "user_host", cs: true, exp: true },
-            Case { pattern: "\\w+@\\w+", input: "user@host", cs: true, exp: true },
+            Case {
+                pattern: "^\\w+@\\w+$",
+                input: "user@host",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "^\\w+@\\w+$",
+                input: "user_host",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "^\\w+_\\w+$",
+                input: "user_host",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\w+@\\w+",
+                input: "user@host",
+                cs: true,
+                exp: true,
+            },
         ]);
     }
 
@@ -3264,63 +4650,313 @@ mod tests {
     fn test_parity_pm_metacharacters_with_wildcards() {
         assert_parity(&[
             // \d wildcards
-            Case { pattern: "\\d*", input: "123", cs: true, exp: true },
-            Case { pattern: "\\d*", input: "1abc", cs: true, exp: true },
-            Case { pattern: "\\d*", input: "abc", cs: true, exp: false },
-            Case { pattern: "*\\d", input: "abc5", cs: true, exp: true },
-            Case { pattern: "*\\d", input: "5", cs: true, exp: true },
-            Case { pattern: "*\\d", input: "abc", cs: true, exp: false },
-            Case { pattern: "a*\\d", input: "a5", cs: true, exp: true },
-            Case { pattern: "a*\\d", input: "abc5", cs: true, exp: true },
-            Case { pattern: "a*\\d", input: "b5", cs: true, exp: false },
+            Case {
+                pattern: "\\d*",
+                input: "123",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\d*",
+                input: "1abc",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\d*",
+                input: "abc",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "*\\d",
+                input: "abc5",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "*\\d",
+                input: "5",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "*\\d",
+                input: "abc",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "a*\\d",
+                input: "a5",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "a*\\d",
+                input: "abc5",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "a*\\d",
+                input: "b5",
+                cs: true,
+                exp: false,
+            },
             // \D wildcards
-            Case { pattern: "\\D*", input: "abc", cs: true, exp: true },
-            Case { pattern: "\\D*", input: "a123", cs: true, exp: true },
-            Case { pattern: "\\D*", input: "123", cs: true, exp: false },
-            Case { pattern: "*\\D", input: "123a", cs: true, exp: true },
-            Case { pattern: "*\\D", input: "a", cs: true, exp: true },
-            Case { pattern: "*\\D", input: "123", cs: true, exp: false },
+            Case {
+                pattern: "\\D*",
+                input: "abc",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\D*",
+                input: "a123",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\D*",
+                input: "123",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "*\\D",
+                input: "123a",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "*\\D",
+                input: "a",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "*\\D",
+                input: "123",
+                cs: true,
+                exp: false,
+            },
             // \w wildcards
-            Case { pattern: "\\w*", input: "abc", cs: true, exp: true },
-            Case { pattern: "\\w*", input: "a!@#", cs: true, exp: true },
-            Case { pattern: "\\w*", input: "!@#", cs: true, exp: false },
-            Case { pattern: "*\\w", input: "!@#a", cs: true, exp: true },
-            Case { pattern: "*\\w", input: "_", cs: true, exp: true },
-            Case { pattern: "*\\w", input: "!@#", cs: true, exp: false },
+            Case {
+                pattern: "\\w*",
+                input: "abc",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\w*",
+                input: "a!@#",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\w*",
+                input: "!@#",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "*\\w",
+                input: "!@#a",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "*\\w",
+                input: "_",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "*\\w",
+                input: "!@#",
+                cs: true,
+                exp: false,
+            },
             // \W wildcards
-            Case { pattern: "\\W*", input: "!@#", cs: true, exp: true },
-            Case { pattern: "\\W*", input: "!abc", cs: true, exp: true },
-            Case { pattern: "\\W*", input: "abc", cs: true, exp: false },
-            Case { pattern: "*\\W", input: "abc!", cs: true, exp: true },
-            Case { pattern: "*\\W", input: "!", cs: true, exp: true },
-            Case { pattern: "*\\W", input: "abc", cs: true, exp: false },
+            Case {
+                pattern: "\\W*",
+                input: "!@#",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\W*",
+                input: "!abc",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\W*",
+                input: "abc",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "*\\W",
+                input: "abc!",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "*\\W",
+                input: "!",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "*\\W",
+                input: "abc",
+                cs: true,
+                exp: false,
+            },
             // \s wildcards
-            Case { pattern: "\\s*", input: " \t\n", cs: true, exp: true },
-            Case { pattern: "\\s*", input: " abc", cs: true, exp: true },
-            Case { pattern: "\\s*", input: "abc", cs: true, exp: false },
-            Case { pattern: "*\\s", input: "abc ", cs: true, exp: true },
-            Case { pattern: "*\\s", input: "\t", cs: true, exp: true },
-            Case { pattern: "*\\s", input: "abc", cs: true, exp: false },
+            Case {
+                pattern: "\\s*",
+                input: " \t\n",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\s*",
+                input: " abc",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\s*",
+                input: "abc",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "*\\s",
+                input: "abc ",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "*\\s",
+                input: "\t",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "*\\s",
+                input: "abc",
+                cs: true,
+                exp: false,
+            },
             // \S wildcards
-            Case { pattern: "\\S*", input: "abc", cs: true, exp: true },
-            Case { pattern: "\\S*", input: "a \t", cs: true, exp: true },
-            Case { pattern: "\\S*", input: " \t", cs: true, exp: false },
-            Case { pattern: "*\\S", input: " \ta", cs: true, exp: true },
-            Case { pattern: "*\\S", input: "a", cs: true, exp: true },
-            Case { pattern: "*\\S", input: " \t", cs: true, exp: false },
+            Case {
+                pattern: "\\S*",
+                input: "abc",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\S*",
+                input: "a \t",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\S*",
+                input: " \t",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "*\\S",
+                input: " \ta",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "*\\S",
+                input: "a",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "*\\S",
+                input: " \t",
+                cs: true,
+                exp: false,
+            },
             // multiple wildcards
-            Case { pattern: "*\\d*", input: "abc5xyz", cs: true, exp: true },
-            Case { pattern: "*\\d*", input: "5", cs: true, exp: true },
-            Case { pattern: "*\\d*", input: "abc", cs: true, exp: false },
-            Case { pattern: "*\\w*\\s*", input: "!a ", cs: true, exp: true },
-            Case { pattern: "*\\w*\\s*", input: "a", cs: true, exp: false },
+            Case {
+                pattern: "*\\d*",
+                input: "abc5xyz",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "*\\d*",
+                input: "5",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "*\\d*",
+                input: "abc",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "*\\w*\\s*",
+                input: "!a ",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "*\\w*\\s*",
+                input: "a",
+                cs: true,
+                exp: false,
+            },
             // complex
-            Case { pattern: "^\\d*test", input: "123test", cs: true, exp: true },
-            Case { pattern: "^\\d*test", input: "test", cs: true, exp: false },
-            Case { pattern: "test\\s*$", input: "test   ", cs: true, exp: true },
-            Case { pattern: "test\\s*$", input: "test", cs: true, exp: false },
-            Case { pattern: "^\\w*\\d*$", input: "abc123", cs: true, exp: true },
-            Case { pattern: "^\\w*\\d*$", input: "123", cs: true, exp: true },
+            Case {
+                pattern: "^\\d*test",
+                input: "123test",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "^\\d*test",
+                input: "test",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "test\\s*$",
+                input: "test   ",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "test\\s*$",
+                input: "test",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "^\\w*\\d*$",
+                input: "abc123",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "^\\w*\\d*$",
+                input: "123",
+                cs: true,
+                exp: true,
+            },
         ]);
     }
 
@@ -3328,79 +4964,384 @@ mod tests {
     fn test_parity_pm_metacharacter_case_sensitivity() {
         assert_parity(&[
             // \w
-            Case { pattern: "\\w", input: "A", cs: true, exp: true },
-            Case { pattern: "\\w", input: "a", cs: true, exp: true },
-            Case { pattern: "\\w", input: "A", cs: false, exp: true },
-            Case { pattern: "\\w", input: "a", cs: false, exp: true },
+            Case {
+                pattern: "\\w",
+                input: "A",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\w",
+                input: "a",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\w",
+                input: "A",
+                cs: false,
+                exp: true,
+            },
+            Case {
+                pattern: "\\w",
+                input: "a",
+                cs: false,
+                exp: true,
+            },
             // \W
-            Case { pattern: "\\W", input: "A", cs: true, exp: false },
-            Case { pattern: "\\W", input: "a", cs: true, exp: false },
-            Case { pattern: "\\W", input: "A", cs: false, exp: false },
-            Case { pattern: "\\W", input: "a", cs: false, exp: false },
-            Case { pattern: "\\W", input: "!", cs: true, exp: true },
-            Case { pattern: "\\W", input: "!", cs: false, exp: true },
+            Case {
+                pattern: "\\W",
+                input: "A",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\W",
+                input: "a",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\W",
+                input: "A",
+                cs: false,
+                exp: false,
+            },
+            Case {
+                pattern: "\\W",
+                input: "a",
+                cs: false,
+                exp: false,
+            },
+            Case {
+                pattern: "\\W",
+                input: "!",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\W",
+                input: "!",
+                cs: false,
+                exp: true,
+            },
             // \d / \D
-            Case { pattern: "\\d", input: "5", cs: true, exp: true },
-            Case { pattern: "\\d", input: "5", cs: false, exp: true },
-            Case { pattern: "\\D", input: "5", cs: true, exp: false },
-            Case { pattern: "\\D", input: "5", cs: false, exp: false },
-            Case { pattern: "\\D", input: "A", cs: true, exp: true },
-            Case { pattern: "\\D", input: "A", cs: false, exp: true },
+            Case {
+                pattern: "\\d",
+                input: "5",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\d",
+                input: "5",
+                cs: false,
+                exp: true,
+            },
+            Case {
+                pattern: "\\D",
+                input: "5",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\D",
+                input: "5",
+                cs: false,
+                exp: false,
+            },
+            Case {
+                pattern: "\\D",
+                input: "A",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\D",
+                input: "A",
+                cs: false,
+                exp: true,
+            },
             // \s / \S
-            Case { pattern: "\\s", input: " ", cs: true, exp: true },
-            Case { pattern: "\\s", input: " ", cs: false, exp: true },
-            Case { pattern: "\\S", input: " ", cs: true, exp: false },
-            Case { pattern: "\\S", input: " ", cs: false, exp: false },
-            Case { pattern: "\\S", input: "A", cs: true, exp: true },
-            Case { pattern: "\\S", input: "A", cs: false, exp: true },
+            Case {
+                pattern: "\\s",
+                input: " ",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\s",
+                input: " ",
+                cs: false,
+                exp: true,
+            },
+            Case {
+                pattern: "\\S",
+                input: " ",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\S",
+                input: " ",
+                cs: false,
+                exp: false,
+            },
+            Case {
+                pattern: "\\S",
+                input: "A",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\S",
+                input: "A",
+                cs: false,
+                exp: true,
+            },
             // mixed literal + metachar
-            Case { pattern: "Test\\w", input: "TestA", cs: true, exp: true },
-            Case { pattern: "Test\\w", input: "testa", cs: true, exp: false },
-            Case { pattern: "Test\\w", input: "TestA", cs: false, exp: true },
-            Case { pattern: "Test\\w", input: "testa", cs: false, exp: true },
+            Case {
+                pattern: "Test\\w",
+                input: "TestA",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "Test\\w",
+                input: "testa",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "Test\\w",
+                input: "TestA",
+                cs: false,
+                exp: true,
+            },
+            Case {
+                pattern: "Test\\w",
+                input: "testa",
+                cs: false,
+                exp: true,
+            },
             // anchored
-            Case { pattern: "^Test\\d$", input: "Test5", cs: true, exp: true },
-            Case { pattern: "^Test\\d$", input: "test5", cs: true, exp: false },
-            Case { pattern: "^Test\\d$", input: "Test5", cs: false, exp: true },
-            Case { pattern: "^Test\\d$", input: "test5", cs: false, exp: true },
+            Case {
+                pattern: "^Test\\d$",
+                input: "Test5",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "^Test\\d$",
+                input: "test5",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "^Test\\d$",
+                input: "Test5",
+                cs: false,
+                exp: true,
+            },
+            Case {
+                pattern: "^Test\\d$",
+                input: "test5",
+                cs: false,
+                exp: true,
+            },
             // wildcard
-            Case { pattern: "Test*\\w", input: "TestAnyA", cs: true, exp: true },
-            Case { pattern: "Test*\\w", input: "testanya", cs: true, exp: false },
-            Case { pattern: "Test*\\w", input: "TestAnyA", cs: false, exp: true },
-            Case { pattern: "Test*\\w", input: "testanya", cs: false, exp: true },
+            Case {
+                pattern: "Test*\\w",
+                input: "TestAnyA",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "Test*\\w",
+                input: "testanya",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "Test*\\w",
+                input: "TestAnyA",
+                cs: false,
+                exp: true,
+            },
+            Case {
+                pattern: "Test*\\w",
+                input: "testanya",
+                cs: false,
+                exp: true,
+            },
         ]);
     }
 
     #[test]
     fn test_parity_pm_metacharacter_backward_compatibility() {
         assert_parity(&[
-            Case { pattern: "test", input: "test", cs: true, exp: true },
-            Case { pattern: "test", input: "testing", cs: true, exp: true },
-            Case { pattern: "test*", input: "testing", cs: true, exp: true },
-            Case { pattern: "*test", input: "pretest", cs: true, exp: true },
-            Case { pattern: "^test", input: "test", cs: true, exp: true },
-            Case { pattern: "test$", input: "test", cs: true, exp: true },
-            Case { pattern: "^test$", input: "test", cs: true, exp: true },
-            Case { pattern: "\\^test", input: "^test", cs: true, exp: true },
-            Case { pattern: "test\\$", input: "test$", cs: true, exp: true },
-            Case { pattern: "test\\*test", input: "test*test", cs: true, exp: true },
-            Case { pattern: "\\\\test", input: "\\test", cs: true, exp: true },
-            Case { pattern: "Test", input: "test", cs: false, exp: true },
-            Case { pattern: "Test", input: "test", cs: true, exp: false },
-            Case { pattern: "^Test$", input: "test", cs: false, exp: true },
-            Case { pattern: "^Test$", input: "test", cs: true, exp: false },
-            Case { pattern: "^test*end$", input: "testmiddleend", cs: true, exp: true },
-            Case { pattern: "*middle*", input: "startmiddleend", cs: true, exp: true },
-            Case { pattern: "\\^start*end\\$", input: "^startmiddleend$", cs: true, exp: true },
-            Case { pattern: "", input: "", cs: true, exp: true },
-            Case { pattern: "*", input: "anything", cs: true, exp: true },
-            Case { pattern: "^$", input: "", cs: true, exp: true },
-            Case { pattern: "\\x", input: "\\x", cs: true, exp: true },
-            Case { pattern: "\\z", input: "\\z", cs: true, exp: true },
-            Case { pattern: "test\\", input: "test\\", cs: true, exp: true },
-            Case { pattern: "simple", input: "simple", cs: true, exp: true },
-            Case { pattern: "sim*", input: "simple", cs: true, exp: true },
-            Case { pattern: "^simple$", input: "simple", cs: true, exp: true },
+            Case {
+                pattern: "test",
+                input: "test",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "test",
+                input: "testing",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "test*",
+                input: "testing",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "*test",
+                input: "pretest",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "^test",
+                input: "test",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "test$",
+                input: "test",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "^test$",
+                input: "test",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\^test",
+                input: "^test",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "test\\$",
+                input: "test$",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "test\\*test",
+                input: "test*test",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\\\test",
+                input: "\\test",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "Test",
+                input: "test",
+                cs: false,
+                exp: true,
+            },
+            Case {
+                pattern: "Test",
+                input: "test",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "^Test$",
+                input: "test",
+                cs: false,
+                exp: true,
+            },
+            Case {
+                pattern: "^Test$",
+                input: "test",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "^test*end$",
+                input: "testmiddleend",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "*middle*",
+                input: "startmiddleend",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\^start*end\\$",
+                input: "^startmiddleend$",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "",
+                input: "",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "*",
+                input: "anything",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "^$",
+                input: "",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\x",
+                input: "\\x",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\z",
+                input: "\\z",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "test\\",
+                input: "test\\",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "simple",
+                input: "simple",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "sim*",
+                input: "simple",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "^simple$",
+                input: "simple",
+                cs: true,
+                exp: true,
+            },
         ]);
     }
 
@@ -3434,22 +5375,37 @@ mod tests {
         // \d: digits 0-9 match (10), 14 non-digits don't.
         assert_byte_parity("\\d", b"0123456789", true, true);
         // non-digits: letters, space, punct, whitespace
-        assert_byte_parity(
-            "\\d",
-            b"azAZ !_\t\n\r\x0C\x0B/:",
-            true,
-            false,
-        );
+        assert_byte_parity("\\d", b"azAZ !_\t\n\r\x0C\x0B/:", true, false);
     }
 
     #[test]
     fn test_parity_charclass_nondigit() {
         // \D: representative samples (inverse of \d).
         assert_parity(&[
-            Case { pattern: "\\D", input: "5", cs: true, exp: false },
-            Case { pattern: "\\D", input: "a", cs: true, exp: true },
-            Case { pattern: "\\D", input: "_", cs: true, exp: true },
-            Case { pattern: "\\D", input: " ", cs: true, exp: true },
+            Case {
+                pattern: "\\D",
+                input: "5",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\D",
+                input: "a",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\D",
+                input: "_",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\D",
+                input: " ",
+                cs: true,
+                exp: true,
+            },
         ]);
     }
 
@@ -3475,11 +5431,36 @@ mod tests {
     fn test_parity_charclass_nonword() {
         // \W: representative samples (inverse of \w).
         assert_parity(&[
-            Case { pattern: "\\W", input: "a", cs: true, exp: false },
-            Case { pattern: "\\W", input: "_", cs: true, exp: false },
-            Case { pattern: "\\W", input: "7", cs: true, exp: false },
-            Case { pattern: "\\W", input: " ", cs: true, exp: true },
-            Case { pattern: "\\W", input: "!", cs: true, exp: true },
+            Case {
+                pattern: "\\W",
+                input: "a",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\W",
+                input: "_",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\W",
+                input: "7",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\W",
+                input: " ",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\W",
+                input: "!",
+                cs: true,
+                exp: true,
+            },
         ]);
     }
 
@@ -3487,22 +5468,37 @@ mod tests {
     fn test_parity_charclass_space() {
         // \s: space, \t, \n, \r, \f(0x0C), \v(0x0B) match; 20 non-space don't.
         assert_byte_parity("\\s", b" \t\n\r\x0C\x0B", true, true);
-        assert_byte_parity(
-            "\\s",
-            b"azAZ09_!@#$%^&*()-+=",
-            true,
-            false,
-        );
+        assert_byte_parity("\\s", b"azAZ09_!@#$%^&*()-+=", true, false);
     }
 
     #[test]
     fn test_parity_charclass_nonspace() {
         // \S: representative samples (inverse of \s).
         assert_parity(&[
-            Case { pattern: "\\S", input: " ", cs: true, exp: false },
-            Case { pattern: "\\S", input: "a", cs: true, exp: true },
-            Case { pattern: "\\S", input: "_", cs: true, exp: true },
-            Case { pattern: "\\S", input: "!", cs: true, exp: true },
+            Case {
+                pattern: "\\S",
+                input: " ",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\S",
+                input: "a",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\S",
+                input: "_",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\S",
+                input: "!",
+                cs: true,
+                exp: true,
+            },
         ]);
     }
 
@@ -3510,31 +5506,126 @@ mod tests {
     fn test_parity_charclass_wordboundary() {
         assert_parity(&[
             // SKIPPED (G3): firmware `\bword\b` vs NULL — Rust &str is never null.
-            Case { pattern: "\\bword\\b", input: "", cs: true, exp: false },
-            Case { pattern: "\\bword\\b", input: "word", cs: true, exp: true },
-            Case { pattern: "\\bword\\b", input: "a word here", cs: false, exp: true },
-            Case { pattern: "\\bword\\b", input: "awordhere", cs: true, exp: false },
-            Case { pattern: "\\bword", input: "word here", cs: true, exp: true },
-            Case { pattern: "word\\b", input: "a word here", cs: false, exp: true },
-            Case { pattern: "\\bhello", input: "hello world", cs: true, exp: true },
-            Case { pattern: "world\\b", input: "hello world", cs: true, exp: true },
-            Case { pattern: "\\Bword", input: "aword", cs: true, exp: true },
-            Case { pattern: "\\Bword", input: "word", cs: true, exp: false },
-            Case { pattern: "word\\B", input: "wordhere", cs: true, exp: true },
-            Case { pattern: "a\\Bb", input: "ab", cs: true, exp: true },
-            Case { pattern: "!\\B-", input: "!-", cs: true, exp: true },
+            Case {
+                pattern: "\\bword\\b",
+                input: "",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\bword\\b",
+                input: "word",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\bword\\b",
+                input: "a word here",
+                cs: false,
+                exp: true,
+            },
+            Case {
+                pattern: "\\bword\\b",
+                input: "awordhere",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\bword",
+                input: "word here",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "word\\b",
+                input: "a word here",
+                cs: false,
+                exp: true,
+            },
+            Case {
+                pattern: "\\bhello",
+                input: "hello world",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "world\\b",
+                input: "hello world",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\Bword",
+                input: "aword",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\Bword",
+                input: "word",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "word\\B",
+                input: "wordhere",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "a\\Bb",
+                input: "ab",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "!\\B-",
+                input: "!-",
+                cs: true,
+                exp: true,
+            },
         ]);
     }
 
     #[test]
     fn test_parity_charclass_anchored() {
         assert_parity(&[
-            Case { pattern: "^\\d$", input: "5", cs: true, exp: true },
-            Case { pattern: "^\\d$", input: "a", cs: true, exp: false },
-            Case { pattern: "^\\w$", input: "_", cs: true, exp: true },
-            Case { pattern: "^\\w$", input: " ", cs: true, exp: false },
-            Case { pattern: "^\\s$", input: " ", cs: true, exp: true },
-            Case { pattern: "^\\S$", input: "a", cs: true, exp: true },
+            Case {
+                pattern: "^\\d$",
+                input: "5",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "^\\d$",
+                input: "a",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "^\\w$",
+                input: "_",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "^\\w$",
+                input: " ",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "^\\s$",
+                input: " ",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "^\\S$",
+                input: "a",
+                cs: true,
+                exp: true,
+            },
         ]);
     }
 
@@ -3547,35 +5638,155 @@ mod tests {
     fn test_parity_metachar_verification() {
         assert_parity(&[
             // \d / \D
-            Case { pattern: "\\d", input: "5", cs: true, exp: true },
-            Case { pattern: "\\d", input: "a", cs: true, exp: false },
-            Case { pattern: "\\D", input: "a", cs: true, exp: true },
-            Case { pattern: "\\D", input: "5", cs: true, exp: false },
+            Case {
+                pattern: "\\d",
+                input: "5",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\d",
+                input: "a",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\D",
+                input: "a",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\D",
+                input: "5",
+                cs: true,
+                exp: false,
+            },
             // multiple \d and with operators
-            Case { pattern: "\\d\\d", input: "42", cs: true, exp: true },
-            Case { pattern: "^\\d$", input: "7", cs: true, exp: true },
-            Case { pattern: "\\d*", input: "123", cs: true, exp: true },
+            Case {
+                pattern: "\\d\\d",
+                input: "42",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "^\\d$",
+                input: "7",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\d*",
+                input: "123",
+                cs: true,
+                exp: true,
+            },
             // \w / \W
-            Case { pattern: "\\w", input: "a", cs: true, exp: true },
-            Case { pattern: "\\w", input: "Z", cs: true, exp: true },
-            Case { pattern: "\\w", input: "5", cs: true, exp: true },
-            Case { pattern: "\\w", input: "_", cs: true, exp: true },
-            Case { pattern: "\\w", input: " ", cs: true, exp: false },
-            Case { pattern: "\\W", input: " ", cs: true, exp: true },
-            Case { pattern: "\\W", input: "a", cs: true, exp: false },
+            Case {
+                pattern: "\\w",
+                input: "a",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\w",
+                input: "Z",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\w",
+                input: "5",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\w",
+                input: "_",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\w",
+                input: " ",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\W",
+                input: " ",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\W",
+                input: "a",
+                cs: true,
+                exp: false,
+            },
             // \s / \S
-            Case { pattern: "\\s", input: " ", cs: true, exp: true },
-            Case { pattern: "\\s", input: "\t", cs: true, exp: true },
-            Case { pattern: "\\s", input: "a", cs: true, exp: false },
-            Case { pattern: "\\S", input: "a", cs: true, exp: true },
-            Case { pattern: "\\S", input: " ", cs: true, exp: false },
+            Case {
+                pattern: "\\s",
+                input: " ",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\s",
+                input: "\t",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\s",
+                input: "a",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\S",
+                input: "a",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\S",
+                input: " ",
+                cs: true,
+                exp: false,
+            },
             // case sensitivity
-            Case { pattern: "\\w", input: "A", cs: true, exp: true },
-            Case { pattern: "\\w", input: "a", cs: true, exp: true },
+            Case {
+                pattern: "\\w",
+                input: "A",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\w",
+                input: "a",
+                cs: true,
+                exp: true,
+            },
             // with operators
-            Case { pattern: "^\\d\\w$", input: "5a", cs: true, exp: true },
-            Case { pattern: "\\s*", input: "   ", cs: true, exp: true },
-            Case { pattern: "\\w*\\d", input: "abc123", cs: true, exp: true },
+            Case {
+                pattern: "^\\d\\w$",
+                input: "5a",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\s*",
+                input: "   ",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\w*\\d",
+                input: "abc123",
+                cs: true,
+                exp: true,
+            },
         ]);
     }
 
@@ -3587,104 +5798,474 @@ mod tests {
     fn test_parity_wbb_basic() {
         assert_parity(&[
             // \b at start
-            Case { pattern: "\\bword", input: "word", cs: true, exp: true },
-            Case { pattern: "\\bword", input: "aword", cs: true, exp: false },
-            Case { pattern: "\\bword", input: " word", cs: true, exp: true },
-            Case { pattern: "\\bword", input: ".word", cs: true, exp: true },
-            Case { pattern: "\\bword", input: "123word", cs: true, exp: false },
-            Case { pattern: "\\bword", input: "_word", cs: true, exp: false },
+            Case {
+                pattern: "\\bword",
+                input: "word",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\bword",
+                input: "aword",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\bword",
+                input: " word",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\bword",
+                input: ".word",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\bword",
+                input: "123word",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\bword",
+                input: "_word",
+                cs: true,
+                exp: false,
+            },
             // \b at end
-            Case { pattern: "word\\b", input: "word", cs: true, exp: true },
-            Case { pattern: "word\\b", input: "worda", cs: true, exp: false },
-            Case { pattern: "word\\b", input: "word ", cs: true, exp: true },
-            Case { pattern: "word\\b", input: "word.", cs: true, exp: true },
-            Case { pattern: "word\\b", input: "word123", cs: true, exp: false },
-            Case { pattern: "word\\b", input: "word_", cs: true, exp: false },
+            Case {
+                pattern: "word\\b",
+                input: "word",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "word\\b",
+                input: "worda",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "word\\b",
+                input: "word ",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "word\\b",
+                input: "word.",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "word\\b",
+                input: "word123",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "word\\b",
+                input: "word_",
+                cs: true,
+                exp: false,
+            },
             // \b in middle
-            Case { pattern: "\\btest\\b", input: "test", cs: true, exp: true },
-            Case { pattern: "\\btest\\b", input: "testing", cs: true, exp: false },
-            Case { pattern: "\\btest\\b", input: "pretest", cs: true, exp: false },
-            Case { pattern: "\\btest\\b", input: "pretesting", cs: true, exp: false },
-            Case { pattern: "\\btest\\b", input: " test ", cs: true, exp: true },
-            Case { pattern: "\\btest\\b", input: ".test.", cs: true, exp: true },
+            Case {
+                pattern: "\\btest\\b",
+                input: "test",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\btest\\b",
+                input: "testing",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\btest\\b",
+                input: "pretest",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\btest\\b",
+                input: "pretesting",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\btest\\b",
+                input: " test ",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\btest\\b",
+                input: ".test.",
+                cs: true,
+                exp: true,
+            },
             // \B
-            Case { pattern: "\\Bord", input: "word", cs: true, exp: true },
-            Case { pattern: "\\Bord", input: "ord", cs: true, exp: false },
-            Case { pattern: "\\Bord", input: " ord", cs: true, exp: false },
-            Case { pattern: "wor\\B", input: "word", cs: true, exp: true },
-            Case { pattern: "wor\\B", input: "wor", cs: true, exp: false },
-            Case { pattern: "wor\\B", input: "wor ", cs: true, exp: false },
+            Case {
+                pattern: "\\Bord",
+                input: "word",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\Bord",
+                input: "ord",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\Bord",
+                input: " ord",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "wor\\B",
+                input: "word",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "wor\\B",
+                input: "wor",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "wor\\B",
+                input: "wor ",
+                cs: true,
+                exp: false,
+            },
             // edge at string boundaries
-            Case { pattern: "\\b", input: "", cs: true, exp: false },
-            Case { pattern: "\\B", input: "", cs: true, exp: false },
-            Case { pattern: "\\ba", input: "a", cs: true, exp: true },
-            Case { pattern: "a\\b", input: "a", cs: true, exp: true },
-            Case { pattern: "\\Ba", input: "ba", cs: true, exp: true },
+            Case {
+                pattern: "\\b",
+                input: "",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\B",
+                input: "",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\ba",
+                input: "a",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "a\\b",
+                input: "a",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\Ba",
+                input: "ba",
+                cs: true,
+                exp: true,
+            },
             // mixed
-            Case { pattern: "\\btest\\b", input: "test123", cs: true, exp: false },
-            Case { pattern: "\\btest\\b", input: "test_var", cs: true, exp: false },
-            Case { pattern: "\\btest\\b", input: "test-var", cs: true, exp: true },
-            Case { pattern: "\\btest\\b", input: "test.method", cs: true, exp: true },
+            Case {
+                pattern: "\\btest\\b",
+                input: "test123",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\btest\\b",
+                input: "test_var",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\btest\\b",
+                input: "test-var",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\btest\\b",
+                input: "test.method",
+                cs: true,
+                exp: true,
+            },
             // case sensitivity
-            Case { pattern: "\\bTest\\b", input: "test", cs: false, exp: true },
-            Case { pattern: "\\bTest\\b", input: "test", cs: true, exp: false },
-            Case { pattern: "\\bTEST\\b", input: "test", cs: false, exp: true },
-            Case { pattern: "\\bTEST\\b", input: "test", cs: true, exp: false },
+            Case {
+                pattern: "\\bTest\\b",
+                input: "test",
+                cs: false,
+                exp: true,
+            },
+            Case {
+                pattern: "\\bTest\\b",
+                input: "test",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\bTEST\\b",
+                input: "test",
+                cs: false,
+                exp: true,
+            },
+            Case {
+                pattern: "\\bTEST\\b",
+                input: "test",
+                cs: true,
+                exp: false,
+            },
         ]);
     }
 
     #[test]
     fn test_parity_wbb_with_anchors() {
         assert_parity(&[
-            Case { pattern: "^\\bword", input: "word", cs: true, exp: true },
-            Case { pattern: "^\\bword", input: " word", cs: true, exp: false },
-            Case { pattern: "^\\Bord", input: "word", cs: true, exp: false },
-            Case { pattern: "word\\b$", input: "word", cs: true, exp: true },
-            Case { pattern: "word\\b$", input: "word ", cs: true, exp: false },
-            Case { pattern: "wor\\B$", input: "word", cs: true, exp: false },
-            Case { pattern: "^\\btest\\b$", input: "test", cs: true, exp: true },
-            Case { pattern: "^\\btest\\b$", input: " test", cs: true, exp: false },
-            Case { pattern: "^\\btest\\b$", input: "test ", cs: true, exp: false },
-            Case { pattern: "^\\btest\\b$", input: "testing", cs: true, exp: false },
-            Case { pattern: "^\\b\\w+\\b$", input: "word", cs: true, exp: true },
-            Case { pattern: "^\\b\\w+\\b$", input: "word123", cs: true, exp: true },
-            Case { pattern: "^\\b\\w+\\b$", input: "word-test", cs: true, exp: false },
+            Case {
+                pattern: "^\\bword",
+                input: "word",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "^\\bword",
+                input: " word",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "^\\Bord",
+                input: "word",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "word\\b$",
+                input: "word",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "word\\b$",
+                input: "word ",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "wor\\B$",
+                input: "word",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "^\\btest\\b$",
+                input: "test",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "^\\btest\\b$",
+                input: " test",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "^\\btest\\b$",
+                input: "test ",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "^\\btest\\b$",
+                input: "testing",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "^\\b\\w+\\b$",
+                input: "word",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "^\\b\\w+\\b$",
+                input: "word123",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "^\\b\\w+\\b$",
+                input: "word-test",
+                cs: true,
+                exp: false,
+            },
         ]);
     }
 
     #[test]
     fn test_parity_wbb_with_wildcards() {
         assert_parity(&[
-            Case { pattern: "\\b*test", input: "test", cs: true, exp: true },
-            Case { pattern: "\\b*test", input: "pretest", cs: true, exp: true },
-            Case { pattern: "test*\\b", input: "test", cs: true, exp: true },
-            Case { pattern: "test*\\b", input: "testing", cs: true, exp: true },
-            Case { pattern: "\\b*word*\\b", input: "word", cs: true, exp: true },
-            Case { pattern: "\\b*word*\\b", input: "myword", cs: true, exp: true },
-            Case { pattern: "\\b*word*\\b", input: "wordy", cs: true, exp: true },
-            Case { pattern: "\\b*word*\\b", input: "mywordy", cs: true, exp: true },
-            Case { pattern: "\\B*ord", input: "word", cs: true, exp: true },
-            Case { pattern: "\\B*ord", input: "ord", cs: true, exp: false },
-            Case { pattern: "wor*\\B", input: "word", cs: true, exp: true },
-            Case { pattern: "wor*\\B", input: "wor", cs: true, exp: false },
+            Case {
+                pattern: "\\b*test",
+                input: "test",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\b*test",
+                input: "pretest",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "test*\\b",
+                input: "test",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "test*\\b",
+                input: "testing",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\b*word*\\b",
+                input: "word",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\b*word*\\b",
+                input: "myword",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\b*word*\\b",
+                input: "wordy",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\b*word*\\b",
+                input: "mywordy",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\B*ord",
+                input: "word",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\B*ord",
+                input: "ord",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "wor*\\B",
+                input: "word",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "wor*\\B",
+                input: "wor",
+                cs: true,
+                exp: false,
+            },
         ]);
     }
 
     #[test]
     fn test_parity_wbb_multiple() {
         assert_parity(&[
-            Case { pattern: "\\b\\b", input: "a", cs: true, exp: true },
-            Case { pattern: "\\b\\b", input: " a", cs: true, exp: true },
-            Case { pattern: "\\B\\B", input: "ab", cs: true, exp: true },
-            Case { pattern: "\\B\\B", input: "a", cs: true, exp: false },
-            Case { pattern: "\\b\\Bord", input: "word", cs: true, exp: false },
-            Case { pattern: "\\b\\Bord", input: "ord", cs: true, exp: false },
-            Case { pattern: "wor\\B\\b", input: "word", cs: true, exp: false },
-            Case { pattern: "wor\\B\\b", input: "wor", cs: true, exp: false },
-            Case { pattern: "\\b\\w\\b", input: "a", cs: true, exp: true },
-            Case { pattern: "\\b\\w\\b", input: "ab", cs: true, exp: false },
-            Case { pattern: "\\b\\d\\b", input: "5", cs: true, exp: true },
-            Case { pattern: "\\b\\s\\b", input: " ", cs: true, exp: false },
+            Case {
+                pattern: "\\b\\b",
+                input: "a",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\b\\b",
+                input: " a",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\B\\B",
+                input: "ab",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\B\\B",
+                input: "a",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\b\\Bord",
+                input: "word",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\b\\Bord",
+                input: "ord",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "wor\\B\\b",
+                input: "word",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "wor\\B\\b",
+                input: "wor",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\b\\w\\b",
+                input: "a",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\b\\w\\b",
+                input: "ab",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\b\\d\\b",
+                input: "5",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\b\\s\\b",
+                input: " ",
+                cs: true,
+                exp: false,
+            },
         ]);
     }
 
@@ -3696,85 +6277,425 @@ mod tests {
     fn test_parity_wbi_anchors() {
         assert_parity(&[
             // ^\b
-            Case { pattern: "^\\bword", input: "word", cs: true, exp: true },
-            Case { pattern: "^\\bword", input: "word123", cs: true, exp: true },
-            Case { pattern: "^\\bword", input: " word", cs: true, exp: false },
-            Case { pattern: "^\\bword", input: "aword", cs: true, exp: false },
-            Case { pattern: "^\\btest", input: "test", cs: true, exp: true },
-            Case { pattern: "^\\btest", input: "testing", cs: true, exp: true },
+            Case {
+                pattern: "^\\bword",
+                input: "word",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "^\\bword",
+                input: "word123",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "^\\bword",
+                input: " word",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "^\\bword",
+                input: "aword",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "^\\btest",
+                input: "test",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "^\\btest",
+                input: "testing",
+                cs: true,
+                exp: true,
+            },
             // \b$
-            Case { pattern: "word\\b$", input: "word", cs: true, exp: true },
-            Case { pattern: "word\\b$", input: "123word", cs: true, exp: true },
-            Case { pattern: "word\\b$", input: "word ", cs: true, exp: false },
-            Case { pattern: "word\\b$", input: "worda", cs: true, exp: false },
-            Case { pattern: "test\\b$", input: "test", cs: true, exp: true },
-            Case { pattern: "test\\b$", input: "pretest", cs: true, exp: true },
+            Case {
+                pattern: "word\\b$",
+                input: "word",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "word\\b$",
+                input: "123word",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "word\\b$",
+                input: "word ",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "word\\b$",
+                input: "worda",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "test\\b$",
+                input: "test",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "test\\b$",
+                input: "pretest",
+                cs: true,
+                exp: true,
+            },
             // ^\b...\b$
-            Case { pattern: "^\\btest\\b$", input: "test", cs: true, exp: true },
-            Case { pattern: "^\\btest\\b$", input: " test", cs: true, exp: false },
-            Case { pattern: "^\\btest\\b$", input: "test ", cs: true, exp: false },
-            Case { pattern: "^\\btest\\b$", input: "testing", cs: true, exp: false },
-            Case { pattern: "^\\btest\\b$", input: "pretest", cs: true, exp: false },
-            Case { pattern: "^\\btest\\b$", input: "pretesting", cs: true, exp: false },
+            Case {
+                pattern: "^\\btest\\b$",
+                input: "test",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "^\\btest\\b$",
+                input: " test",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "^\\btest\\b$",
+                input: "test ",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "^\\btest\\b$",
+                input: "testing",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "^\\btest\\b$",
+                input: "pretest",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "^\\btest\\b$",
+                input: "pretesting",
+                cs: true,
+                exp: false,
+            },
             // \B anchors
-            Case { pattern: "^\\Bord", input: "word", cs: true, exp: false },
-            Case { pattern: "^\\Bord", input: "sword", cs: true, exp: false },
-            Case { pattern: "wor\\B$", input: "word", cs: true, exp: false },
-            Case { pattern: "wor\\B$", input: "words", cs: true, exp: false },
+            Case {
+                pattern: "^\\Bord",
+                input: "word",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "^\\Bord",
+                input: "sword",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "wor\\B$",
+                input: "word",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "wor\\B$",
+                input: "words",
+                cs: true,
+                exp: false,
+            },
             // simple anchored word patterns
-            Case { pattern: "^\\b\\w\\b$", input: "a", cs: true, exp: true },
-            Case { pattern: "^\\b\\w\\w\\b$", input: "ab", cs: true, exp: true },
-            Case { pattern: "^\\b\\w\\w\\w\\b$", input: "abc", cs: true, exp: true },
-            Case { pattern: "^\\b\\w\\w\\w\\w\\b$", input: "word", cs: true, exp: true },
-            Case { pattern: "^\\b\\w\\w\\w\\w\\b$", input: " word", cs: true, exp: false },
-            Case { pattern: "^\\b\\w\\w\\w\\w\\b$", input: "word ", cs: true, exp: false },
+            Case {
+                pattern: "^\\b\\w\\b$",
+                input: "a",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "^\\b\\w\\w\\b$",
+                input: "ab",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "^\\b\\w\\w\\w\\b$",
+                input: "abc",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "^\\b\\w\\w\\w\\w\\b$",
+                input: "word",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "^\\b\\w\\w\\w\\w\\b$",
+                input: " word",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "^\\b\\w\\w\\w\\w\\b$",
+                input: "word ",
+                cs: true,
+                exp: false,
+            },
             // edge cases with anchors
-            Case { pattern: "^\\b", input: "word", cs: true, exp: true },
-            Case { pattern: "^\\b", input: " word", cs: true, exp: false },
-            Case { pattern: "^\\b", input: "", cs: true, exp: false },
-            Case { pattern: "\\b$", input: "word", cs: true, exp: true },
-            Case { pattern: "\\b$", input: "word ", cs: true, exp: false },
-            Case { pattern: "\\b$", input: "", cs: true, exp: false },
+            Case {
+                pattern: "^\\b",
+                input: "word",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "^\\b",
+                input: " word",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "^\\b",
+                input: "",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\b$",
+                input: "word",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\b$",
+                input: "word ",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\b$",
+                input: "",
+                cs: true,
+                exp: false,
+            },
         ]);
     }
 
     #[test]
     fn test_parity_wbi_wildcards() {
         assert_parity(&[
-            Case { pattern: "\\b*test", input: "test", cs: true, exp: true },
-            Case { pattern: "\\b*test", input: "pretest", cs: true, exp: true },
-            Case { pattern: "\\b*test", input: " test", cs: true, exp: true },
-            Case { pattern: "\\b*test", input: "atest", cs: true, exp: true },
-            Case { pattern: "test*\\b", input: "test", cs: true, exp: true },
-            Case { pattern: "test*\\b", input: "testing", cs: true, exp: true },
-            Case { pattern: "test*\\b", input: "test ", cs: true, exp: true },
-            Case { pattern: "test*\\b", input: "testa", cs: true, exp: true },
-            Case { pattern: "\\b*word*\\b", input: "word", cs: true, exp: true },
-            Case { pattern: "\\b*word*\\b", input: "myword", cs: true, exp: true },
-            Case { pattern: "\\b*word*\\b", input: "wordy", cs: true, exp: true },
-            Case { pattern: "\\b*word*\\b", input: "mywordy", cs: true, exp: true },
-            Case { pattern: "\\b*word*\\b", input: " word ", cs: true, exp: true },
-            Case { pattern: "\\b*word*\\b", input: "password", cs: true, exp: true },
-            Case { pattern: "\\B*ord", input: "word", cs: true, exp: true },
-            Case { pattern: "\\B*ord", input: "ord", cs: true, exp: false },
-            Case { pattern: "\\B*ord", input: " ord", cs: true, exp: true },
-            Case { pattern: "wor*\\B", input: "word", cs: true, exp: true },
-            Case { pattern: "wor*\\B", input: "wor", cs: true, exp: false },
-            Case { pattern: "wor*\\B", input: "wor ", cs: true, exp: true },
-            Case { pattern: "\\b*\\w*\\b", input: "word", cs: true, exp: true },
-            Case { pattern: "\\b*\\w*\\b", input: "word123", cs: true, exp: true },
-            Case { pattern: "\\b*\\w*\\b", input: " word ", cs: true, exp: true },
-            Case { pattern: "\\b*\\w*\\b", input: "word-test", cs: true, exp: true },
-            Case { pattern: "\\b*test*case*\\b", input: "testcase", cs: true, exp: true },
-            Case { pattern: "\\b*test*case*\\b", input: "mytestcase", cs: true, exp: true },
-            Case { pattern: "\\b*test*case*\\b", input: "testcasemy", cs: true, exp: true },
-            Case { pattern: "\\b*test*case*\\b", input: "mytestcasemy", cs: true, exp: true },
-            Case { pattern: "\\b*", input: "word", cs: true, exp: true },
-            Case { pattern: "\\b*", input: " word", cs: true, exp: true },
-            Case { pattern: "\\b*", input: "", cs: true, exp: false },
-            Case { pattern: "*\\b", input: "word", cs: true, exp: true },
-            Case { pattern: "*\\b", input: "word ", cs: true, exp: true },
-            Case { pattern: "*\\b", input: "", cs: true, exp: false },
+            Case {
+                pattern: "\\b*test",
+                input: "test",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\b*test",
+                input: "pretest",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\b*test",
+                input: " test",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\b*test",
+                input: "atest",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "test*\\b",
+                input: "test",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "test*\\b",
+                input: "testing",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "test*\\b",
+                input: "test ",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "test*\\b",
+                input: "testa",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\b*word*\\b",
+                input: "word",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\b*word*\\b",
+                input: "myword",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\b*word*\\b",
+                input: "wordy",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\b*word*\\b",
+                input: "mywordy",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\b*word*\\b",
+                input: " word ",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\b*word*\\b",
+                input: "password",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\B*ord",
+                input: "word",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\B*ord",
+                input: "ord",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\B*ord",
+                input: " ord",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "wor*\\B",
+                input: "word",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "wor*\\B",
+                input: "wor",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "wor*\\B",
+                input: "wor ",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\b*\\w*\\b",
+                input: "word",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\b*\\w*\\b",
+                input: "word123",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\b*\\w*\\b",
+                input: " word ",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\b*\\w*\\b",
+                input: "word-test",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\b*test*case*\\b",
+                input: "testcase",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\b*test*case*\\b",
+                input: "mytestcase",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\b*test*case*\\b",
+                input: "testcasemy",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\b*test*case*\\b",
+                input: "mytestcasemy",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\b*",
+                input: "word",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\b*",
+                input: " word",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\b*",
+                input: "",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "*\\b",
+                input: "word",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "*\\b",
+                input: "word ",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "*\\b",
+                input: "",
+                cs: true,
+                exp: false,
+            },
         ]);
     }
 
@@ -3782,71 +6703,356 @@ mod tests {
     fn test_parity_wbi_metacharacters() {
         assert_parity(&[
             // \b\d
-            Case { pattern: "\\b\\d", input: "5", cs: true, exp: true },
-            Case { pattern: "\\b\\d", input: "a5", cs: true, exp: false },
-            Case { pattern: "\\b\\d", input: " 5", cs: true, exp: true },
-            Case { pattern: "\\b\\d", input: ".5", cs: true, exp: true },
-            Case { pattern: "\\d\\b", input: "5", cs: true, exp: true },
-            Case { pattern: "\\d\\b", input: "5a", cs: true, exp: false },
-            Case { pattern: "\\d\\b", input: "5 ", cs: true, exp: true },
-            Case { pattern: "\\d\\b", input: "5.", cs: true, exp: true },
-            Case { pattern: "\\b\\d\\b", input: "5", cs: true, exp: true },
-            Case { pattern: "\\b\\d\\b", input: "a5", cs: true, exp: false },
-            Case { pattern: "\\b\\d\\b", input: "5a", cs: true, exp: false },
-            Case { pattern: "\\b\\d\\b", input: " 5 ", cs: true, exp: true },
+            Case {
+                pattern: "\\b\\d",
+                input: "5",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\b\\d",
+                input: "a5",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\b\\d",
+                input: " 5",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\b\\d",
+                input: ".5",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\d\\b",
+                input: "5",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\d\\b",
+                input: "5a",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\d\\b",
+                input: "5 ",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\d\\b",
+                input: "5.",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\b\\d\\b",
+                input: "5",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\b\\d\\b",
+                input: "a5",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\b\\d\\b",
+                input: "5a",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\b\\d\\b",
+                input: " 5 ",
+                cs: true,
+                exp: true,
+            },
             // \b\D
-            Case { pattern: "\\b\\D", input: "a", cs: true, exp: true },
-            Case { pattern: "\\b\\D", input: "5a", cs: true, exp: false },
-            Case { pattern: "\\b\\D", input: " a", cs: true, exp: true },
-            Case { pattern: "\\D\\b", input: "a", cs: true, exp: true },
-            Case { pattern: "\\D\\b", input: "a5", cs: true, exp: false },
-            Case { pattern: "\\D\\b", input: "a ", cs: true, exp: true },
+            Case {
+                pattern: "\\b\\D",
+                input: "a",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\b\\D",
+                input: "5a",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\b\\D",
+                input: " a",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\D\\b",
+                input: "a",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\D\\b",
+                input: "a5",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\D\\b",
+                input: "a ",
+                cs: true,
+                exp: true,
+            },
             // \b\w
-            Case { pattern: "\\b\\w", input: "a", cs: true, exp: true },
-            Case { pattern: "\\b\\w", input: " a", cs: true, exp: true },
-            Case { pattern: "\\b\\w", input: "ba", cs: true, exp: true },
-            Case { pattern: "\\w\\b", input: "a", cs: true, exp: true },
-            Case { pattern: "\\w\\b", input: "a ", cs: true, exp: true },
-            Case { pattern: "\\w\\b", input: "ab", cs: true, exp: true },
-            Case { pattern: "\\b\\w\\b", input: "a", cs: true, exp: true },
-            Case { pattern: "\\b\\w\\b", input: "_", cs: true, exp: true },
-            Case { pattern: "\\b\\w\\b", input: "5", cs: true, exp: true },
-            Case { pattern: "\\b\\w\\b", input: "ab", cs: true, exp: false },
+            Case {
+                pattern: "\\b\\w",
+                input: "a",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\b\\w",
+                input: " a",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\b\\w",
+                input: "ba",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\w\\b",
+                input: "a",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\w\\b",
+                input: "a ",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\w\\b",
+                input: "ab",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\b\\w\\b",
+                input: "a",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\b\\w\\b",
+                input: "_",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\b\\w\\b",
+                input: "5",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\b\\w\\b",
+                input: "ab",
+                cs: true,
+                exp: false,
+            },
             // \b\W
-            Case { pattern: "\\b\\W", input: " ", cs: true, exp: false },
-            Case { pattern: "\\b\\W", input: "a ", cs: true, exp: true },
-            Case { pattern: "\\W\\b", input: " ", cs: true, exp: false },
-            Case { pattern: "\\W\\b", input: " a", cs: true, exp: true },
+            Case {
+                pattern: "\\b\\W",
+                input: " ",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\b\\W",
+                input: "a ",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\W\\b",
+                input: " ",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\W\\b",
+                input: " a",
+                cs: true,
+                exp: true,
+            },
             // \b\s
-            Case { pattern: "\\b\\s", input: " ", cs: true, exp: false },
-            Case { pattern: "\\s\\b", input: " ", cs: true, exp: false },
+            Case {
+                pattern: "\\b\\s",
+                input: " ",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\s\\b",
+                input: " ",
+                cs: true,
+                exp: false,
+            },
             // \b\S
-            Case { pattern: "\\b\\S", input: "a", cs: true, exp: true },
-            Case { pattern: "\\b\\S", input: "5", cs: true, exp: true },
-            Case { pattern: "\\b\\S", input: " a", cs: true, exp: true },
-            Case { pattern: "\\S\\b", input: "a", cs: true, exp: true },
-            Case { pattern: "\\S\\b", input: "5", cs: true, exp: true },
-            Case { pattern: "\\S\\b", input: "a ", cs: true, exp: true },
+            Case {
+                pattern: "\\b\\S",
+                input: "a",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\b\\S",
+                input: "5",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\b\\S",
+                input: " a",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\S\\b",
+                input: "a",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\S\\b",
+                input: "5",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\S\\b",
+                input: "a ",
+                cs: true,
+                exp: true,
+            },
             // complex
-            Case { pattern: "\\b\\w\\d", input: "a5", cs: true, exp: true },
-            Case { pattern: "\\b\\w\\d", input: " a5", cs: true, exp: true },
-            Case { pattern: "\\b\\w\\d", input: "ba5", cs: true, exp: false },
-            Case { pattern: "\\d\\w\\b", input: "5a", cs: true, exp: true },
-            Case { pattern: "\\d\\w\\b", input: "5a ", cs: true, exp: true },
-            Case { pattern: "\\d\\w\\b", input: "5ab", cs: true, exp: false },
-            Case { pattern: "\\b\\d\\d\\d\\b", input: "123", cs: true, exp: true },
-            Case { pattern: "\\b\\w\\w\\w\\w\\b", input: "word", cs: true, exp: true },
+            Case {
+                pattern: "\\b\\w\\d",
+                input: "a5",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\b\\w\\d",
+                input: " a5",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\b\\w\\d",
+                input: "ba5",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\d\\w\\b",
+                input: "5a",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\d\\w\\b",
+                input: "5a ",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\d\\w\\b",
+                input: "5ab",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\b\\d\\d\\d\\b",
+                input: "123",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\b\\w\\w\\w\\w\\b",
+                input: "word",
+                cs: true,
+                exp: true,
+            },
             // \B\w
-            Case { pattern: "\\B\\w", input: "ab", cs: true, exp: true },
-            Case { pattern: "\\B\\w", input: "a", cs: true, exp: false },
-            Case { pattern: "\\B\\w", input: " a", cs: true, exp: false },
-            Case { pattern: "\\w\\B", input: "ab", cs: true, exp: true },
-            Case { pattern: "\\w\\B", input: "a", cs: true, exp: false },
-            Case { pattern: "\\w\\B", input: "a ", cs: true, exp: false },
+            Case {
+                pattern: "\\B\\w",
+                input: "ab",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\B\\w",
+                input: "a",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\B\\w",
+                input: " a",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\w\\B",
+                input: "ab",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\w\\B",
+                input: "a",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\w\\B",
+                input: "a ",
+                cs: true,
+                exp: false,
+            },
             // edge cases
-            Case { pattern: "\\b\\w*\\b", input: "word", cs: true, exp: true },
-            Case { pattern: "\\b\\d*\\b", input: "123", cs: true, exp: true },
-            Case { pattern: "\\b\\S*\\b", input: "word", cs: true, exp: true },
+            Case {
+                pattern: "\\b\\w*\\b",
+                input: "word",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\b\\d*\\b",
+                input: "123",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\b\\S*\\b",
+                input: "word",
+                cs: true,
+                exp: true,
+            },
         ]);
     }
 
@@ -3854,86 +7060,406 @@ mod tests {
     fn test_parity_wbi_edge_cases() {
         assert_parity(&[
             // empty
-            Case { pattern: "\\b", input: "", cs: true, exp: false },
-            Case { pattern: "\\B", input: "", cs: true, exp: false },
+            Case {
+                pattern: "\\b",
+                input: "",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\B",
+                input: "",
+                cs: true,
+                exp: false,
+            },
             // single char
-            Case { pattern: "\\ba", input: "a", cs: true, exp: true },
-            Case { pattern: "a\\b", input: "a", cs: true, exp: true },
-            Case { pattern: "\\ba\\b", input: "a", cs: true, exp: true },
-            Case { pattern: "\\b5", input: "5", cs: true, exp: true },
-            Case { pattern: "5\\b", input: "5", cs: true, exp: true },
-            Case { pattern: "\\b5\\b", input: "5", cs: true, exp: true },
-            Case { pattern: "\\b_", input: "_", cs: true, exp: true },
-            Case { pattern: "_\\b", input: "_", cs: true, exp: true },
-            Case { pattern: "\\b_\\b", input: "_", cs: true, exp: true },
+            Case {
+                pattern: "\\ba",
+                input: "a",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "a\\b",
+                input: "a",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\ba\\b",
+                input: "a",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\b5",
+                input: "5",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "5\\b",
+                input: "5",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\b5\\b",
+                input: "5",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\b_",
+                input: "_",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "_\\b",
+                input: "_",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\b_\\b",
+                input: "_",
+                cs: true,
+                exp: true,
+            },
             // \B single
-            Case { pattern: "\\Ba", input: "a", cs: true, exp: false },
-            Case { pattern: "a\\B", input: "a", cs: true, exp: false },
-            Case { pattern: "\\B5", input: "5", cs: true, exp: false },
-            Case { pattern: "5\\B", input: "5", cs: true, exp: false },
+            Case {
+                pattern: "\\Ba",
+                input: "a",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "a\\B",
+                input: "a",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\B5",
+                input: "5",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "5\\B",
+                input: "5",
+                cs: true,
+                exp: false,
+            },
             // two char word boundaries
-            Case { pattern: "\\bab", input: "ab", cs: true, exp: true },
-            Case { pattern: "ab\\b", input: "ab", cs: true, exp: true },
-            Case { pattern: "a\\bb", input: "ab", cs: true, exp: false },
-            Case { pattern: "\\b12", input: "12", cs: true, exp: true },
-            Case { pattern: "12\\b", input: "12", cs: true, exp: true },
-            Case { pattern: "1\\b2", input: "12", cs: true, exp: false },
+            Case {
+                pattern: "\\bab",
+                input: "ab",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "ab\\b",
+                input: "ab",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "a\\bb",
+                input: "ab",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\b12",
+                input: "12",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "12\\b",
+                input: "12",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "1\\b2",
+                input: "12",
+                cs: true,
+                exp: false,
+            },
             // two char non-word boundaries
-            Case { pattern: "\\Bab", input: "ab", cs: true, exp: false },
-            Case { pattern: "ab\\B", input: "ab", cs: true, exp: false },
-            Case { pattern: "a\\Bb", input: "ab", cs: true, exp: true },
-            Case { pattern: "1\\B2", input: "12", cs: true, exp: true },
+            Case {
+                pattern: "\\Bab",
+                input: "ab",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "ab\\B",
+                input: "ab",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "a\\Bb",
+                input: "ab",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "1\\B2",
+                input: "12",
+                cs: true,
+                exp: true,
+            },
             // mixed word/non-word at boundaries
-            Case { pattern: "\\b ", input: " ", cs: true, exp: false },
-            Case { pattern: "\\b.", input: ".", cs: true, exp: false },
-            Case { pattern: " \\b", input: " ", cs: true, exp: false },
-            Case { pattern: ".\\b", input: ".", cs: true, exp: false },
-            Case { pattern: "\\B ", input: " ", cs: true, exp: true },
-            Case { pattern: "\\B.", input: ".", cs: true, exp: true },
-            Case { pattern: " \\B", input: " ", cs: true, exp: true },
-            Case { pattern: ".\\B", input: ".", cs: true, exp: true },
+            Case {
+                pattern: "\\b ",
+                input: " ",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\b.",
+                input: ".",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: " \\b",
+                input: " ",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: ".\\b",
+                input: ".",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\B ",
+                input: " ",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\B.",
+                input: ".",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: " \\B",
+                input: " ",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: ".\\B",
+                input: ".",
+                cs: true,
+                exp: true,
+            },
             // transitions
-            Case { pattern: "\\ba ", input: "a ", cs: true, exp: true },
-            Case { pattern: " a\\b", input: " a", cs: true, exp: true },
-            Case { pattern: "\\b5.", input: "5.", cs: true, exp: true },
-            Case { pattern: ".5\\b", input: ".5", cs: true, exp: true },
+            Case {
+                pattern: "\\ba ",
+                input: "a ",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: " a\\b",
+                input: " a",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\b5.",
+                input: "5.",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: ".5\\b",
+                input: ".5",
+                cs: true,
+                exp: true,
+            },
             // complex edge
-            Case { pattern: "\\b\\b", input: "a", cs: true, exp: true },
-            Case { pattern: "\\b\\b", input: " ", cs: true, exp: false },
-            Case { pattern: "\\B\\B", input: "ab", cs: true, exp: true },
-            Case { pattern: "\\B\\B", input: "a", cs: true, exp: false },
+            Case {
+                pattern: "\\b\\b",
+                input: "a",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\b\\b",
+                input: " ",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\B\\B",
+                input: "ab",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\B\\B",
+                input: "a",
+                cs: true,
+                exp: false,
+            },
             // special chars
-            Case { pattern: "\\b@", input: "@", cs: true, exp: false },
-            Case { pattern: "@\\b", input: "@", cs: true, exp: false },
-            Case { pattern: "\\B@", input: "@", cs: true, exp: true },
+            Case {
+                pattern: "\\b@",
+                input: "@",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "@\\b",
+                input: "@",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\B@",
+                input: "@",
+                cs: true,
+                exp: true,
+            },
             // very short
-            Case { pattern: "\\b", input: "a", cs: true, exp: true },
-            Case { pattern: "\\b", input: " ", cs: true, exp: false },
-            Case { pattern: "\\B", input: "ab", cs: true, exp: true },
-            Case { pattern: "\\B", input: "a", cs: true, exp: false },
+            Case {
+                pattern: "\\b",
+                input: "a",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\b",
+                input: " ",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\B",
+                input: "ab",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\B",
+                input: "a",
+                cs: true,
+                exp: false,
+            },
             // boundaries at position 0 and end
-            Case { pattern: "\\ba*", input: "abc", cs: true, exp: true },
-            Case { pattern: "*a\\b", input: "cba", cs: true, exp: true },
-            Case { pattern: "\\Ba*", input: "abc", cs: true, exp: false },
-            Case { pattern: "*a\\B", input: "cba", cs: true, exp: false },
+            Case {
+                pattern: "\\ba*",
+                input: "abc",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "*a\\b",
+                input: "cba",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\Ba*",
+                input: "abc",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "*a\\B",
+                input: "cba",
+                cs: true,
+                exp: false,
+            },
         ]);
     }
 
     #[test]
     fn test_parity_wbi_case_sensitivity() {
         assert_parity(&[
-            Case { pattern: "^\\bTest\\b$", input: "test", cs: false, exp: true },
-            Case { pattern: "^\\bTest\\b$", input: "test", cs: true, exp: false },
-            Case { pattern: "^\\bTEST\\b$", input: "test", cs: false, exp: true },
-            Case { pattern: "^\\bTEST\\b$", input: "test", cs: true, exp: false },
-            Case { pattern: "\\b*Test*\\b", input: "mytest", cs: false, exp: true },
-            Case { pattern: "\\b*Test*\\b", input: "mytest", cs: true, exp: false },
-            Case { pattern: "\\b*TEST*\\b", input: "mytest", cs: false, exp: true },
-            Case { pattern: "\\b*TEST*\\b", input: "mytest", cs: true, exp: false },
-            Case { pattern: "\\bTest\\w", input: "testa", cs: false, exp: true },
-            Case { pattern: "\\bTest\\w", input: "testa", cs: true, exp: false },
-            Case { pattern: "\\w\\bTest", input: "atest", cs: false, exp: false },
-            Case { pattern: "\\w\\bTest", input: "atest", cs: true, exp: false },
+            Case {
+                pattern: "^\\bTest\\b$",
+                input: "test",
+                cs: false,
+                exp: true,
+            },
+            Case {
+                pattern: "^\\bTest\\b$",
+                input: "test",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "^\\bTEST\\b$",
+                input: "test",
+                cs: false,
+                exp: true,
+            },
+            Case {
+                pattern: "^\\bTEST\\b$",
+                input: "test",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\b*Test*\\b",
+                input: "mytest",
+                cs: false,
+                exp: true,
+            },
+            Case {
+                pattern: "\\b*Test*\\b",
+                input: "mytest",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\b*TEST*\\b",
+                input: "mytest",
+                cs: false,
+                exp: true,
+            },
+            Case {
+                pattern: "\\b*TEST*\\b",
+                input: "mytest",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\bTest\\w",
+                input: "testa",
+                cs: false,
+                exp: true,
+            },
+            Case {
+                pattern: "\\bTest\\w",
+                input: "testa",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\w\\bTest",
+                input: "atest",
+                cs: false,
+                exp: false,
+            },
+            Case {
+                pattern: "\\w\\bTest",
+                input: "atest",
+                cs: true,
+                exp: false,
+            },
         ]);
     }
 
@@ -3947,138 +7473,648 @@ mod tests {
     #[test]
     fn test_parity_ci_complex_metacharacter_combinations() {
         assert_parity(&[
-            Case { pattern: "\\d\\w\\s", input: "5a ", cs: true, exp: true },
-            Case { pattern: "\\d\\w\\s", input: "9_ \t", cs: true, exp: true },
-            Case { pattern: "\\d\\w\\s", input: "0Z\n", cs: true, exp: true },
-            Case { pattern: "\\d\\w\\s", input: "a5 ", cs: true, exp: false },
-            Case { pattern: "\\d\\w\\s", input: "5  ", cs: true, exp: false },
-            Case { pattern: "\\d\\w\\s", input: "5a5", cs: true, exp: false },
-            Case { pattern: "\\D\\W\\S", input: "a!x", cs: true, exp: true },
-            Case { pattern: "\\D\\W\\S", input: "x@y", cs: true, exp: true },
-            Case { pattern: "\\D\\W\\S", input: "!#$", cs: true, exp: true },
-            Case { pattern: "\\D\\W\\S", input: "5!x", cs: true, exp: false },
-            Case { pattern: "\\D\\W\\S", input: "a5x", cs: true, exp: false },
-            Case { pattern: "\\D\\W\\S", input: "a! ", cs: true, exp: false },
-            Case { pattern: "\\d\\W\\s", input: "5! ", cs: true, exp: true },
-            Case { pattern: "\\D\\w\\S", input: "a5x", cs: true, exp: true },
-            Case { pattern: "\\w\\D\\s", input: "a!\t", cs: true, exp: true },
-            Case { pattern: "\\W\\d\\S", input: "!5x", cs: true, exp: true },
+            Case {
+                pattern: "\\d\\w\\s",
+                input: "5a ",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\d\\w\\s",
+                input: "9_ \t",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\d\\w\\s",
+                input: "0Z\n",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\d\\w\\s",
+                input: "a5 ",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\d\\w\\s",
+                input: "5  ",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\d\\w\\s",
+                input: "5a5",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\D\\W\\S",
+                input: "a!x",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\D\\W\\S",
+                input: "x@y",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\D\\W\\S",
+                input: "!#$",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\D\\W\\S",
+                input: "5!x",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\D\\W\\S",
+                input: "a5x",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\D\\W\\S",
+                input: "a! ",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\d\\W\\s",
+                input: "5! ",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\D\\w\\S",
+                input: "a5x",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\w\\D\\s",
+                input: "a!\t",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\W\\d\\S",
+                input: "!5x",
+                cs: true,
+                exp: true,
+            },
         ]);
     }
 
     #[test]
     fn test_parity_ci_metacharacters_with_anchors_complex() {
         assert_parity(&[
-            Case { pattern: "^\\d\\w\\s", input: "5a ", cs: true, exp: true },
-            Case { pattern: "^\\d\\w\\s", input: "x5a ", cs: true, exp: false },
-            Case { pattern: "^\\d\\w\\s", input: "5a extra", cs: true, exp: true },
-            Case { pattern: "\\d\\w\\s$", input: "5a ", cs: true, exp: true },
-            Case { pattern: "\\d\\w\\s$", input: "pre5a ", cs: true, exp: true },
-            Case { pattern: "\\d\\w\\s$", input: "5a extra", cs: true, exp: false },
-            Case { pattern: "^\\d\\w\\s$", input: "5a ", cs: true, exp: true },
-            Case { pattern: "^\\d\\w\\s$", input: "x5a ", cs: true, exp: false },
-            Case { pattern: "^\\d\\w\\s$", input: "5a x", cs: true, exp: false },
-            Case { pattern: "^\\d\\w\\s$", input: "pre5a ", cs: true, exp: false },
-            Case { pattern: "^\\d\\d\\w\\w\\s\\s$", input: "55aa  ", cs: true, exp: true },
-            Case { pattern: "^\\d\\d\\w\\w\\s\\s$", input: "55aa \t", cs: true, exp: true },
-            Case { pattern: "^\\d\\d\\w\\w\\s\\s$", input: "55aa ", cs: true, exp: false },
-            Case { pattern: "^\\d\\d\\w\\w\\s\\s$", input: "55aa   ", cs: true, exp: false },
+            Case {
+                pattern: "^\\d\\w\\s",
+                input: "5a ",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "^\\d\\w\\s",
+                input: "x5a ",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "^\\d\\w\\s",
+                input: "5a extra",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\d\\w\\s$",
+                input: "5a ",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\d\\w\\s$",
+                input: "pre5a ",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\d\\w\\s$",
+                input: "5a extra",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "^\\d\\w\\s$",
+                input: "5a ",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "^\\d\\w\\s$",
+                input: "x5a ",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "^\\d\\w\\s$",
+                input: "5a x",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "^\\d\\w\\s$",
+                input: "pre5a ",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "^\\d\\d\\w\\w\\s\\s$",
+                input: "55aa  ",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "^\\d\\d\\w\\w\\s\\s$",
+                input: "55aa \t",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "^\\d\\d\\w\\w\\s\\s$",
+                input: "55aa ",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "^\\d\\d\\w\\w\\s\\s$",
+                input: "55aa   ",
+                cs: true,
+                exp: false,
+            },
         ]);
     }
 
     #[test]
     fn test_parity_ci_metacharacters_with_wildcards_complex() {
         assert_parity(&[
-            Case { pattern: "*\\d", input: "5", cs: true, exp: true },
-            Case { pattern: "*\\d", input: "a5", cs: true, exp: true },
-            Case { pattern: "*\\d", input: "hello5", cs: true, exp: true },
-            Case { pattern: "*\\d", input: "a", cs: true, exp: false },
-            Case { pattern: "*\\w", input: "a", cs: true, exp: true },
-            Case { pattern: "*\\w", input: "!a", cs: true, exp: true },
-            Case { pattern: "*\\w", input: "hello", cs: true, exp: true },
-            Case { pattern: "*\\w", input: "!", cs: true, exp: false },
-            Case { pattern: "*\\s", input: " ", cs: true, exp: true },
-            Case { pattern: "*\\s", input: "a ", cs: true, exp: true },
-            Case { pattern: "*\\s", input: "hello ", cs: true, exp: true },
-            Case { pattern: "*\\s", input: "a", cs: true, exp: false },
-            Case { pattern: "test*\\d", input: "test5", cs: true, exp: true },
-            Case { pattern: "test*\\d", input: "testxyz5", cs: true, exp: true },
-            Case { pattern: "test*\\d", input: "test", cs: true, exp: false },
-            Case { pattern: "*test\\w", input: "testa", cs: true, exp: true },
-            Case { pattern: "*test\\w", input: "xyztest5", cs: true, exp: true },
-            Case { pattern: "*test\\w", input: "test", cs: true, exp: false },
+            Case {
+                pattern: "*\\d",
+                input: "5",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "*\\d",
+                input: "a5",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "*\\d",
+                input: "hello5",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "*\\d",
+                input: "a",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "*\\w",
+                input: "a",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "*\\w",
+                input: "!a",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "*\\w",
+                input: "hello",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "*\\w",
+                input: "!",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "*\\s",
+                input: " ",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "*\\s",
+                input: "a ",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "*\\s",
+                input: "hello ",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "*\\s",
+                input: "a",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "test*\\d",
+                input: "test5",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "test*\\d",
+                input: "testxyz5",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "test*\\d",
+                input: "test",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "*test\\w",
+                input: "testa",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "*test\\w",
+                input: "xyztest5",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "*test\\w",
+                input: "test",
+                cs: true,
+                exp: false,
+            },
         ]);
     }
 
     #[test]
     fn test_parity_ci_word_boundaries_complex() {
         assert_parity(&[
-            Case { pattern: "\\b\\d\\d\\b", input: "55", cs: true, exp: true },
-            Case { pattern: "\\b\\d\\d\\b", input: " 55 ", cs: true, exp: true },
-            Case { pattern: "\\b\\d\\d\\b", input: "a55b", cs: true, exp: false },
-            Case { pattern: "\\b\\d\\d\\b", input: "hello 55 world", cs: true, exp: true },
-            Case { pattern: "\\b\\w", input: "hello", cs: true, exp: true },
-            Case { pattern: "\\b\\w", input: " hello", cs: true, exp: true },
-            Case { pattern: "\\w\\b", input: "hello", cs: true, exp: true },
-            Case { pattern: "\\w\\b", input: "hello ", cs: true, exp: true },
-            Case { pattern: "\\B\\w\\B", input: "abc", cs: true, exp: true },
-            Case { pattern: "\\B\\w\\B", input: "a", cs: true, exp: false },
-            Case { pattern: "\\B\\w\\B", input: " a ", cs: true, exp: false },
-            Case { pattern: "\\b\\w\\w\\w\\b", input: "cat", cs: true, exp: true },
-            Case { pattern: "\\b\\w\\w\\w\\b", input: " cat ", cs: true, exp: true },
-            Case { pattern: "\\b\\w\\w\\w\\b", input: "catch", cs: true, exp: false },
+            Case {
+                pattern: "\\b\\d\\d\\b",
+                input: "55",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\b\\d\\d\\b",
+                input: " 55 ",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\b\\d\\d\\b",
+                input: "a55b",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\b\\d\\d\\b",
+                input: "hello 55 world",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\b\\w",
+                input: "hello",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\b\\w",
+                input: " hello",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\w\\b",
+                input: "hello",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\w\\b",
+                input: "hello ",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\B\\w\\B",
+                input: "abc",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\B\\w\\B",
+                input: "a",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\B\\w\\B",
+                input: " a ",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\b\\w\\w\\w\\b",
+                input: "cat",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\b\\w\\w\\w\\b",
+                input: " cat ",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\b\\w\\w\\w\\b",
+                input: "catch",
+                cs: true,
+                exp: false,
+            },
         ]);
     }
 
     #[test]
     fn test_parity_ci_dot_metacharacter_complex() {
         assert_parity(&[
-            Case { pattern: ".\\d", input: "a5", cs: true, exp: true },
-            Case { pattern: ".\\d", input: "x9", cs: true, exp: true },
-            Case { pattern: ".\\d", input: " 3", cs: true, exp: true },
-            Case { pattern: ".\\d", input: "\n5", cs: true, exp: false },
-            Case { pattern: ".\\d", input: "5", cs: true, exp: false },
-            Case { pattern: "\\w.", input: "a5", cs: true, exp: true },
-            Case { pattern: "\\w.", input: "z!", cs: true, exp: true },
-            Case { pattern: "\\w.", input: "5 ", cs: true, exp: true },
-            Case { pattern: "\\w.", input: "5\n", cs: true, exp: false },
-            Case { pattern: "...", input: "abc", cs: true, exp: true },
-            Case { pattern: "...", input: "a5!", cs: true, exp: true },
-            Case { pattern: "...", input: "ab", cs: true, exp: false },
-            Case { pattern: "...", input: "ab\n", cs: true, exp: false },
-            Case { pattern: "^.\\d$", input: "a5", cs: true, exp: true },
-            Case { pattern: "^.\\d$", input: "x9", cs: true, exp: true },
-            Case { pattern: "^.\\d$", input: "\n5", cs: true, exp: false },
-            Case { pattern: "^.\\d$", input: "a55", cs: true, exp: false },
-            Case { pattern: "*.", input: "a", cs: true, exp: true },
-            Case { pattern: "*.", input: "hello", cs: true, exp: true },
-            Case { pattern: "*.", input: "", cs: true, exp: false },
-            Case { pattern: "a.", input: "ab", cs: true, exp: true },
-            Case { pattern: "a.", input: "a\n", cs: true, exp: false },
+            Case {
+                pattern: ".\\d",
+                input: "a5",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: ".\\d",
+                input: "x9",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: ".\\d",
+                input: " 3",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: ".\\d",
+                input: "\n5",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: ".\\d",
+                input: "5",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\w.",
+                input: "a5",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\w.",
+                input: "z!",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\w.",
+                input: "5 ",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\w.",
+                input: "5\n",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "...",
+                input: "abc",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "...",
+                input: "a5!",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "...",
+                input: "ab",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "...",
+                input: "ab\n",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "^.\\d$",
+                input: "a5",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "^.\\d$",
+                input: "x9",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "^.\\d$",
+                input: "\n5",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "^.\\d$",
+                input: "a55",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "*.",
+                input: "a",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "*.",
+                input: "hello",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "*.",
+                input: "",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "a.",
+                input: "ab",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "a.",
+                input: "a\n",
+                cs: true,
+                exp: false,
+            },
         ]);
     }
 
     #[test]
     fn test_parity_ci_all_features_combined() {
         assert_parity(&[
-            Case { pattern: "^\\b\\d\\w\\s", input: "5a ", cs: true, exp: true },
-            Case { pattern: "^\\b\\d\\w\\s", input: " 5a ", cs: true, exp: false },
-            Case { pattern: "\\d\\w\\s$", input: "5a ", cs: true, exp: true },
-            Case { pattern: "\\d\\w\\s$", input: "5a x", cs: true, exp: false },
-            Case { pattern: "*@*..*", input: "user@domain.com", cs: true, exp: true },
-            Case { pattern: "*@*..*", input: "test@example.org", cs: true, exp: true },
-            Case { pattern: "*@*..*", input: "a@b.c", cs: true, exp: true },
-            Case { pattern: "*@*..*", input: "invalid", cs: true, exp: false },
-            Case { pattern: "\\d\\d\\d-\\d\\d\\d-\\d\\d\\d\\d", input: "123-456-7890", cs: true, exp: true },
-            Case { pattern: "\\d\\d\\d-\\d\\d\\d-\\d\\d\\d\\d", input: "555-123-4567", cs: true, exp: true },
-            Case { pattern: "\\d\\d\\d-\\d\\d\\d-\\d\\d\\d\\d", input: "abc-def-ghij", cs: true, exp: false },
-            Case { pattern: "\\d\\d\\d-\\d\\d\\d-\\d\\d\\d\\d", input: "123-456-789", cs: true, exp: false },
-            Case { pattern: "\\d\\w\\s\\D\\W\\S", input: "5a !@#", cs: true, exp: true },
-            Case { pattern: "\\d\\w\\s\\D\\W\\S", input: "9_ x@y", cs: true, exp: true },
-            Case { pattern: "\\d\\w\\s\\D\\W\\S", input: "5a 5@#", cs: true, exp: false },
-            Case { pattern: "^.\\d.\\w.$", input: "a5b_c", cs: true, exp: true },
-            Case { pattern: "^.\\d.\\w.$", input: "x9y2z", cs: true, exp: true },
-            Case { pattern: "^.\\d.\\w.$", input: "\n5b_c", cs: true, exp: false },
+            Case {
+                pattern: "^\\b\\d\\w\\s",
+                input: "5a ",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "^\\b\\d\\w\\s",
+                input: " 5a ",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\d\\w\\s$",
+                input: "5a ",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\d\\w\\s$",
+                input: "5a x",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "*@*..*",
+                input: "user@domain.com",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "*@*..*",
+                input: "test@example.org",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "*@*..*",
+                input: "a@b.c",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "*@*..*",
+                input: "invalid",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\d\\d\\d-\\d\\d\\d-\\d\\d\\d\\d",
+                input: "123-456-7890",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\d\\d\\d-\\d\\d\\d-\\d\\d\\d\\d",
+                input: "555-123-4567",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\d\\d\\d-\\d\\d\\d-\\d\\d\\d\\d",
+                input: "abc-def-ghij",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\d\\d\\d-\\d\\d\\d-\\d\\d\\d\\d",
+                input: "123-456-789",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\d\\w\\s\\D\\W\\S",
+                input: "5a !@#",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\d\\w\\s\\D\\W\\S",
+                input: "9_ x@y",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\d\\w\\s\\D\\W\\S",
+                input: "5a 5@#",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "^.\\d.\\w.$",
+                input: "a5b_c",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "^.\\d.\\w.$",
+                input: "x9y2z",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "^.\\d.\\w.$",
+                input: "\n5b_c",
+                cs: true,
+                exp: false,
+            },
         ]);
     }
 
@@ -4088,39 +8124,169 @@ mod tests {
             // G5: firmware helper is (pattern, str, EXPECTED, cs). The
             // "Case insensitive complex patterns" block uses cs=true, exp=false
             // (case-sensitive match fails on case mismatch) — ported exactly.
-            Case { pattern: "^Hello\\s\\w*$", input: "hello world", cs: true, exp: false },
-            Case { pattern: "^Hello\\s\\w*$", input: "HELLO WORLD", cs: true, exp: false },
-            Case { pattern: "^Hello\\s\\w*$", input: "HeLLo WoRLd", cs: true, exp: false },
+            Case {
+                pattern: "^Hello\\s\\w*$",
+                input: "hello world",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "^Hello\\s\\w*$",
+                input: "HELLO WORLD",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "^Hello\\s\\w*$",
+                input: "HeLLo WoRLd",
+                cs: true,
+                exp: false,
+            },
             // "Case sensitive complex patterns" block: (pattern, str, expected, cs).
-            Case { pattern: "^Hello\\s\\w*$", input: "hello world", cs: false, exp: true },
-            Case { pattern: "^Hello\\s\\w*$", input: "Hello world", cs: true, exp: true },
-            Case { pattern: "^Hello\\s\\w*$", input: "HELLO WORLD", cs: false, exp: true },
-            Case { pattern: "\\w\\d\\s", input: "A5 ", cs: true, exp: true },
-            Case { pattern: "\\w\\d\\s", input: "a5 ", cs: true, exp: true },
-            Case { pattern: "\\W\\D\\S", input: "!a5", cs: true, exp: true },
-            Case { pattern: "\\W\\D\\S", input: "!A5", cs: true, exp: true },
+            Case {
+                pattern: "^Hello\\s\\w*$",
+                input: "hello world",
+                cs: false,
+                exp: true,
+            },
+            Case {
+                pattern: "^Hello\\s\\w*$",
+                input: "Hello world",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "^Hello\\s\\w*$",
+                input: "HELLO WORLD",
+                cs: false,
+                exp: true,
+            },
+            Case {
+                pattern: "\\w\\d\\s",
+                input: "A5 ",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\w\\d\\s",
+                input: "a5 ",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\W\\D\\S",
+                input: "!a5",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\W\\D\\S",
+                input: "!A5",
+                cs: true,
+                exp: true,
+            },
         ]);
     }
 
     #[test]
     fn test_parity_ci_edge_cases_complex() {
         assert_parity(&[
-            Case { pattern: "", input: "", cs: true, exp: true },
-            Case { pattern: "*\\d", input: "5", cs: true, exp: true },
-            Case { pattern: "*\\w", input: "a", cs: true, exp: true },
-            Case { pattern: "*\\s", input: " ", cs: true, exp: true },
-            Case { pattern: "\\\\\\d", input: "\\5", cs: true, exp: true },
-            Case { pattern: "\\^\\$\\*", input: "^$*", cs: true, exp: true },
-            Case { pattern: "\\b", input: "", cs: true, exp: false },
-            Case { pattern: "\\B", input: "", cs: true, exp: false },
-            Case { pattern: "\\b\\w\\b", input: "a", cs: true, exp: true },
-            Case { pattern: "\\B\\w\\B", input: "a", cs: true, exp: false },
-            Case { pattern: ".", input: "\n", cs: true, exp: false },
-            Case { pattern: ".", input: "a", cs: true, exp: true },
-            Case { pattern: ".", input: "\t", cs: true, exp: true },
-            Case { pattern: "\\d\\D", input: "5a", cs: true, exp: true },
-            Case { pattern: "\\w\\W", input: "a!", cs: true, exp: true },
-            Case { pattern: "\\s\\S", input: " a", cs: true, exp: true },
+            Case {
+                pattern: "",
+                input: "",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "*\\d",
+                input: "5",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "*\\w",
+                input: "a",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "*\\s",
+                input: " ",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\\\\\d",
+                input: "\\5",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\^\\$\\*",
+                input: "^$*",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\b",
+                input: "",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\B",
+                input: "",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\b\\w\\b",
+                input: "a",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\B\\w\\B",
+                input: "a",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: ".",
+                input: "\n",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: ".",
+                input: "a",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: ".",
+                input: "\t",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\d\\D",
+                input: "5a",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\w\\W",
+                input: "a!",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\s\\S",
+                input: " a",
+                cs: true,
+                exp: true,
+            },
         ]);
         // G5: these two cases come from test_comprehensive_integration.c
         // whose helper order is (pattern, str, EXPECTED, cs) — the empty-string
@@ -4150,52 +8316,252 @@ mod tests {
     fn test_parity_invalid_regex_patterns() {
         assert_parity(&[
             // unmatched brackets -> literal
-            Case { pattern: "[abc", input: "[abc", cs: true, exp: true },
-            Case { pattern: "abc]", input: "abc]", cs: true, exp: true },
-            Case { pattern: "[", input: "[", cs: true, exp: true },
-            Case { pattern: "]", input: "]", cs: true, exp: true },
-            Case { pattern: "[]", input: "[]", cs: true, exp: true },
-            Case { pattern: "[^]", input: "[^]", cs: true, exp: true },
+            Case {
+                pattern: "[abc",
+                input: "[abc",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "abc]",
+                input: "abc]",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "[",
+                input: "[",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "]",
+                input: "]",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "[]",
+                input: "[]",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "[^]",
+                input: "[^]",
+                cs: true,
+                exp: true,
+            },
             // unmatched parens -> literal
-            Case { pattern: "(abc", input: "(abc", cs: true, exp: true },
-            Case { pattern: "abc)", input: "abc)", cs: true, exp: true },
-            Case { pattern: "(", input: "(", cs: true, exp: true },
-            Case { pattern: ")", input: ")", cs: true, exp: true },
-            Case { pattern: "()", input: "()", cs: true, exp: true },
+            Case {
+                pattern: "(abc",
+                input: "(abc",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "abc)",
+                input: "abc)",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "(",
+                input: "(",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: ")",
+                input: ")",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "()",
+                input: "()",
+                cs: true,
+                exp: true,
+            },
             // quantifiers
-            Case { pattern: "a+", input: "aaa", cs: true, exp: true },
-            Case { pattern: "a?", input: "a?", cs: true, exp: true },
-            Case { pattern: "a{3}", input: "a{3}", cs: true, exp: true },
-            Case { pattern: "a{3,5}", input: "a{3,5}", cs: true, exp: true },
-            Case { pattern: "+", input: "+", cs: true, exp: true },
-            Case { pattern: "?", input: "?", cs: true, exp: true },
-            Case { pattern: "{}", input: "{}", cs: true, exp: true },
+            Case {
+                pattern: "a+",
+                input: "aaa",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "a?",
+                input: "a?",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "a{3}",
+                input: "a{3}",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "a{3,5}",
+                input: "a{3,5}",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "+",
+                input: "+",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "?",
+                input: "?",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "{}",
+                input: "{}",
+                cs: true,
+                exp: true,
+            },
             // invalid char classes
-            Case { pattern: "[a-", input: "[a-", cs: true, exp: true },
-            Case { pattern: "[z-a]", input: "[z-a]", cs: true, exp: true },
-            Case { pattern: "[-a]", input: "[-a]", cs: true, exp: true },
-            Case { pattern: "[a-]", input: "[a-]", cs: true, exp: true },
-            Case { pattern: "[^", input: "[^", cs: true, exp: true },
+            Case {
+                pattern: "[a-",
+                input: "[a-",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "[z-a]",
+                input: "[z-a]",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "[-a]",
+                input: "[-a]",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "[a-]",
+                input: "[a-]",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "[^",
+                input: "[^",
+                cs: true,
+                exp: true,
+            },
             // invalid escapes — G4: "\\0" etc. are 2-char literals (backslash+letter)
-            Case { pattern: "\\", input: "\\", cs: true, exp: true },
-            Case { pattern: "\\q", input: "\\q", cs: true, exp: true },
-            Case { pattern: "\\0", input: "\\0", cs: true, exp: true },
-            Case { pattern: "\\9", input: "\\9", cs: true, exp: true },
-            Case { pattern: "\\n", input: "\\n", cs: true, exp: true },
-            Case { pattern: "\\t", input: "\\t", cs: true, exp: true },
-            Case { pattern: "\\r", input: "\\r", cs: true, exp: true },
+            Case {
+                pattern: "\\",
+                input: "\\",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\q",
+                input: "\\q",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\0",
+                input: "\\0",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\9",
+                input: "\\9",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\n",
+                input: "\\n",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\t",
+                input: "\\t",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\r",
+                input: "\\r",
+                cs: true,
+                exp: true,
+            },
             // mixed invalid constructs
-            Case { pattern: "[abc)+", input: "[abc)+", cs: true, exp: true },
-            Case { pattern: "\\[abc\\]", input: "[abc]", cs: true, exp: false },
-            Case { pattern: "\\(abc\\)", input: "(abc)", cs: true, exp: false },
+            Case {
+                pattern: "[abc)+",
+                input: "[abc)+",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\[abc\\]",
+                input: "[abc]",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\(abc\\)",
+                input: "(abc)",
+                cs: true,
+                exp: false,
+            },
             // parsing confusion
-            Case { pattern: "^^", input: "^", cs: true, exp: true },
-            Case { pattern: "$$", input: "$", cs: true, exp: true },
-            Case { pattern: "**", input: "", cs: true, exp: true },
-            Case { pattern: "***", input: "anything", cs: true, exp: true },
-            Case { pattern: "|", input: "|", cs: true, exp: true },
-            Case { pattern: "a|b", input: "a|b", cs: true, exp: true },
-            Case { pattern: "\\|", input: "|", cs: true, exp: false },
+            Case {
+                pattern: "^^",
+                input: "^",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "$$",
+                input: "$",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "**",
+                input: "",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "***",
+                input: "anything",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "|",
+                input: "|",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "a|b",
+                input: "a|b",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\|",
+                input: "|",
+                cs: true,
+                exp: false,
+            },
         ]);
     }
 
@@ -4203,39 +8569,174 @@ mod tests {
     fn test_parity_invalid_boundary_conditions() {
         assert_parity(&[
             // empty strings
-            Case { pattern: "", input: "", cs: true, exp: true },
-            Case { pattern: "", input: "a", cs: true, exp: false },
-            Case { pattern: "a", input: "", cs: true, exp: false },
+            Case {
+                pattern: "",
+                input: "",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "",
+                input: "a",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "a",
+                input: "",
+                cs: true,
+                exp: false,
+            },
             // single chars
-            Case { pattern: "a", input: "a", cs: true, exp: true },
-            Case { pattern: "a", input: "b", cs: true, exp: false },
-            Case { pattern: "a", input: "aa", cs: true, exp: true },
+            Case {
+                pattern: "a",
+                input: "a",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "a",
+                input: "b",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "a",
+                input: "aa",
+                cs: true,
+                exp: true,
+            },
             // whitespace
-            Case { pattern: " ", input: " ", cs: true, exp: true },
-            Case { pattern: "\t", input: "\t", cs: true, exp: true },
-            Case { pattern: "   ", input: "   ", cs: true, exp: true },
+            Case {
+                pattern: " ",
+                input: " ",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\t",
+                input: "\t",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "   ",
+                input: "   ",
+                cs: true,
+                exp: true,
+            },
             // special chars
-            Case { pattern: "@", input: "@", cs: true, exp: true },
-            Case { pattern: "#", input: "#", cs: true, exp: true },
-            Case { pattern: "%", input: "%", cs: true, exp: true },
-            Case { pattern: "&", input: "&", cs: true, exp: true },
-            Case { pattern: "!", input: "!", cs: true, exp: true },
+            Case {
+                pattern: "@",
+                input: "@",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "#",
+                input: "#",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "%",
+                input: "%",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "&",
+                input: "&",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "!",
+                input: "!",
+                cs: true,
+                exp: true,
+            },
             // case sensitivity boundaries
-            Case { pattern: "A", input: "a", cs: true, exp: false },
-            Case { pattern: "A", input: "a", cs: false, exp: true },
-            Case { pattern: "aB", input: "Ab", cs: true, exp: false },
-            Case { pattern: "aB", input: "Ab", cs: false, exp: true },
+            Case {
+                pattern: "A",
+                input: "a",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "A",
+                input: "a",
+                cs: false,
+                exp: true,
+            },
+            Case {
+                pattern: "aB",
+                input: "Ab",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "aB",
+                input: "Ab",
+                cs: false,
+                exp: true,
+            },
             // very short patterns
-            Case { pattern: ".", input: "x", cs: true, exp: true },
-            Case { pattern: "*", input: "", cs: true, exp: true },
-            Case { pattern: "^", input: "", cs: true, exp: true },
-            Case { pattern: "$", input: "", cs: true, exp: true },
+            Case {
+                pattern: ".",
+                input: "x",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "*",
+                input: "",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "^",
+                input: "",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "$",
+                input: "",
+                cs: true,
+                exp: true,
+            },
             // anchor edge cases
-            Case { pattern: "^a", input: "a", cs: true, exp: true },
-            Case { pattern: "a$", input: "a", cs: true, exp: true },
-            Case { pattern: "^a$", input: "a", cs: true, exp: true },
-            Case { pattern: "^a$", input: "aa", cs: true, exp: false },
-            Case { pattern: "^a$", input: "", cs: true, exp: false },
+            Case {
+                pattern: "^a",
+                input: "a",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "a$",
+                input: "a",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "^a$",
+                input: "a",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "^a$",
+                input: "aa",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "^a$",
+                input: "",
+                cs: true,
+                exp: false,
+            },
         ]);
     }
 
@@ -4243,32 +8744,137 @@ mod tests {
     fn test_parity_invalid_error_conditions() {
         assert_parity(&[
             // multiple wildcards
-            Case { pattern: "a**", input: "a", cs: true, exp: true },
-            Case { pattern: "**a", input: "a", cs: true, exp: true },
-            Case { pattern: "*a*", input: "a", cs: true, exp: true },
-            Case { pattern: "***", input: "", cs: true, exp: true },
+            Case {
+                pattern: "a**",
+                input: "a",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "**a",
+                input: "a",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "*a*",
+                input: "a",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "***",
+                input: "",
+                cs: true,
+                exp: true,
+            },
             // complex escape sequences
-            Case { pattern: "\\\\\\\\", input: "\\\\", cs: true, exp: true },
-            Case { pattern: "\\\\\\^", input: "\\^", cs: true, exp: true },
-            Case { pattern: "\\\\\\$", input: "\\$", cs: true, exp: true },
-            Case { pattern: "\\\\\\*", input: "\\*", cs: true, exp: true },
+            Case {
+                pattern: "\\\\\\\\",
+                input: "\\\\",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\\\\\^",
+                input: "\\^",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\\\\\$",
+                input: "\\$",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\\\\\*",
+                input: "\\*",
+                cs: true,
+                exp: true,
+            },
             // combined features
-            Case { pattern: "^\\d*\\w+$", input: "123abc", cs: true, exp: true },
-            Case { pattern: "\\b\\w*\\s+\\d+", input: "hello 123", cs: true, exp: true },
+            Case {
+                pattern: "^\\d*\\w+$",
+                input: "123abc",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\b\\w*\\s+\\d+",
+                input: "hello 123",
+                cs: true,
+                exp: true,
+            },
             // parsing ambiguities
-            Case { pattern: "^*", input: "", cs: true, exp: true },
-            Case { pattern: "*$", input: "", cs: true, exp: true },
-            Case { pattern: "^*$", input: "", cs: true, exp: true },
-            Case { pattern: "^*$", input: "anything", cs: true, exp: true },
+            Case {
+                pattern: "^*",
+                input: "",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "*$",
+                input: "",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "^*$",
+                input: "",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "^*$",
+                input: "anything",
+                cs: true,
+                exp: true,
+            },
             // stress
-            Case { pattern: "\\\\\\\\\\\\\\", input: "\\\\\\\\", cs: true, exp: true },
-            Case { pattern: "^^^^^^^^", input: "^^^^^^^", cs: true, exp: true },
-            Case { pattern: "$$$$$$$$", input: "$$$$$$$", cs: true, exp: true },
-            Case { pattern: "********", input: "", cs: true, exp: true },
+            Case {
+                pattern: "\\\\\\\\\\\\\\",
+                input: "\\\\\\\\",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "^^^^^^^^",
+                input: "^^^^^^^",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "$$$$$$$$",
+                input: "$$$$$$$",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "********",
+                input: "",
+                cs: true,
+                exp: true,
+            },
             // mixed valid/invalid
-            Case { pattern: "valid\\xinvalid", input: "valid\\xinvalid", cs: true, exp: true },
-            Case { pattern: "\\dvalid\\qinvalid", input: "5valid\\qinvalid", cs: true, exp: true },
-            Case { pattern: "^valid[invalid$", input: "valid[invalid", cs: true, exp: true },
+            Case {
+                pattern: "valid\\xinvalid",
+                input: "valid\\xinvalid",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\dvalid\\qinvalid",
+                input: "5valid\\qinvalid",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "^valid[invalid$",
+                input: "valid[invalid",
+                cs: true,
+                exp: true,
+            },
         ]);
     }
 
@@ -4280,15 +8886,64 @@ mod tests {
     #[test]
     fn test_parity_invalid_no_panic() {
         let problematic_patterns: &[&str] = &[
-            "", "\\", "\\", "\\\\\\", "^", "$", "*", ".", "[", "]", "(", ")", "{", "}",
-            "+", "?", "|", "\\q", "\\0", "\\9", "[abc", "abc]", "(abc", "abc)", "a+",
-            "a?", "a{3}", "^^", "$$", "**", "***", "\\\\\\^", "\\\\\\$", "\\\\\\*",
-            "^*$", "*^*", "$*^", "test\\", "\\test", "te\\st", "test[invalid",
-            "test(invalid", "test{invalid", "test+invalid", "test?invalid", "test|invalid",
+            "",
+            "\\",
+            "\\",
+            "\\\\\\",
+            "^",
+            "$",
+            "*",
+            ".",
+            "[",
+            "]",
+            "(",
+            ")",
+            "{",
+            "}",
+            "+",
+            "?",
+            "|",
+            "\\q",
+            "\\0",
+            "\\9",
+            "[abc",
+            "abc]",
+            "(abc",
+            "abc)",
+            "a+",
+            "a?",
+            "a{3}",
+            "^^",
+            "$$",
+            "**",
+            "***",
+            "\\\\\\^",
+            "\\\\\\$",
+            "\\\\\\*",
+            "^*$",
+            "*^*",
+            "$*^",
+            "test\\",
+            "\\test",
+            "te\\st",
+            "test[invalid",
+            "test(invalid",
+            "test{invalid",
+            "test+invalid",
+            "test?invalid",
+            "test|invalid",
         ];
         let test_inputs: &[&str] = &[
-            "", "a", "test", "^$*\\", "[]()+?{}|", "normal text", "123456789",
-            "   \t\n\r   ", "MiXeD cAsE", "special@#$%^&*()chars",
+            "",
+            "a",
+            "test",
+            "^$*\\",
+            "[]()+?{}|",
+            "normal text",
+            "123456789",
+            "   \t\n\r   ",
+            "MiXeD cAsE",
+            "special@#$%^&*()chars",
         ];
         for &pat in problematic_patterns {
             for &inp in test_inputs {
@@ -4316,64 +8971,324 @@ mod tests {
     #[test]
     fn test_parity_eh_invalid_escape_sequences() {
         assert_parity(&[
-            Case { pattern: "\\x", input: "\\x", cs: true, exp: true },
-            Case { pattern: "\\z", input: "\\z", cs: true, exp: true },
-            Case { pattern: "\\1", input: "\\1", cs: true, exp: true },
-            Case { pattern: "\\@", input: "\\@", cs: true, exp: true },
-            Case { pattern: "\\#", input: "\\#", cs: true, exp: true },
-            Case { pattern: "\\%", input: "\\%", cs: true, exp: true },
-            Case { pattern: "\\&", input: "\\&", cs: true, exp: true },
-            Case { pattern: "\\(", input: "\\(", cs: true, exp: true },
-            Case { pattern: "\\)", input: "\\)", cs: true, exp: true },
-            Case { pattern: "\\+", input: "\\+", cs: true, exp: true },
-            Case { pattern: "\\=", input: "\\=", cs: true, exp: true },
-            Case { pattern: "\\[", input: "\\[", cs: true, exp: true },
-            Case { pattern: "\\]", input: "\\]", cs: true, exp: true },
-            Case { pattern: "\\{", input: "\\{", cs: true, exp: true },
-            Case { pattern: "\\}", input: "\\}", cs: true, exp: true },
-            Case { pattern: "\\|", input: "\\|", cs: true, exp: true },
-            Case { pattern: "\\?", input: "\\?", cs: true, exp: true },
-            Case { pattern: "\\.", input: "\\.", cs: true, exp: true },
-            Case { pattern: "\\,", input: "\\,", cs: true, exp: true },
-            Case { pattern: "\\;", input: "\\;", cs: true, exp: true },
-            Case { pattern: "\\:", input: "\\:", cs: true, exp: true },
-            Case { pattern: "\\\"", input: "\\\"", cs: true, exp: true },
-            Case { pattern: "\\'", input: "\\'", cs: true, exp: true },
-            Case { pattern: "\\`", input: "\\`", cs: true, exp: true },
-            Case { pattern: "\\~", input: "\\~", cs: true, exp: true },
-            Case { pattern: "pre\\xinvalid", input: "pre\\xinvalid", cs: true, exp: true },
-            Case { pattern: "\\ystart", input: "\\ystart", cs: true, exp: true },
-            Case { pattern: "end\\z", input: "end\\z", cs: true, exp: true },
-            Case { pattern: "\\X", input: "\\x", cs: false, exp: true },
-            Case { pattern: "\\X", input: "\\x", cs: true, exp: false },
+            Case {
+                pattern: "\\x",
+                input: "\\x",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\z",
+                input: "\\z",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\1",
+                input: "\\1",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\@",
+                input: "\\@",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\#",
+                input: "\\#",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\%",
+                input: "\\%",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\&",
+                input: "\\&",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\(",
+                input: "\\(",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\)",
+                input: "\\)",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\+",
+                input: "\\+",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\=",
+                input: "\\=",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\[",
+                input: "\\[",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\]",
+                input: "\\]",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\{",
+                input: "\\{",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\}",
+                input: "\\}",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\|",
+                input: "\\|",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\?",
+                input: "\\?",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\.",
+                input: "\\.",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\,",
+                input: "\\,",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\;",
+                input: "\\;",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\:",
+                input: "\\:",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\\"",
+                input: "\\\"",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\'",
+                input: "\\'",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\`",
+                input: "\\`",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\~",
+                input: "\\~",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "pre\\xinvalid",
+                input: "pre\\xinvalid",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\ystart",
+                input: "\\ystart",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "end\\z",
+                input: "end\\z",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\X",
+                input: "\\x",
+                cs: false,
+                exp: true,
+            },
+            Case {
+                pattern: "\\X",
+                input: "\\x",
+                cs: true,
+                exp: false,
+            },
         ]);
     }
 
     #[test]
     fn test_parity_eh_malformed_patterns() {
         assert_parity(&[
-            Case { pattern: "test\\", input: "test\\", cs: true, exp: true },
-            Case { pattern: "\\", input: "\\", cs: true, exp: true },
-            Case { pattern: "\\\\\\", input: "\\\\\\", cs: true, exp: true },
-            Case { pattern: "\\\\\\\\", input: "\\\\", cs: true, exp: true },
-            Case { pattern: "\\\\\\\\\\", input: "\\\\\\\\\\", cs: true, exp: true },
-            Case { pattern: "\\\\\\^", input: "\\^", cs: true, exp: true },
-            Case { pattern: "\\\\\\$", input: "\\$", cs: true, exp: true },
-            Case { pattern: "\\\\\\*", input: "\\*", cs: true, exp: true },
-            Case { pattern: "mid^dle", input: "mid^dle", cs: true, exp: true },
-            Case { pattern: "mid$dle", input: "mid$dle", cs: true, exp: true },
-            Case { pattern: "mid$dle$", input: "mid$dle", cs: true, exp: true },
-            Case { pattern: "^", input: "", cs: true, exp: true },
-            Case { pattern: "$", input: "", cs: true, exp: true },
-            Case { pattern: "^$", input: "", cs: true, exp: true },
-            Case { pattern: "^$", input: "a", cs: true, exp: false },
-            Case { pattern: "*", input: "", cs: true, exp: true },
-            Case { pattern: "**", input: "", cs: true, exp: true },
-            Case { pattern: "***", input: "anything", cs: true, exp: true },
-            Case { pattern: "^\\*$", input: "*", cs: true, exp: true },
-            Case { pattern: "\\^*\\$", input: "^anything$", cs: true, exp: true },
-            Case { pattern: "\\\\*test", input: "\\anything", cs: true, exp: false },
-            Case { pattern: "\\\\*test", input: "\\test", cs: true, exp: true },
+            Case {
+                pattern: "test\\",
+                input: "test\\",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\",
+                input: "\\",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\\\\\",
+                input: "\\\\\\",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\\\\\\\",
+                input: "\\\\",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\\\\\\\\\",
+                input: "\\\\\\\\\\",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\\\\\^",
+                input: "\\^",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\\\\\$",
+                input: "\\$",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\\\\\*",
+                input: "\\*",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "mid^dle",
+                input: "mid^dle",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "mid$dle",
+                input: "mid$dle",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "mid$dle$",
+                input: "mid$dle",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "^",
+                input: "",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "$",
+                input: "",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "^$",
+                input: "",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "^$",
+                input: "a",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "*",
+                input: "",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "**",
+                input: "",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "***",
+                input: "anything",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "^\\*$",
+                input: "*",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\^*\\$",
+                input: "^anything$",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\\\*test",
+                input: "\\anything",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\\\*test",
+                input: "\\test",
+                cs: true,
+                exp: true,
+            },
         ]);
     }
 
@@ -4456,68 +9371,293 @@ mod tests {
     #[test]
     fn test_parity_eh_special_character_edge_cases() {
         assert_parity(&[
-            Case { pattern: "test", input: "test", cs: true, exp: true },
-            Case { pattern: "café", input: "café", cs: true, exp: true },
-            Case { pattern: "café", input: "CAFÉ", cs: true, exp: false },
+            Case {
+                pattern: "test",
+                input: "test",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "café",
+                input: "café",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "café",
+                input: "CAFÉ",
+                cs: true,
+                exp: false,
+            },
             // SKIPPED (G2): {"test\xFF","test\xFF"} and {"test\xFE","test\xFE"}
             //   — 0xFF/0xFE are invalid UTF-8, cannot be a Rust &str.
-            Case { pattern: "test\tmore", input: "test\tmore", cs: true, exp: true },
+            Case {
+                pattern: "test\tmore",
+                input: "test\tmore",
+                cs: true,
+                exp: true,
+            },
             // SKIPPED (G2): \s/\S/\w/\W/. vs \xFF — invalid UTF-8.
             // \x01 control char IS valid UTF-8:
-            Case { pattern: ".", input: "\x01", cs: true, exp: true },
-            Case { pattern: ".", input: "\n", cs: true, exp: false },
+            Case {
+                pattern: ".",
+                input: "\x01",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: ".",
+                input: "\n",
+                cs: true,
+                exp: false,
+            },
             // G6: dot vs \r — description says "match" but expected=false.
-            Case { pattern: ".", input: "\r", cs: true, exp: false },
-            Case { pattern: ".", input: "\t", cs: true, exp: true },
+            Case {
+                pattern: ".",
+                input: "\r",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: ".",
+                input: "\t",
+                cs: true,
+                exp: true,
+            },
         ]);
     }
 
     #[test]
     fn test_parity_eh_memory_allocation_edge_cases() {
         assert_parity(&[
-            Case { pattern: "\\^\\$\\*\\\\", input: "^$*\\", cs: true, exp: true },
-            Case { pattern: "\\d\\w\\s\\D\\W\\S", input: "5a 5a ", cs: true, exp: false },
-            Case { pattern: "\\^\\^\\^\\^\\^", input: "^^^^^", cs: true, exp: true },
-            Case { pattern: "\\*\\*\\*\\*\\*", input: "*****", cs: true, exp: true },
-            Case { pattern: "pre\\^mid\\*post", input: "pre^mid*post", cs: true, exp: true },
-            Case { pattern: "\\d*\\w+\\s?", input: "5a ", cs: true, exp: false },
-            Case { pattern: "", input: "", cs: true, exp: true },
-            Case { pattern: "a", input: "a", cs: true, exp: true },
-            Case { pattern: "\\a", input: "\\a", cs: true, exp: true },
-            Case { pattern: "", input: "", cs: true, exp: true },
-            Case { pattern: "simple", input: "simple", cs: true, exp: true },
+            Case {
+                pattern: "\\^\\$\\*\\\\",
+                input: "^$*\\",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\d\\w\\s\\D\\W\\S",
+                input: "5a 5a ",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\^\\^\\^\\^\\^",
+                input: "^^^^^",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\*\\*\\*\\*\\*",
+                input: "*****",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "pre\\^mid\\*post",
+                input: "pre^mid*post",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\d*\\w+\\s?",
+                input: "5a ",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "",
+                input: "",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "a",
+                input: "a",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\a",
+                input: "\\a",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "",
+                input: "",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "simple",
+                input: "simple",
+                cs: true,
+                exp: true,
+            },
         ]);
     }
 
     #[test]
     fn test_parity_eh_word_boundary_edge_cases() {
         assert_parity(&[
-            Case { pattern: "\\b", input: "", cs: true, exp: false },
-            Case { pattern: "\\B", input: "", cs: true, exp: false },
-            Case { pattern: "\\b", input: "a", cs: true, exp: true },
-            Case { pattern: "\\b", input: " ", cs: true, exp: false },
-            Case { pattern: "\\Ba", input: "a", cs: true, exp: false },
-            Case { pattern: "\\B ", input: " ", cs: true, exp: true },
-            Case { pattern: "\\bword", input: "word", cs: true, exp: true },
-            Case { pattern: "word\\b", input: "word", cs: true, exp: true },
-            Case { pattern: "\\bword\\b", input: "word", cs: true, exp: true },
-            Case { pattern: "\\bword\\b", input: " word ", cs: true, exp: true },
-            Case { pattern: "\\bword\\b", input: "sword", cs: true, exp: false },
-            Case { pattern: "\\bword\\b", input: "words", cs: true, exp: false },
-            Case { pattern: "\\Bord", input: "word", cs: true, exp: true },
-            Case { pattern: "w\\Bord", input: "word", cs: true, exp: true },
-            Case { pattern: "\\Bword", input: "word", cs: true, exp: false },
-            Case { pattern: "word\\B", input: "word", cs: true, exp: false },
-            Case { pattern: "\\b\\w+\\b", input: "hello", cs: true, exp: true },
-            Case { pattern: "\\b\\w+\\b", input: "hello world", cs: true, exp: true },
-            Case { pattern: "\\B\\w\\B", input: "hello", cs: true, exp: true },
-            Case { pattern: "\\B\\w\\B", input: "a", cs: true, exp: false },
-            Case { pattern: "\\b_test", input: "_test", cs: true, exp: true },
-            Case { pattern: "\\b123", input: "123", cs: true, exp: true },
-            Case { pattern: "\\b@test", input: "@test", cs: true, exp: false },
-            Case { pattern: "test\\b@", input: "test@", cs: true, exp: true },
-            Case { pattern: "\\b\\w+\\b\\s+\\b\\w+\\b", input: "hello world", cs: true, exp: true },
-            Case { pattern: "\\b\\w\\b\\s\\b\\w\\b", input: "a b", cs: true, exp: true },
+            Case {
+                pattern: "\\b",
+                input: "",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\B",
+                input: "",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\b",
+                input: "a",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\b",
+                input: " ",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\Ba",
+                input: "a",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\B ",
+                input: " ",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\bword",
+                input: "word",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "word\\b",
+                input: "word",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\bword\\b",
+                input: "word",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\bword\\b",
+                input: " word ",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\bword\\b",
+                input: "sword",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\bword\\b",
+                input: "words",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\Bord",
+                input: "word",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "w\\Bord",
+                input: "word",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\Bword",
+                input: "word",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "word\\B",
+                input: "word",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\b\\w+\\b",
+                input: "hello",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\b\\w+\\b",
+                input: "hello world",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\B\\w\\B",
+                input: "hello",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\B\\w\\B",
+                input: "a",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\b_test",
+                input: "_test",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\b123",
+                input: "123",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\b@test",
+                input: "@test",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "test\\b@",
+                input: "test@",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\b\\w+\\b\\s+\\b\\w+\\b",
+                input: "hello world",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\b\\w\\b\\s\\b\\w\\b",
+                input: "a b",
+                cs: true,
+                exp: true,
+            },
         ]);
     }
 
@@ -4525,68 +9665,308 @@ mod tests {
     fn test_parity_eh_dot_metacharacter_edge_cases() {
         assert_parity(&[
             // basic dot
-            Case { pattern: ".", input: "a", cs: true, exp: true },
-            Case { pattern: ".", input: "5", cs: true, exp: true },
-            Case { pattern: ".", input: " ", cs: true, exp: true },
-            Case { pattern: ".", input: "\t", cs: true, exp: true },
+            Case {
+                pattern: ".",
+                input: "a",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: ".",
+                input: "5",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: ".",
+                input: " ",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: ".",
+                input: "\t",
+                cs: true,
+                exp: true,
+            },
             // G6: dot vs \r — expected false (firmware locks dot to exclude \r)
-            Case { pattern: ".", input: "\r", cs: true, exp: false },
+            Case {
+                pattern: ".",
+                input: "\r",
+                cs: true,
+                exp: false,
+            },
             // G1: C "\f"→"\x0C", C "\v"→"\x0B"
-            Case { pattern: ".", input: "\x0C", cs: true, exp: true },
-            Case { pattern: ".", input: "\x0B", cs: true, exp: true },
-            Case { pattern: ".", input: "\n", cs: true, exp: false },
+            Case {
+                pattern: ".",
+                input: "\x0C",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: ".",
+                input: "\x0B",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: ".",
+                input: "\n",
+                cs: true,
+                exp: false,
+            },
             // special chars
-            Case { pattern: ".", input: "@", cs: true, exp: true },
-            Case { pattern: ".", input: "#", cs: true, exp: true },
-            Case { pattern: ".", input: "!", cs: true, exp: true },
+            Case {
+                pattern: ".",
+                input: "@",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: ".",
+                input: "#",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: ".",
+                input: "!",
+                cs: true,
+                exp: true,
+            },
             // SKIPPED (G2): {".","\xFF"} — 0xFF invalid UTF-8.
-            Case { pattern: ".", input: "\x01", cs: true, exp: true },
+            Case {
+                pattern: ".",
+                input: "\x01",
+                cs: true,
+                exp: true,
+            },
             // multiple dots
-            Case { pattern: "..", input: "ab", cs: true, exp: true },
-            Case { pattern: "...", input: "abc", cs: true, exp: true },
-            Case { pattern: "..", input: "a\n", cs: true, exp: false },
-            Case { pattern: ".", input: "", cs: true, exp: false },
+            Case {
+                pattern: "..",
+                input: "ab",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "...",
+                input: "abc",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "..",
+                input: "a\n",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: ".",
+                input: "",
+                cs: true,
+                exp: false,
+            },
             // dot with anchors
-            Case { pattern: "^.", input: "a", cs: true, exp: true },
-            Case { pattern: ".$", input: "a", cs: true, exp: true },
-            Case { pattern: "^.$", input: "a", cs: true, exp: true },
-            Case { pattern: "^.$", input: "ab", cs: true, exp: false },
-            Case { pattern: "^.$", input: "", cs: true, exp: false },
-            Case { pattern: "^.$", input: "\n", cs: true, exp: false },
+            Case {
+                pattern: "^.",
+                input: "a",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: ".$",
+                input: "a",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "^.$",
+                input: "a",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "^.$",
+                input: "ab",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "^.$",
+                input: "",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "^.$",
+                input: "\n",
+                cs: true,
+                exp: false,
+            },
             // dot with wildcards
-            Case { pattern: ".*", input: "anything", cs: true, exp: true },
-            Case { pattern: ".*", input: "", cs: true, exp: false },
-            Case { pattern: ".*", input: "with\nnewline", cs: true, exp: true },
-            Case { pattern: "a.*b", input: "a\nb", cs: true, exp: false },
-            Case { pattern: "a.*b", input: "axyzb", cs: true, exp: true },
+            Case {
+                pattern: ".*",
+                input: "anything",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: ".*",
+                input: "",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: ".*",
+                input: "with\nnewline",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "a.*b",
+                input: "a\nb",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "a.*b",
+                input: "axyzb",
+                cs: true,
+                exp: true,
+            },
             // escaped dot
-            Case { pattern: "\\.", input: ".", cs: true, exp: true },
-            Case { pattern: "\\.", input: "a", cs: true, exp: false },
-            Case { pattern: "test\\.txt", input: "test.txt", cs: true, exp: true },
-            Case { pattern: "test\\.txt", input: "testxtxt", cs: true, exp: false },
+            Case {
+                pattern: "\\.",
+                input: ".",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\.",
+                input: "a",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "test\\.txt",
+                input: "test.txt",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "test\\.txt",
+                input: "testxtxt",
+                cs: true,
+                exp: false,
+            },
         ]);
     }
 
     #[test]
     fn test_parity_eh_complex_error_scenarios() {
         assert_parity(&[
-            Case { pattern: "\\\\\\^\\$\\*", input: "\\^$*", cs: true, exp: true },
-            Case { pattern: "^\\d*\\w+\\s?$", input: "123abc", cs: true, exp: false },
-            Case { pattern: "\\b\\w*\\B\\s*\\d+", input: "hello 123", cs: true, exp: false },
-            Case { pattern: "*^test", input: "^test", cs: true, exp: true },
-            Case { pattern: "\\\\\\\\\\^\\\\\\$", input: "\\\\^\\$", cs: true, exp: true },
-            Case { pattern: "\\\\\\d\\\\\\w", input: "\\5\\a", cs: true, exp: true },
-            Case { pattern: "a*a*a*a*", input: "aaaa", cs: true, exp: true },
-            Case { pattern: ".*.*.*", input: "test", cs: true, exp: true },
-            Case { pattern: "\\w*\\w*\\w*", input: "abc", cs: true, exp: true },
-            Case { pattern: "\\^*\\$", input: "^^^$", cs: true, exp: true },
-            Case { pattern: "^\\^*$", input: "^^^", cs: true, exp: true },
-            Case { pattern: "\\^$", input: "^", cs: true, exp: true },
-            Case { pattern: "^\\$", input: "$", cs: true, exp: true },
-            Case { pattern: "\\b\\b\\b", input: "test", cs: true, exp: true },
-            Case { pattern: "\\B\\B\\B", input: "test", cs: true, exp: true },
-            Case { pattern: "\\b\\B", input: "test", cs: true, exp: false },
-            Case { pattern: "\\B\\b", input: "test", cs: true, exp: false },
+            Case {
+                pattern: "\\\\\\^\\$\\*",
+                input: "\\^$*",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "^\\d*\\w+\\s?$",
+                input: "123abc",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\b\\w*\\B\\s*\\d+",
+                input: "hello 123",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "*^test",
+                input: "^test",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\\\\\\\\\^\\\\\\$",
+                input: "\\\\^\\$",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\\\\\d\\\\\\w",
+                input: "\\5\\a",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "a*a*a*a*",
+                input: "aaaa",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: ".*.*.*",
+                input: "test",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\w*\\w*\\w*",
+                input: "abc",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\^*\\$",
+                input: "^^^$",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "^\\^*$",
+                input: "^^^",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\^$",
+                input: "^",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "^\\$",
+                input: "$",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\b\\b\\b",
+                input: "test",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\B\\B\\B",
+                input: "test",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\b\\B",
+                input: "test",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\B\\b",
+                input: "test",
+                cs: true,
+                exp: false,
+            },
         ]);
     }
 
@@ -4602,31 +9982,156 @@ mod tests {
         // Pattern::Single(p) must delegate to pattern_match(p, app_class, cs)
         // (title is ignored for the Single variant — firmware case A1/A2).
         let cross_section: &[Case] = &[
-            Case { pattern: "^searchterm", input: "searchterm", cs: true, exp: true },
-            Case { pattern: "^searchterm", input: "presearchterm", cs: true, exp: false },
-            Case { pattern: "searchterm$", input: "searchterm", cs: true, exp: true },
-            Case { pattern: "^searchterm$", input: "searchterm", cs: true, exp: true },
-            Case { pattern: "^searchterm$", input: "searchtermpost", cs: true, exp: false },
-            Case { pattern: "\\d", input: "5", cs: true, exp: true },
-            Case { pattern: "\\d", input: "a", cs: true, exp: false },
-            Case { pattern: "\\w", input: "a", cs: true, exp: true },
-            Case { pattern: "\\W", input: "!", cs: true, exp: true },
-            Case { pattern: "\\s", input: " ", cs: true, exp: true },
-            Case { pattern: "\\S", input: "a", cs: true, exp: true },
-            Case { pattern: "\\bword\\b", input: "word", cs: true, exp: true },
-            Case { pattern: "\\bword\\b", input: "aword", cs: true, exp: false },
-            Case { pattern: "a+", input: "aaa", cs: true, exp: true },
-            Case { pattern: "a+", input: "b", cs: true, exp: false },
-            Case { pattern: ".", input: "a", cs: true, exp: true },
-            Case { pattern: ".", input: "\n", cs: true, exp: false },
-            Case { pattern: "\\^test", input: "^test", cs: true, exp: true },
-            Case { pattern: "^abc", input: "ABC", cs: false, exp: true },
-            Case { pattern: "^abc", input: "ABC", cs: true, exp: false },
-            Case { pattern: "*test", input: "pretest", cs: true, exp: true },
-            Case { pattern: "test*", input: "testing", cs: true, exp: true },
-            Case { pattern: "^\\w+@\\w+$", input: "user@host", cs: true, exp: true },
-            Case { pattern: "", input: "", cs: true, exp: true },
-            Case { pattern: "", input: "x", cs: true, exp: false },
+            Case {
+                pattern: "^searchterm",
+                input: "searchterm",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "^searchterm",
+                input: "presearchterm",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "searchterm$",
+                input: "searchterm",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "^searchterm$",
+                input: "searchterm",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "^searchterm$",
+                input: "searchtermpost",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\d",
+                input: "5",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\d",
+                input: "a",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\w",
+                input: "a",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\W",
+                input: "!",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\s",
+                input: " ",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\S",
+                input: "a",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\bword\\b",
+                input: "word",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "\\bword\\b",
+                input: "aword",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "a+",
+                input: "aaa",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "a+",
+                input: "b",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: ".",
+                input: "a",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: ".",
+                input: "\n",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "\\^test",
+                input: "^test",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "^abc",
+                input: "ABC",
+                cs: false,
+                exp: true,
+            },
+            Case {
+                pattern: "^abc",
+                input: "ABC",
+                cs: true,
+                exp: false,
+            },
+            Case {
+                pattern: "*test",
+                input: "pretest",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "test*",
+                input: "testing",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "^\\w+@\\w+$",
+                input: "user@host",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "",
+                input: "",
+                cs: true,
+                exp: true,
+            },
+            Case {
+                pattern: "",
+                input: "x",
+                cs: true,
+                exp: false,
+            },
         ];
         for c in cross_section {
             let via_single = match_pattern(
@@ -4637,14 +10142,12 @@ mod tests {
             );
             let via_leaf = pattern_match(c.pattern, c.input, c.cs);
             assert_eq!(
-                via_single,
-                via_leaf,
+                via_single, via_leaf,
                 "Single dispatch diverged from leaf for pattern={:?}",
                 c.pattern
             );
             assert_eq!(
-                via_single,
-                c.exp,
+                via_single, c.exp,
                 "Single dispatch wrong result for pattern={:?}",
                 c.pattern
             );

@@ -24,7 +24,7 @@ shipped static udev rule already grants permissions (no --reload, no sudo).
 
 Only if you need to disambiguate among multiple QMK keyboards, or target a
 board that overrode RAW_USAGE_PAGE/RAW_USAGE_ID in firmware:
-  1. Create / edit  ~/.config/qmk-notifier/config.toml  and set
+  1. Create / edit  ~/.config/qmkonnect/config.toml  and set
      vendor_id / product_id (and optionally usage_page / usage):
        qmkonnect -c            # writes a commented-out default config
   2. Generate + install the matching on-demand udev rule:

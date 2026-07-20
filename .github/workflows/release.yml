@@ -9,7 +9,7 @@ name: Release
 #                            .dmg / .exe / .pkg.tar.zst from the run) before you
 #                            ever cut a tag. Use this to get Windows/macOS working.
 #
-# qmk_notifier is a pinned git dependency in Cargo.toml (tag = "vX.Y.Z"), so a
+# qmk-notifier is a pinned git dependency in Cargo.toml (tag = "vX.Y.Z"), so a
 # plain `actions/checkout` of this repo is sufficient — no sibling checkout.
 on:
   push:

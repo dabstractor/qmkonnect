@@ -11,8 +11,8 @@ mod tray;
 #[cfg(target_os = "windows")]
 mod autostart;
 
-// StatusNotifierItem (SNI) tray for the Linux/Wayland build. Opt-in via the
-// `linux-tray` feature; absent from the default build entirely.
+// StatusNotifierItem (SNI) tray for the Linux/Wayland build. Included in
+// the default build via the `linux-tray` feature (see Cargo.toml `default`).
 #[cfg(all(target_os = "linux", feature = "linux-tray"))]
 mod linux_tray;
 
@@ -161,7 +161,9 @@ fn print_help() {
     println!("  --show-window-info  [macOS/Windows] open the Window Information dialog");
     println!("      --list-callbacks   Handshake the keyboard; print its callback name->id table");
     println!("      --validate-rules   Parse rules.toml; report schema/callback-name errors");
-    println!("          --rules-path <path>  Override the rules.toml location (with --validate-rules)");
+    println!(
+        "          --rules-path <path>  Override the rules.toml location (with --validate-rules)"
+    );
 
     #[cfg(target_os = "windows")]
     {
@@ -244,7 +246,9 @@ fn parse_value_flag(args: &[String], name: &str) -> Option<String> {
 /// let names = collect_callback_names(&rules);
 /// assert_eq!(names.iter().collect::<Vec<_>>(), [&"x", &"y"]);
 /// ```
-fn collect_callback_names(rules: &crate::core::rules::RuleSet) -> std::collections::BTreeSet<String> {
+fn collect_callback_names(
+    rules: &crate::core::rules::RuleSet,
+) -> std::collections::BTreeSet<String> {
     let mut names = std::collections::BTreeSet::new();
     for rule in &rules.callback_rules {
         for n in rule.enable.iter().chain(rule.disable.iter()) {
@@ -466,14 +470,20 @@ mod tests {
     fn test_parse_value_flag_space_form() {
         // `--flag value` form.
         let args = vec!["--rules-path".to_string(), "x.toml".to_string()];
-        assert_eq!(parse_value_flag(&args, "--rules-path"), Some("x.toml".to_string()));
+        assert_eq!(
+            parse_value_flag(&args, "--rules-path"),
+            Some("x.toml".to_string())
+        );
     }
 
     #[test]
     fn test_parse_value_flag_equals_form() {
         // `--flag=value` form.
         let args = vec!["--rules-path=x.toml".to_string()];
-        assert_eq!(parse_value_flag(&args, "--rules-path"), Some("x.toml".to_string()));
+        assert_eq!(
+            parse_value_flag(&args, "--rules-path"),
+            Some("x.toml".to_string())
+        );
     }
 
     #[test]

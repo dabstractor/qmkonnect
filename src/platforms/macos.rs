@@ -395,17 +395,13 @@ pub fn get_config_paths() -> Vec<PathBuf> {
         );
     }
 
-    // Secondary location: ~/.config/qmk-notifier/config.toml (XDG-style fallback)
+    // Secondary location: ~/.config/qmkonnect/config.toml (XDG-style fallback)
     if let Some(home) = dirs::home_dir() {
-        paths.push(
-            home.join(".config")
-                .join("qmk-notifier")
-                .join("config.toml"),
-        );
+        paths.push(home.join(".config").join("qmkonnect").join("config.toml"));
     }
 
     // System-wide config as last resort
-    paths.push(PathBuf::from("/etc/qmk-notifier/config.toml"));
+    paths.push(PathBuf::from("/etc/qmkonnect/config.toml"));
 
     paths
 }
