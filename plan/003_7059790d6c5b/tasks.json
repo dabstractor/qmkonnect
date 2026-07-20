@@ -4,21 +4,21 @@
       "type": "Phase",
       "id": "P1",
       "title": "v0.2.8 Delta Compliance — Residual Drift Remediation",
-      "status": "Researching",
+      "status": "Complete",
       "description": "The Delta PRD (v0.2.4 → v0.2.8) identifies five categories of change, all of which are already implemented and verified in the production tree. The only remaining actionable work is a single cosmetic documentation fix: a stale firmware naming reference (`qmk-notifier_notify` with hyphen) that should be `qmk_notifier_notify` (underscore) per the v0.2.8 naming convention. This phase covers fixing the stale reference, regenerating the concatenated doc, and running a final verification pass.",
       "milestones": [
         {
           "type": "Milestone",
           "id": "P1.M1",
           "title": "Fix residual doc drift and verify full-tree compliance",
-          "status": "Researching",
+          "status": "Complete",
           "description": "Fix the one stale naming reference in docs/troubleshooting.md, propagate the fix to the generated docs/llms_full.txt, and confirm via grep that no other stale v0.2.4 references remain anywhere in the tree.",
           "tasks": [
             {
               "type": "Task",
               "id": "P1.M1.T1",
               "title": "Fix stale firmware naming reference and verify clean tree",
-              "status": "Researching",
+              "status": "Complete",
               "description": "The v0.2.8 naming convention is: `qmk_notifier` (underscore) = firmware C module; `qmk-notifier` (hyphen) = Rust transport crate. One throwaway example in troubleshooting.md uses the old hyphenated firmware name. Fix it, regenerate llms_full.txt, and confirm the tree is clean.",
               "subtasks": [
                 {
@@ -55,7 +55,7 @@
                   "type": "Subtask",
                   "id": "P1.M1.T1.S3",
                   "title": "Full-tree verification grep and cargo check",
-                  "status": "Researching",
+                  "status": "Complete",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M1.T1.S2"
