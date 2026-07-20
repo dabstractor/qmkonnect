@@ -25,21 +25,31 @@
                   "type": "Subtask",
                   "id": "P1.M1.T1.S1",
                   "title": "Fix `qmk-notifier_notify` → `qmk_notifier_notify` in docs/troubleshooting.md",
-                  "status": "Planned",
+                  "status": "Complete",
                   "story_points": 0.5,
                   "dependencies": [],
-                  "prd_selectors": ["h2.0", "h3.0", "h2.71", "h2.78"],
-                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See plan/003_7059790d6c5b/architecture/delta_verification.md §Residual Drift — the stale reference is at `docs/troubleshooting.md:647`. The exact line is: `(there is no built-in \\`qmk-notifier_notify\\` callback — the firmware API is the`. The v0.2.8 naming convention (PRD §1.1 table + glossary §13) is: `qmk_notifier` (underscore) = firmware C module (`dabstractor/qmk_notifier` repo); `qmk-notifier` (hyphen) = Rust transport crate (`dabstractor/qmk-notifier` repo, tag v0.3.0). In Rust source the crate is aliased as `qmk_notifier` because Cargo converts hyphens to underscores. This is a throwaway example of a non-existent callback name — it is purely illustrative ('there is no built-in … callback').\n2. INPUT: The file `docs/troubleshooting.md` at line 647.\n3. LOGIC: Change `qmk-notifier_notify` to `qmk_notifier_notify` on line 647. This is a single-word replacement within the existing line. Do NOT change any other text. The surrounding context (lines 642–649) explains how to debug the firmware side by adding printf inside a callback. The line currently reads: `(there is no built-in \\`qmk-notifier_notify\\` callback — the firmware API is the`. After the fix it should read: `(there is no built-in \\`qmk_notifier_notify\\` callback — the firmware API is the`.\n4. OUTPUT: Updated `docs/troubleshooting.md` with the correct underscore firmware name.\n5. DOCS: [Mode A] This IS the documentation fix — the file being edited IS the doc. No separate doc task needed."
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See plan/003_7059790d6c5b/architecture/delta_verification.md §Residual Drift — the stale reference is at `docs/troubleshooting.md:647`. The exact line is: `(there is no built-in \\`qmk-notifier_notify\\` callback — the firmware API is the`. The v0.2.8 naming convention (PRD §1.1 table + glossary §13) is: `qmk_notifier` (underscore) = firmware C module (`dabstractor/qmk_notifier` repo); `qmk-notifier` (hyphen) = Rust transport crate (`dabstractor/qmk-notifier` repo, tag v0.3.0). In Rust source the crate is aliased as `qmk_notifier` because Cargo converts hyphens to underscores. This is a throwaway example of a non-existent callback name — it is purely illustrative ('there is no built-in … callback').\n2. INPUT: The file `docs/troubleshooting.md` at line 647.\n3. LOGIC: Change `qmk-notifier_notify` to `qmk_notifier_notify` on line 647. This is a single-word replacement within the existing line. Do NOT change any other text. The surrounding context (lines 642–649) explains how to debug the firmware side by adding printf inside a callback. The line currently reads: `(there is no built-in \\`qmk-notifier_notify\\` callback — the firmware API is the`. After the fix it should read: `(there is no built-in \\`qmk_notifier_notify\\` callback — the firmware API is the`.\n4. OUTPUT: Updated `docs/troubleshooting.md` with the correct underscore firmware name.\n5. DOCS: [Mode A] This IS the documentation fix — the file being edited IS the doc. No separate doc task needed.",
+                  "prd_selectors": [
+                    "h2.0",
+                    "h3.0",
+                    "h2.71",
+                    "h2.78"
+                  ]
                 },
                 {
                   "type": "Subtask",
                   "id": "P1.M1.T1.S2",
                   "title": "Regenerate docs/llms_full.txt to propagate the fix",
-                  "status": "Planned",
+                  "status": "Researching",
                   "story_points": 0.5,
-                  "dependencies": ["P1.M1.T1.S1"],
-                  "prd_selectors": ["h2.71", "h2.78"],
-                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See plan/003_7059790d6c5b/architecture/delta_verification.md §Residual Drift item 2 — `docs/llms_full.txt:2622` mirrors the troubleshooting.md text verbatim. This file is a committed (not vendored) generated concatenation of all docs/*.md files for LLM ingestion. The PRD §3 claims troubleshooting.md:647 is 'the ONLY stale reference,' which is true within `--include` filters for .md/.rs/.toml/.yml/.sh/.ps1 files — but llms_full.txt is a .txt file outside those filters. The regeneration script is `docs/generate_llms_full.sh` — it concatenates README.md + docs/*.md (stripping Jekyll front matter) into a single file, wrapping each doc in numbered `===` dividers.\n2. INPUT: The fixed `docs/troubleshooting.md` from P1.M1.T1.S1.\n3. LOGIC: Run `bash docs/generate_llms_full.sh` from the repo root. This regenerates `docs/llms_full.txt` by concatenating all source docs (including the now-fixed troubleshooting.md). Verify with `grep -n 'qmk-notifier_notify' docs/llms_full.txt` — should return zero hits. Verify with `grep -n 'qmk_notifier_notify' docs/llms_full.txt` — should return one hit at the corresponding line.\n4. OUTPUT: Regenerated `docs/llms_full.txt` with the stale reference fixed.\n5. DOCS: [Mode A] This IS the documentation regeneration. No separate doc task needed."
+                  "dependencies": [
+                    "P1.M1.T1.S1"
+                  ],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See plan/003_7059790d6c5b/architecture/delta_verification.md §Residual Drift item 2 — `docs/llms_full.txt:2622` mirrors the troubleshooting.md text verbatim. This file is a committed (not vendored) generated concatenation of all docs/*.md files for LLM ingestion. The PRD §3 claims troubleshooting.md:647 is 'the ONLY stale reference,' which is true within `--include` filters for .md/.rs/.toml/.yml/.sh/.ps1 files — but llms_full.txt is a .txt file outside those filters. The regeneration script is `docs/generate_llms_full.sh` — it concatenates README.md + docs/*.md (stripping Jekyll front matter) into a single file, wrapping each doc in numbered `===` dividers.\n2. INPUT: The fixed `docs/troubleshooting.md` from P1.M1.T1.S1.\n3. LOGIC: Run `bash docs/generate_llms_full.sh` from the repo root. This regenerates `docs/llms_full.txt` by concatenating all source docs (including the now-fixed troubleshooting.md). Verify with `grep -n 'qmk-notifier_notify' docs/llms_full.txt` — should return zero hits. Verify with `grep -n 'qmk_notifier_notify' docs/llms_full.txt` — should return one hit at the corresponding line.\n4. OUTPUT: Regenerated `docs/llms_full.txt` with the stale reference fixed.\n5. DOCS: [Mode A] This IS the documentation regeneration. No separate doc task needed.",
+                  "prd_selectors": [
+                    "h2.71",
+                    "h2.78"
+                  ]
                 },
                 {
                   "type": "Subtask",
@@ -47,9 +57,16 @@
                   "title": "Full-tree verification grep and cargo check",
                   "status": "Planned",
                   "story_points": 1,
-                  "dependencies": ["P1.M1.T1.S2"],
-                  "prd_selectors": ["h2.0", "h3.0", "h2.11", "h2.71"],
-                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See plan/003_7059790d6c5b/architecture/delta_verification.md §Clean Grep Results — the following greps were run and confirmed clean: `package = \"qmk_notifier\"` (none), `tag = \"v0.2.1\"` (none), `build-installer.ps1` in `.github/` (none), old config path `qmk-notifier/` (only legitimate tree label in HOST_RULES.md:563). The PRD §5 D1.S2 specifies re-running these greps excluding `.pi-subagents/` artifacts and the explicitly-retained `packaging/windows/installer.wxs` legacy file.\n2. INPUT: The fixed troubleshooting.md and regenerated llms_full.txt from P1.M1.T1.{S1,S2}.\n3. LOGIC: Run the following verification greps across the entire repo (excluding `.pi-subagents/`, `target/`, `docs/vendor/`, `.git/`, `plan/`): (a) `grep -rn 'qmk-notifier_notify' .` — expect ZERO hits (the fix + regeneration should have cleared both). (b) `grep -rn 'package = \"qmk_notifier\"' --include='*.toml' .` — expect ZERO. (c) `grep -rn 'tag = \"v0.2.1\"' --include='*.toml' .` — expect ZERO. (d) `grep -rn 'build-installer.ps1' .github/` — expect ZERO. (e) `grep -rn 'config/qmk-notifier' --include='*.rs' --include='*.md' .` — expect ZERO. Then run `cargo check --bin qmkonnect --offline` — expect clean (no errors/warnings). Document any unexpected hits.\n4. OUTPUT: A verification report confirming all greps are clean and cargo check passes. If any stale reference is found, it must be fixed before this subtask is complete.\n5. DOCS: none — this is a verification pass, no doc surface change."
+                  "dependencies": [
+                    "P1.M1.T1.S2"
+                  ],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See plan/003_7059790d6c5b/architecture/delta_verification.md §Clean Grep Results — the following greps were run and confirmed clean: `package = \"qmk_notifier\"` (none), `tag = \"v0.2.1\"` (none), `build-installer.ps1` in `.github/` (none), old config path `qmk-notifier/` (only legitimate tree label in HOST_RULES.md:563). The PRD §5 D1.S2 specifies re-running these greps excluding `.pi-subagents/` artifacts and the explicitly-retained `packaging/windows/installer.wxs` legacy file.\n2. INPUT: The fixed troubleshooting.md and regenerated llms_full.txt from P1.M1.T1.{S1,S2}.\n3. LOGIC: Run the following verification greps across the entire repo (excluding `.pi-subagents/`, `target/`, `docs/vendor/`, `.git/`, `plan/`): (a) `grep -rn 'qmk-notifier_notify' .` — expect ZERO hits (the fix + regeneration should have cleared both). (b) `grep -rn 'package = \"qmk_notifier\"' --include='*.toml' .` — expect ZERO. (c) `grep -rn 'tag = \"v0.2.1\"' --include='*.toml' .` — expect ZERO. (d) `grep -rn 'build-installer.ps1' .github/` — expect ZERO. (e) `grep -rn 'config/qmk-notifier' --include='*.rs' --include='*.md' .` — expect ZERO. Then run `cargo check --bin qmkonnect --offline` — expect clean (no errors/warnings). Document any unexpected hits.\n4. OUTPUT: A verification report confirming all greps are clean and cargo check passes. If any stale reference is found, it must be fixed before this subtask is complete.\n5. DOCS: none — this is a verification pass, no doc surface change.",
+                  "prd_selectors": [
+                    "h2.0",
+                    "h3.0",
+                    "h2.11",
+                    "h2.71"
+                  ]
                 }
               ]
             }

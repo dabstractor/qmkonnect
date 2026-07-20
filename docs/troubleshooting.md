@@ -644,7 +644,7 @@ leaks qmkonnect
    - See the [QMK Integration Guide]({{ site.baseurl }}/qmk-integration).
    
    To watch what the keyboard receives, add your own `printf` inside a callback
-   (there is no built-in `qmk-notifier_notify` callback — the firmware API is the
+   (there is no built-in `qmk_notifier_notify` callback — the firmware API is the
    `DEFINE_SERIAL_LAYERS` / `DEFINE_SERIAL_COMMANDS` macros):
    ```c
    #ifdef CONSOLE_ENABLE
