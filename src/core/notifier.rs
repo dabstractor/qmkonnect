@@ -1,6 +1,8 @@
 use crate::core::types::WindowInfo;
 use once_cell::sync::Lazy;
+use std::collections::{BTreeSet, HashMap};
 use std::error::Error;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -179,6 +181,282 @@ pub fn is_device_connected() -> bool {
         // If HID can't be enumerated at all, treat the device as absent.
         Err(_) => false,
     }
+}
+
+// ============================================================================
+// Host-rules capability handshake (P4.M2.T1.S1, HOST_RULES.md §8(5))
+// ============================================================================
+// Once a QMK device is connected, `perform_handshake` discovers whether it
+// speaks typed commands (`proto_ver == 2` + the `APPLY_HOST_CONTEXT` feature
+// bit) and — if so — sweeps `QUERY_CALLBACK(i)` to build a `name → id` map.
+// Legacy / non-capable / timeout / error replies leave `HOST_CAPABLE` false
+// (string-only mode = today's behavior, bit-for-bit). The handshake runs at
+// most once per board boot (the `HAS_HANDSHAKED` guard); P4.M2.T1.S2 resets it
+// on a real device transition (false→true) to re-trigger.
+
+/// Host-rules capability flag, set by [`perform_handshake`] at (re)connect.
+/// `true` ⇒ the connected keyboard advertised `proto_ver == 2` + the
+/// `APPLY_HOST_CONTEXT` feature bit (`feature_flags & 0x01`); P4.M3.T1.S1 gates
+/// the `APPLY_HOST_CONTEXT` send on this. `false` (default, or legacy/timeout) ⇒
+/// string-only mode (today's behavior, bit-for-bit). Read via [`host_capable`].
+static HOST_CAPABLE: AtomicBool = AtomicBool::new(false);
+
+/// The keyboard's callback registry as a `name → id` map, populated by the
+/// `QUERY_CALLBACK` sweep in [`perform_handshake`]. P4.M3.T1.S1's
+/// [`crate::core::rules::evaluate`] resolves `rules.toml` callback names through
+/// it; P5.M1's `--list-callbacks` prints it. Read via [`callback_names`].
+static CALLBACK_NAMES: Lazy<Mutex<HashMap<String, u8>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+
+/// Dedup guard: the handshake runs **at most once per board boot** (the firmware
+/// sets `has_been_queried` on the first `QUERY_INFO`). [`perform_handshake`]
+/// swaps this to `true` on entry and short-circuits if already set. P4.M2.T1.S2
+/// resets it (via [`reset_handshake_state`]) on a real device transition
+/// (`is_device_connected()` false→true) to re-trigger.
+static HAS_HANDSHAKED: AtomicBool = AtomicBool::new(false);
+
+/// The host OS, for the `SET_OS` command. Determined at build time from
+/// `cfg!(target_os)`; the host is the OS source of truth while connected
+/// (HOST_RULES.md §5 C12). Returns [`qmk_notifier::HostOs::Unsure`] on
+/// non-Linux/Windows/macOS targets.
+fn host_os() -> qmk_notifier::HostOs {
+    if cfg!(target_os = "linux") {
+        qmk_notifier::HostOs::Linux
+    } else if cfg!(target_os = "windows") {
+        qmk_notifier::HostOs::Windows
+    } else if cfg!(target_os = "macos") {
+        qmk_notifier::HostOs::Macos // G7: lowercase 'os' in both cfg and the variant
+    } else {
+        qmk_notifier::HostOs::Unsure
+    }
+}
+
+/// Run the host-rules capability handshake against the connected QMK device.
+///
+/// Sends `QUERY_INFO`; if the reply is `Info { proto_ver: 2, feature_flags,
+/// callback_count, .. }` with the `APPLY_HOST_CONTEXT` bit set
+/// (`feature_flags & 0x01`), the device is **capable**: send `SET_OS` once (host
+/// is OS-authoritative), sweep `QUERY_CALLBACK(i)` for `i in 0..callback_count`
+/// into the global [`CALLBACK_NAMES`] `name → id` map, validate `rules.toml`'s
+/// callback names against it (warnings only — never fatal), and set
+/// [`HOST_CAPABLE`] `true`. Any other reply — legacy (`proto_ver != 2`),
+/// non-capable (`flags & 0x01 == 0`), `Timeout`, or a device error — leaves
+/// [`HOST_CAPABLE`] `false` and clears the map (string-only mode; today's
+/// behavior, bit-for-bit).
+///
+/// **Idempotent per board boot**: the first call swaps [`HAS_HANDSHAKED`] to
+/// `true` and runs; subsequent calls short-circuit. P4.M2.T1.S2 resets the guard
+/// (via [`reset_handshake_state`]) on a real device transition to re-trigger.
+///
+/// `verbose` gates the chatty progress logging (matching `startup_device_probe`'s
+/// convention); capability-downgrade and rules-mismatch WARNINGS always print.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use qmkonnect::core::notifier;
+///
+/// // Called by the runner at startup (P4.M2.T1.S2) and on device reconnect:
+/// notifier::perform_handshake(verbose);
+/// if notifier::host_capable() {
+///     // P4.M3.T1.S1: also send APPLY_HOST_CONTEXT per window change.
+/// }
+/// ```
+pub fn perform_handshake(verbose: bool) {
+    // Dedup: at most once per board boot (firmware has_been_queried). S2 resets.
+    if HAS_HANDSHAKED.swap(true, Ordering::SeqCst) {
+        if verbose {
+            eprintln!(
+                "[{}ms] perform_handshake: already handshaked this session — skipping",
+                crate::core::now_ms()
+            );
+        }
+        return;
+    }
+
+    let filter = configured_filter();
+    let notifier = get_notifier();
+    let n = notifier.lock().unwrap();
+
+    match n.send_command(qmk_notifier::RunCommand::QueryInfo, &filter) {
+        Ok(qmk_notifier::CommandResponse::Info {
+            proto_ver: 2,
+            feature_flags,
+            callback_count,
+            board_rules_present,
+        }) if feature_flags & 0x01 != 0 => {
+            if verbose {
+                eprintln!(
+                    "[{}ms] perform_handshake: proto v2 capable (flags={:#04x}, {} callbacks, board_rules={})",
+                    crate::core::now_ms(), feature_flags, callback_count, board_rules_present
+                );
+            }
+            // SET_OS once (host is OS-authoritative at connect). Best-effort.
+            if let Err(e) = n.send_command(qmk_notifier::RunCommand::SetOs(host_os()), &filter) {
+                eprintln!("Warning: SET_OS failed during handshake: {}", e);
+            }
+            // Callback sweep → local map (publish after dropping the notifier lock: D2).
+            let mut local: HashMap<String, u8> = HashMap::new();
+            for i in 0..callback_count {
+                match n.send_command(qmk_notifier::RunCommand::QueryCallback(i), &filter) {
+                    Ok(qmk_notifier::CommandResponse::CallbackName {
+                        index,
+                        name: Some(name),
+                    }) => {
+                        local.insert(name, index); // echo the firmware's index for robustness
+                    }
+                    Ok(qmk_notifier::CommandResponse::CallbackName { name: None, .. }) => {
+                        if verbose {
+                            eprintln!("[{}ms] perform_handshake: callback {} has no name — skipped",
+                                crate::core::now_ms(), i);
+                        }
+                    }
+                    Ok(other) => {
+                        if verbose {
+                            eprintln!("[{}ms] perform_handshake: callback {} unexpected reply {:?}",
+                                crate::core::now_ms(), i, other);
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("Warning: QUERY_CALLBACK({}) failed: {}", i, e);
+                    }
+                }
+            }
+            drop(n); // release the notifier before the read-only rules validation
+            {
+                let mut names = CALLBACK_NAMES.lock().unwrap();
+                names.clear();
+                names.extend(local);
+            }
+            validate_rules_callback_names(verbose);
+            HOST_CAPABLE.store(true, Ordering::SeqCst);
+            if verbose {
+                eprintln!(
+                    "[{}ms] perform_handshake: complete — capable ({} callbacks mapped)",
+                    crate::core::now_ms(),
+                    CALLBACK_NAMES.lock().unwrap().len()
+                );
+            }
+        }
+        Ok(other) => {
+            drop(n);
+            HOST_CAPABLE.store(false, Ordering::SeqCst);
+            CALLBACK_NAMES.lock().unwrap().clear();
+            if verbose {
+                eprintln!(
+                    "[{}ms] perform_handshake: non-capable reply ({:?}) — string-only mode",
+                    crate::core::now_ms(),
+                    other
+                );
+            }
+        }
+        Err(e) => {
+            drop(n);
+            HOST_CAPABLE.store(false, Ordering::SeqCst);
+            CALLBACK_NAMES.lock().unwrap().clear();
+            if verbose {
+                eprintln!(
+                    "[{}ms] perform_handshake: device error ({}) — string-only mode",
+                    crate::core::now_ms(),
+                    e
+                );
+            }
+        }
+    }
+}
+
+/// Best-effort validation of `rules.toml` callback names against [`CALLBACK_NAMES`].
+///
+/// Reads the first existing `rules.toml` candidate
+/// ([`crate::core::rules::get_rules_paths`]); if none exists, host rules are
+/// disabled and there is nothing to validate. A malformed `rules.toml` is warned
+/// about and skipped (the strict failure is `--validate-rules`'s job, P5.M1) — it
+/// never fails the handshake. Unknown callback names (referenced in
+/// `[[callback_rules]]` `enable`/`disable` but absent from the keyboard's
+/// registry) are warned, one per line. [`HOST_CAPABLE`] is unaffected (a broken
+/// rules file does not downgrade capability).
+fn validate_rules_callback_names(verbose: bool) {
+    let Some(path) = crate::core::rules::get_rules_paths()
+        .into_iter()
+        .find(|p| p.exists())
+    else {
+        if verbose {
+            eprintln!(
+                "[{}ms] perform_handshake: no rules.toml found — skipping callback-name validation",
+                crate::core::now_ms()
+            );
+        }
+        return;
+    };
+    let rules = match crate::core::rules::parse_rules(&path) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!(
+                "Warning: could not parse {} ({}) — skipping callback-name validation",
+                path.display(),
+                e
+            );
+            return;
+        }
+    };
+    let known = CALLBACK_NAMES.lock().unwrap().clone();
+    let unknown = unknown_callback_names(&rules, &known);
+    for name in &unknown {
+        eprintln!(
+            "Warning: rules.toml references callback \"{}\" which is not registered on this keyboard ({} known)",
+            name,
+            known.len()
+        );
+    }
+    if verbose && !unknown.is_empty() {
+        eprintln!(
+            "[{}ms] perform_handshake: {} unknown callback name(s) in rules.toml",
+            crate::core::now_ms(),
+            unknown.len()
+        );
+    }
+}
+
+/// Callback names referenced by `rules.toml` but absent from the keyboard's
+/// registry. Deduped + sorted (via `BTreeSet`) for deterministic output. This is
+/// the pure, testable core of [`validate_rules_callback_names`].
+fn unknown_callback_names(
+    rules: &crate::core::rules::RuleSet,
+    known: &HashMap<String, u8>,
+) -> Vec<String> {
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    for rule in &rules.callback_rules {
+        for name in rule.enable.iter().chain(rule.disable.iter()) {
+            if !known.contains_key(name) {
+                seen.insert(name.clone());
+            }
+        }
+    }
+    seen.into_iter().collect()
+}
+
+/// Is the connected keyboard host-rules-capable (`proto_ver == 2` +
+/// `flags & 0x01`)? P4.M3.T1.S1 gates `APPLY_HOST_CONTEXT` on this.
+pub fn host_capable() -> bool {
+    HOST_CAPABLE.load(Ordering::SeqCst)
+}
+
+/// The keyboard's `name → id` callback map (a clone). P4.M3.T1.S1 passes this
+/// into [`crate::core::rules::evaluate`]; P5.M1's `--list-callbacks` prints it.
+/// Empty when not capable.
+pub fn callback_names() -> HashMap<String, u8> {
+    CALLBACK_NAMES.lock().unwrap().clone()
+}
+
+/// Clear all handshake state (capability flag, callback map, dedup guard).
+///
+/// Called by P4.M2.T1.S2 on a real device transition (`is_device_connected()`
+/// false→true) so the next [`perform_handshake`] re-runs, and by the handshake
+/// tests for isolation.
+pub fn reset_handshake_state() {
+    HOST_CAPABLE.store(false, Ordering::SeqCst);
+    CALLBACK_NAMES.lock().unwrap().clear();
+    HAS_HANDSHAKED.store(false, Ordering::SeqCst);
 }
 
 impl Notifier for QmkNotifier {
@@ -454,6 +732,7 @@ pub fn notify_qmk(
 mod tests {
     use super::*;
     use crate::core::types::WindowInfo;
+    use std::collections::VecDeque;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex as StdMutex;
 
@@ -462,11 +741,14 @@ mod tests {
     static MOCK_LAST_MESSAGE: Lazy<StdMutex<Option<String>>> = Lazy::new(|| StdMutex::new(None));
     static MOCK_SEND_COMMAND_CALLS: Lazy<StdMutex<Vec<qmk_notifier::RunCommand>>> =
         Lazy::new(|| StdMutex::new(Vec::new()));
+    static MOCK_RESPONSES: Lazy<StdMutex<VecDeque<qmk_notifier::CommandResponse>>> =
+        Lazy::new(|| StdMutex::new(VecDeque::new()));
 
     fn reset_global_mock() {
         MOCK_CALL_COUNT.store(0, Ordering::SeqCst);
         *MOCK_LAST_MESSAGE.lock().unwrap() = None;
         MOCK_SEND_COMMAND_CALLS.lock().unwrap().clear();
+        MOCK_RESPONSES.lock().unwrap().clear();
     }
 
     struct MockNotifier;
@@ -488,6 +770,10 @@ mod tests {
         fn get_send_command_calls() -> Vec<qmk_notifier::RunCommand> {
             MOCK_SEND_COMMAND_CALLS.lock().unwrap().clone()
         }
+
+        fn set_mock_responses(responses: Vec<qmk_notifier::CommandResponse>) {
+            MOCK_RESPONSES.lock().unwrap().extend(responses);
+        }
     }
 
     impl Notifier for MockNotifier {
@@ -508,7 +794,8 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push(command.clone());
-            Ok(qmk_notifier::CommandResponse::Ack { ok: true })
+            let resp = MOCK_RESPONSES.lock().unwrap().pop_front();
+            Ok(resp.unwrap_or(qmk_notifier::CommandResponse::Ack { ok: true }))
         }
     }
 
@@ -864,5 +1151,213 @@ mod tests {
             Some("App\x1DTitle".to_string())
         );
         assert_eq!(MockNotifier::get_send_command_calls().len(), 1);
+    }
+
+    // ========================================================================
+    // Host-rules capability handshake (P4.M2.T1.S1)
+    // ========================================================================
+    // Each handshake test starts from a clean slate: reset_test_state() drains
+    // the debouncer + mock, reset_handshake_state() clears HOST_CAPABLE /
+    // CALLBACK_NAMES / HAS_HANDSHAKED, set_notifier installs a fresh Mock, and
+    // set_mock_responses scripts the reply sequence. Single-threaded (G6).
+
+    #[test]
+    fn test_handshake_capable_populates_state() {
+        reset_test_state();
+        reset_handshake_state();
+        set_notifier(Box::new(MockNotifier::new()));
+        MockNotifier::set_mock_responses(vec![
+            qmk_notifier::CommandResponse::Info {
+                proto_ver: 2,
+                feature_flags: 0x01,
+                callback_count: 2,
+                board_rules_present: true,
+            },
+            qmk_notifier::CommandResponse::Ack { ok: true }, // SetOs
+            qmk_notifier::CommandResponse::CallbackName {
+                index: 0,
+                name: Some("vim_lazy".into()),
+            },
+            qmk_notifier::CommandResponse::CallbackName {
+                index: 1,
+                name: Some("disable_vim".into()),
+            },
+        ]);
+        perform_handshake(false);
+        assert!(host_capable());
+        let names = callback_names();
+        assert_eq!(names.get("vim_lazy"), Some(&0));
+        assert_eq!(names.get("disable_vim"), Some(&1));
+        let calls = MockNotifier::get_send_command_calls();
+        assert_eq!(calls.len(), 4);
+        assert_eq!(calls[0], qmk_notifier::RunCommand::QueryInfo);
+        assert!(matches!(calls[1], qmk_notifier::RunCommand::SetOs(_)));
+        assert_eq!(calls[2], qmk_notifier::RunCommand::QueryCallback(0));
+        assert_eq!(calls[3], qmk_notifier::RunCommand::QueryCallback(1));
+    }
+
+    #[test]
+    fn test_handshake_legacy_proto_v1_string_only() {
+        reset_test_state();
+        reset_handshake_state();
+        set_notifier(Box::new(MockNotifier::new()));
+        MockNotifier::set_mock_responses(vec![qmk_notifier::CommandResponse::Info {
+            proto_ver: 1,
+            feature_flags: 0x00,
+            callback_count: 0,
+            board_rules_present: true,
+        }]);
+        perform_handshake(false);
+        assert!(!host_capable());
+        assert!(callback_names().is_empty());
+        let calls = MockNotifier::get_send_command_calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0], qmk_notifier::RunCommand::QueryInfo);
+    }
+
+    #[test]
+    fn test_handshake_no_feature_flag_string_only() {
+        reset_test_state();
+        reset_handshake_state();
+        set_notifier(Box::new(MockNotifier::new()));
+        MockNotifier::set_mock_responses(vec![qmk_notifier::CommandResponse::Info {
+            proto_ver: 2,
+            feature_flags: 0x00,
+            callback_count: 3,
+            board_rules_present: true,
+        }]);
+        perform_handshake(false);
+        assert!(!host_capable());
+        assert_eq!(MockNotifier::get_send_command_calls().len(), 1);
+    }
+
+    #[test]
+    fn test_handshake_timeout_string_only() {
+        reset_test_state();
+        reset_handshake_state();
+        set_notifier(Box::new(MockNotifier::new()));
+        MockNotifier::set_mock_responses(vec![qmk_notifier::CommandResponse::Timeout]);
+        perform_handshake(false);
+        assert!(!host_capable());
+        assert_eq!(MockNotifier::get_send_command_calls().len(), 1);
+    }
+
+    #[test]
+    fn test_handshake_dedup_idempotent() {
+        reset_test_state();
+        reset_handshake_state();
+        set_notifier(Box::new(MockNotifier::new()));
+        MockNotifier::set_mock_responses(vec![
+            qmk_notifier::CommandResponse::Info {
+                proto_ver: 2,
+                feature_flags: 0x01,
+                callback_count: 1,
+                board_rules_present: true,
+            },
+            qmk_notifier::CommandResponse::Ack { ok: true },
+            qmk_notifier::CommandResponse::CallbackName {
+                index: 0,
+                name: Some("x".into()),
+            },
+        ]);
+        perform_handshake(false);
+        assert!(host_capable());
+        let after_first = MockNotifier::get_send_command_calls().len();
+        perform_handshake(false); // MUST short-circuit
+        let after_second = MockNotifier::get_send_command_calls().len();
+        assert_eq!(
+            after_first, after_second,
+            "dedup: second perform_handshake must not re-send"
+        );
+        assert!(host_capable());
+    }
+
+    #[test]
+    fn test_handshake_reset_allows_rerun() {
+        reset_test_state();
+        reset_handshake_state();
+        set_notifier(Box::new(MockNotifier::new()));
+        MockNotifier::set_mock_responses(vec![
+            qmk_notifier::CommandResponse::Info {
+                proto_ver: 2,
+                feature_flags: 0x01,
+                callback_count: 1,
+                board_rules_present: true,
+            },
+            qmk_notifier::CommandResponse::Ack { ok: true },
+            qmk_notifier::CommandResponse::CallbackName {
+                index: 0,
+                name: Some("x".into()),
+            },
+        ]);
+        perform_handshake(false);
+        assert!(host_capable());
+        reset_handshake_state();
+        assert!(!host_capable());
+        assert!(callback_names().is_empty());
+        // re-arm + re-handshake (S2's device-gain path)
+        MockNotifier::set_mock_responses(vec![
+            qmk_notifier::CommandResponse::Info {
+                proto_ver: 2,
+                feature_flags: 0x01,
+                callback_count: 1,
+                board_rules_present: true,
+            },
+            qmk_notifier::CommandResponse::Ack { ok: true },
+            qmk_notifier::CommandResponse::CallbackName {
+                index: 0,
+                name: Some("y".into()),
+            },
+        ]);
+        perform_handshake(false);
+        assert!(host_capable());
+        assert_eq!(callback_names().get("y"), Some(&0));
+    }
+
+    #[test]
+    fn test_handshake_skips_anonymous_callback() {
+        reset_test_state();
+        reset_handshake_state();
+        set_notifier(Box::new(MockNotifier::new()));
+        MockNotifier::set_mock_responses(vec![
+            qmk_notifier::CommandResponse::Info {
+                proto_ver: 2,
+                feature_flags: 0x01,
+                callback_count: 2,
+                board_rules_present: true,
+            },
+            qmk_notifier::CommandResponse::Ack { ok: true },
+            qmk_notifier::CommandResponse::CallbackName {
+                index: 0,
+                name: None,
+            },
+            qmk_notifier::CommandResponse::CallbackName {
+                index: 1,
+                name: Some("named".into()),
+            },
+        ]);
+        perform_handshake(false);
+        assert!(host_capable());
+        let names = callback_names();
+        assert_eq!(names.len(), 1);
+        assert_eq!(names.get("named"), Some(&1));
+    }
+
+    #[test]
+    fn test_unknown_callback_names_helper() {
+        let rules: crate::core::rules::RuleSet = toml::from_str(
+            r#"
+[[callback_rules]]
+match = "a"
+enable = ["known_a", "ghost"]
+disable = ["known_b", "phantom"]
+"#,
+        )
+        .unwrap();
+        let mut known = HashMap::new();
+        known.insert("known_a".to_string(), 0u8);
+        known.insert("known_b".to_string(), 1u8);
+        let unknown = unknown_callback_names(&rules, &known);
+        assert_eq!(unknown, vec!["ghost".to_string(), "phantom".to_string()]);
     }
 }

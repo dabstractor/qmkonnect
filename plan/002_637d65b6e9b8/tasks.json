@@ -522,7 +522,7 @@
       "type": "Phase",
       "id": "P4",
       "title": "QMKonnect Pipeline Integration",
-      "status": "Planned",
+      "status": "Researching",
       "description": "Integrate the pattern matcher (P2) and rules system (P3) into the notification pipeline: extend the Notifier trait, pin the new crate version, implement the startup capability handshake + SET_OS, and extend notify_qmk() to evaluate rules and send APPLY_HOST_CONTEXT. This is the core integration work that makes host-side rules functional.",
       "milestones": [
         {
@@ -603,21 +603,21 @@
           "type": "Milestone",
           "id": "P4.M2",
           "title": "Startup Handshake & Capability Detection",
-          "status": "Planned",
+          "status": "Ready",
           "description": "Implement the capability handshake (QUERY_INFO → callback sweep → SET_OS) that runs at startup and on device reconnect, and the capability state tracking that gates host-rules.",
           "tasks": [
             {
               "type": "Task",
               "id": "P4.M2.T1",
               "title": "Capability Handshake (QUERY_INFO, QUERY_CALLBACK sweep, SET_OS)",
-              "status": "Planned",
+              "status": "Ready",
               "description": "Implement the handshake that detects host-capable firmware, builds the name→id callback map, sends SET_OS, and sets the global capable flag.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P4.M2.T1.S1",
                   "title": "Implement handshake function and global capability state",
-                  "status": "Ready",
+                  "status": "Complete",
                   "story_points": 2,
                   "dependencies": [
                     "P4.M1.T1.S1",
@@ -634,7 +634,7 @@
                   "type": "Subtask",
                   "id": "P4.M2.T1.S2",
                   "title": "Integrate handshake into startup and device-status poll",
-                  "status": "Planned",
+                  "status": "Ready",
                   "story_points": 1,
                   "dependencies": [
                     "P4.M2.T1.S1"
@@ -655,21 +655,21 @@
           "type": "Milestone",
           "id": "P4.M3",
           "title": "notify_qmk Host-Context Send Logic",
-          "status": "Planned",
+          "status": "Researching",
           "description": "Extend the debounce worker's send step to evaluate rules and send APPLY_HOST_CONTEXT in stack or replace mode, or clear on no-match. This is the core per-window-changes send logic.",
           "tasks": [
             {
               "type": "Task",
               "id": "P4.M3.T1",
               "title": "Host-Context Send Logic (stack, replace, no-match clear)",
-              "status": "Planned",
+              "status": "Researching",
               "description": "After the debounced string send, evaluate rules and send the appropriate APPLY_HOST_CONTEXT command, or clear on no-match.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P4.M3.T1.S1",
                   "title": "Implement host-context evaluation and send in debounce worker",
-                  "status": "Planned",
+                  "status": "Researching",
                   "story_points": 2,
                   "dependencies": [
                     "P4.M1.T2.S2",
