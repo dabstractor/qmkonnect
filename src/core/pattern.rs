@@ -1102,8 +1102,8 @@ pub fn pattern_match(pattern: &str, s: &str, case_sensitive: bool) -> bool {
 ///
 /// | TOML form                              | `Pattern` variant          | Meaning                       |
 /// | -------------------------------------- | -------------------------- | ----------------------------- |
-/// | `match = "alacritty"`                  | [`Pattern::Single(String)`] | class only (no GS)            |
-/// | `match = ["*chrome*", "*youtube*"]`    | [`Pattern::Parts(String,String)`] | class + title (has GS, == `WT`) |
+/// | `match = "alacritty"`                  | `Pattern::Single(String)`  | class only (no GS)            |
+/// | `match = ["*chrome*", "*youtube*"]`    | `Pattern::Parts(String,String)` | class + title (has GS, == `WT`) |
 ///
 /// `WT("Firefox", "*youtube*")` thus corresponds to `match = ["Firefox", "*youtube*"]`.
 ///
@@ -1140,12 +1140,12 @@ pub enum Pattern {
 ///
 /// | firmware case | pattern GS? | msg GS? | `Pattern`     | Rust action                                              |
 /// | ------------- | ----------- | ------- | ------------- | -------------------------------------------------------- |
-/// | A1 / A2       | no          | any     | [`Single`]    | `pattern_match(p, app_class, cs)` (title NOT consulted)  |
-/// | B1 / B2       | yes         | any     | [`Parts`]     | `pattern_match(c, app_class, cs) && pattern_match(t, title, cs)` |
+/// | A1 / A2       | no          | any     | `Single`      | `pattern_match(p, app_class, cs)` (title NOT consulted)  |
+/// | B1 / B2       | yes         | any     | `Parts`       | `pattern_match(c, app_class, cs) && pattern_match(t, title, cs)` |
 ///
 /// The firmware `B1` branch ("pattern has GS, message has no GS → match only
 /// the left half") is **withdrawn** by the item spec: on the host we always know
-/// both halves, so [`Parts`] always evaluates `t` against `title`.
+/// both halves, so `Parts` always evaluates `t` against `title`.
 ///
 /// # Design note (REFINEMENT G)
 ///

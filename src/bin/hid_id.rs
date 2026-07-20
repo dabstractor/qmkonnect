@@ -2,7 +2,7 @@
 //!
 //! Invoked by the static udev rule (`69-qmkonnect-rawhid.rules`) as
 //!   qmkonnect-hid-id %S%p
-//! i.e. with the hidraw syspath as argv[1]. It reads that interface's raw HID
+//! i.e. with the hidraw syspath as argv\[1\]. It reads that interface's raw HID
 //! report descriptor and, if it carries the QMK Raw HID signature (usage page
 //! 0xFF60, usage 0x61), prints `ID_QMKONNECT=1` so the rule can grant
 //! permissions uniformly to every such keyboard — no per-VID/PID config, no
@@ -51,7 +51,7 @@ fn run() -> i32 {
     0
 }
 
-/// Resolve the hidraw syspath to inspect: argv[1] if given, else `$DEVPATH`
+/// Resolve the hidraw syspath to inspect: argv\[1\] if given, else `$DEVPATH`
 /// prefixed with `/sys` (how udev supplies the path absent the explicit arg).
 fn resolve_syspath() -> Option<PathBuf> {
     let mut args = env::args_os();

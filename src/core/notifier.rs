@@ -345,6 +345,25 @@ pub fn perform_handshake(verbose: bool) {
                 );
             }
         }
+        // LOW-1: a `Timeout` means the firmware never confirmed receipt of
+        // QUERY_INFO (no reply at all — flaky USB, host busy, or a TOCTOU
+        // unplug mid-send). Re-querying on the next poll/reconnect is safe and
+        // desirable, so release the dedup token. This is distinct from a
+        // genuine legacy `Info` reply (proto_ver != 2 / no feature bit), where
+        // the firmware *did* set `has_been_queried` and the token must stay
+        // consumed (R6 mid-session-reconnect side effect).
+        Ok(qmk_notifier::CommandResponse::Timeout) => {
+            drop(n);
+            HOST_CAPABLE.store(false, Ordering::SeqCst);
+            CALLBACK_NAMES.lock().unwrap().clear();
+            HAS_HANDSHAKED.store(false, Ordering::SeqCst); // transient — allow retry
+            if verbose {
+                eprintln!(
+                    "[{}ms] perform_handshake: query timed out (transient) — string-only mode, will retry on reconnect",
+                    crate::core::now_ms()
+                );
+            }
+        }
         Ok(other) => {
             drop(n);
             HOST_CAPABLE.store(false, Ordering::SeqCst);
@@ -361,9 +380,13 @@ pub fn perform_handshake(verbose: bool) {
             drop(n);
             HOST_CAPABLE.store(false, Ordering::SeqCst);
             CALLBACK_NAMES.lock().unwrap().clear();
+            // LOW-1: a device error means QUERY_INFO never landed on the
+            // firmware — release the dedup token so the next poll/reconnect
+            // retries the handshake against the capable board.
+            HAS_HANDSHAKED.store(false, Ordering::SeqCst);
             if verbose {
                 eprintln!(
-                    "[{}ms] perform_handshake: device error ({}) — string-only mode",
+                    "[{}ms] perform_handshake: device error ({}) — string-only mode, will retry on reconnect",
                     crate::core::now_ms(),
                     e
                 );
@@ -471,7 +494,7 @@ pub fn reset_handshake_state() {
 ///
 /// Computed by [`handshake_action`] from the previous and current
 /// [`is_device_connected`] results, and consumed by the device-status poll
-/// threads ([`crate::tray`] on macOS/Windows, [`crate::linux_tray`] on Linux) and
+/// threads (`tray` on macOS/Windows, `linux_tray` on Linux) and
 /// the startup path so the three call sites stay in lockstep.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HandshakeAction {
@@ -847,7 +870,7 @@ fn host_context_for_window(
 
 /// The end-to-end per-window send (HOST_RULES.md §8(4)).
 ///
-/// Branches on the optional host [`HostContext`]:
+/// Branches on the optional host [`crate::core::rules::HostContext`]:
 /// - `None` (host rules disabled) → legacy string only.
 /// - stack (`any_match && !clear_board`) → string first, then context.
 /// - replace (`any_match && clear_board`) → context only (no string).
@@ -937,7 +960,7 @@ fn send_legacy_string(
     res
 }
 
-/// Send a typed host-context [`RunCommand`] with `SendMessage`-style retry/cache
+/// Send a typed host-context [`qmk_notifier::RunCommand`] with `SendMessage`-style retry/cache
 /// parity (PRD §5.4): up to 3 attempts for device errors, then swallowed.
 /// Host-context failures never fail the overall window send (the legacy string,
 /// if any, already went out).
@@ -983,7 +1006,7 @@ fn send_host_context(
     }
 }
 
-/// Build the `ApplyHostContext` command for a matched [`HostContext`] (stack or
+/// Build the `ApplyHostContext` command for a matched [`crate::core::rules::HostContext`] (stack or
 /// replace). `clear_board` carries the stack-vs-replace decision.
 fn host_context_command(ctx: &crate::core::rules::HostContext) -> qmk_notifier::RunCommand {
     qmk_notifier::RunCommand::ApplyHostContext {
@@ -1008,12 +1031,18 @@ mod tests {
         Lazy::new(|| StdMutex::new(Vec::new()));
     static MOCK_RESPONSES: Lazy<StdMutex<VecDeque<qmk_notifier::CommandResponse>>> =
         Lazy::new(|| StdMutex::new(VecDeque::new()));
+    // LOW-1: error injection for testing the transient-failure retry path. When
+    // non-empty, `send_command` drains one entry per call and returns `Err`
+    // (instead of consulting MOCK_RESPONSES).
+    static MOCK_SEND_COMMAND_ERRORS: Lazy<StdMutex<VecDeque<String>>> =
+        Lazy::new(|| StdMutex::new(VecDeque::new()));
 
     fn reset_global_mock() {
         MOCK_CALL_COUNT.store(0, Ordering::SeqCst);
         *MOCK_LAST_MESSAGE.lock().unwrap() = None;
         MOCK_SEND_COMMAND_CALLS.lock().unwrap().clear();
         MOCK_RESPONSES.lock().unwrap().clear();
+        MOCK_SEND_COMMAND_ERRORS.lock().unwrap().clear();
     }
 
     struct MockNotifier;
@@ -1039,6 +1068,10 @@ mod tests {
         fn set_mock_responses(responses: Vec<qmk_notifier::CommandResponse>) {
             MOCK_RESPONSES.lock().unwrap().extend(responses);
         }
+
+        fn set_mock_send_errors(errors: Vec<String>) {
+            MOCK_SEND_COMMAND_ERRORS.lock().unwrap().extend(errors);
+        }
     }
 
     impl Notifier for MockNotifier {
@@ -1059,6 +1092,10 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push(command.clone());
+            // LOW-1: if an error is queued, return it (drains one per call).
+            if let Some(msg) = MOCK_SEND_COMMAND_ERRORS.lock().unwrap().pop_front() {
+                return Err(msg.into());
+            }
             let resp = MOCK_RESPONSES.lock().unwrap().pop_front();
             Ok(resp.unwrap_or(qmk_notifier::CommandResponse::Ack { ok: true }))
         }
@@ -1551,6 +1588,98 @@ mod tests {
         perform_handshake(false);
         assert!(!host_capable());
         assert_eq!(MockNotifier::get_send_command_calls().len(), 1);
+    }
+
+    /// LOW-1: a `Timeout` is a transient failure (the firmware never confirmed
+    /// receipt of QUERY_INFO), so the dedup token must be released — the next
+    /// poll/reconnect retries the handshake. Without this, a one-time flaky
+    /// QUERY_INFO against a capable board would disable host rules until a
+    /// physical replug.
+    #[test]
+    fn test_handshake_timeout_releases_dedup_token() {
+        reset_test_state();
+        reset_handshake_state();
+        set_notifier(Box::new(MockNotifier::new()));
+        // First attempt: timeout (transient).
+        MockNotifier::set_mock_responses(vec![qmk_notifier::CommandResponse::Timeout]);
+        perform_handshake(false);
+        assert!(!host_capable());
+        assert_eq!(MockNotifier::get_send_command_calls().len(), 1);
+
+        // The token was released, so a second perform_handshake (e.g. the next
+        // poll tick after the transient cleared) re-sends QUERY_INFO and this
+        // time the board answers capable.
+        MockNotifier::set_mock_responses(vec![
+            qmk_notifier::CommandResponse::Info {
+                proto_ver: 2,
+                feature_flags: 0x01,
+                callback_count: 0,
+                board_rules_present: false,
+            },
+            qmk_notifier::CommandResponse::Ack { ok: true },
+        ]);
+        perform_handshake(false);
+        assert!(host_capable());
+        // A retry actually happened: more than the single QUERY_INFO above.
+        assert!(MockNotifier::get_send_command_calls().len() > 1);
+    }
+
+    /// LOW-1: a device error on the first QUERY_INFO (TOCTOU unplug mid-send,
+    // permission flap) is likewise transient — the token is released so the
+    // handshake retries on the next reconnect.
+    #[test]
+    fn test_handshake_device_error_releases_dedup_token() {
+        reset_test_state();
+        reset_handshake_state();
+        set_notifier(Box::new(MockNotifier::new()));
+        // First attempt: device error (e.g. failed to open).
+        MockNotifier::set_mock_send_errors(vec!["failed to open device".to_string()]);
+        perform_handshake(false);
+        assert!(!host_capable());
+        assert_eq!(MockNotifier::get_send_command_calls().len(), 1);
+
+        // Token released -> a capable reply on retry re-enables host rules.
+        MockNotifier::set_mock_responses(vec![
+            qmk_notifier::CommandResponse::Info {
+                proto_ver: 2,
+                feature_flags: 0x01,
+                callback_count: 0,
+                board_rules_present: false,
+            },
+            qmk_notifier::CommandResponse::Ack { ok: true },
+        ]);
+        perform_handshake(false);
+        assert!(host_capable());
+        assert!(MockNotifier::get_send_command_calls().len() > 1);
+    }
+
+    /// LOW-1 negative control: a genuine *legacy* reply (proto_ver != 2) is NOT
+    /// transient — the firmware DID set `has_been_queried`, so the token must
+    /// STAY consumed (re-querying risks the R6 mid-session-reconnect side
+    /// effect). Only Timeout/Err are treated as retryable.
+    #[test]
+    fn test_handshake_legacy_reply_keeps_dedup_token() {
+        reset_test_state();
+        reset_handshake_state();
+        set_notifier(Box::new(MockNotifier::new()));
+        // proto_ver 1: genuine legacy reply, not a transient timeout.
+        MockNotifier::set_mock_responses(vec![qmk_notifier::CommandResponse::Info {
+            proto_ver: 1,
+            feature_flags: 0x00,
+            callback_count: 0,
+            board_rules_present: false,
+        }]);
+        perform_handshake(false);
+        assert!(!host_capable());
+        let after_first = MockNotifier::get_send_command_calls().len();
+
+        // Second call must short-circuit: legacy replies keep the token.
+        perform_handshake(false);
+        assert_eq!(
+            MockNotifier::get_send_command_calls().len(),
+            after_first,
+            "legacy reply must keep the dedup token consumed"
+        );
     }
 
     #[test]

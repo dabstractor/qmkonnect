@@ -11,7 +11,7 @@
 //! # Schema source of truth
 //!
 //! Every derive, attribute, field, default, and rename here is verbatim from
-//! [`spec/HOST_RULES.md`] §9. [`Pattern`] is imported (not redefined) from
+//! `spec/HOST_RULES.md` §9. [`Pattern`] is imported (not redefined) from
 //! [`crate::core::pattern`] (P2.M1.T3.S2).
 
 // These structs are the data model for the host-rules system. They are exercised
@@ -197,7 +197,7 @@ fn effective_disable_firmware_config(rule_override: Option<bool>, host_default: 
 
 /// Read and deserialize a `rules.toml` file into a [`RuleSet`].
 ///
-/// This is the host-side-rules counterpart to [`crate::parse_config`]: it reads
+/// This is the host-side-rules counterpart to [`crate::core::parse_config`]: it reads
 /// the file at `path` (via [`fs::read_to_string`]) and deserializes it with
 /// [`toml::from_str`]. A missing/unreadable file yields an [`io::Error`](std::io::Error);
 /// malformed TOML, or a `[[layer_rules]]`/`[[callback_rules]]` table missing the
@@ -230,7 +230,7 @@ pub fn parse_rules(path: &Path) -> Result<RuleSet, Box<dyn Error>> {
 /// `rules.toml` lives **alongside `config.toml`** (HOST_RULES.md §8): same
 /// directory, swapped filename. This function derives the list by delegating to
 /// [`crate::platforms::get_config_paths`] and swapping each entry's final
-/// filename component to `rules.toml` (via [`PathBuf::with_file_name`]).
+/// filename component to `rules.toml` (via [`std::path::Path::with_file_name`]).
 ///
 /// On Linux this is `$XDG_CONFIG_HOME/qmkonnect/rules.toml`,
 /// `~/.config/qmkonnect/rules.toml`, `/etc/qmkonnect/rules.toml`; on
@@ -296,7 +296,7 @@ pub struct HostContext {
 ///
 /// **No match** (no layer rule and no callback rule matched) short-circuits to
 /// `{ layer: None, callback_ids: vec![], clear_board: <[host].disable_firmware_config>, any_match: false }`
-/// — the `clear_board` bit carries the global default (HOST_RULES.md §8(4) "<per flag>").
+/// — the `clear_board` bit carries the global default (HOST_RULES.md §8(4) "&lt;per flag&gt;").
 ///
 /// This function is **pure** — no IO, no logging, no global state.
 ///

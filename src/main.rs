@@ -312,7 +312,6 @@ fn validate_rules(rules_path: Option<PathBuf>, verbose: bool) -> Result<(), Box<
     let path = match rules_path {
         Some(p) => {
             if !p.exists() {
-                eprintln!("rules file not found: {}", p.display());
                 return Err(format!("rules file not found: {}", p.display()).into());
             }
             p
@@ -336,8 +335,7 @@ fn validate_rules(rules_path: Option<PathBuf>, verbose: bool) -> Result<(), Box<
     let rs = match crate::core::rules::parse_rules(&path) {
         Ok(rs) => rs,
         Err(e) => {
-            eprintln!("rules.toml invalid: {e}");
-            return Err(e); // exit non-zero (D4/G6)
+            return Err(e); // exit non-zero (D4/G6); main's handler prints once
         }
     };
 
