@@ -330,6 +330,7 @@ pub fn perform_handshake(verbose: bool) {
             }
             validate_rules_callback_names(verbose);
             HOST_CAPABLE.store(true, Ordering::SeqCst);
+            BOARD_HAS_RULES.store(board_rules_present, Ordering::SeqCst);
             if verbose {
                 eprintln!(
                     "[{}ms] perform_handshake: complete — capable ({} callbacks mapped)",
@@ -455,6 +456,7 @@ pub fn callback_names() -> HashMap<String, u8> {
 /// tests for isolation.
 pub fn reset_handshake_state() {
     HOST_CAPABLE.store(false, Ordering::SeqCst);
+    BOARD_HAS_RULES.store(false, Ordering::SeqCst);
     CALLBACK_NAMES.lock().unwrap().clear();
     HAS_HANDSHAKED.store(false, Ordering::SeqCst);
 }
@@ -641,37 +643,20 @@ fn debounce_worker() {
         };
 
         if let Some((pm, verbose)) = to_send {
-            // `pm` carries the formatted payload (sent below) AND the originating
-            // WindowInfo. P4.M3.T1.S1 consumes `pm.window_info` here to evaluate
-            // rules.toml and emit APPLY_HOST_CONTEXT alongside the string send.
-            let message = pm.payload; // partial move -> String; pm.window_info remains for P4.M3.T1.S1
-
-            if verbose {
-                let sanitized = message.replace('\x1D', "|");
-                println!(
-                    "[{}ms] Notified QMK (debounced): {}",
-                    crate::core::now_ms(),
-                    sanitized
-                );
-            }
-
-            #[cfg(test)]
-            println!("Sending debounced notification: {}", message);
-
+            // Host-rules send (P4.M3.T1.S1 / HOST_RULES.md §8(4)): evaluate
+            // rules.toml against this window and, when host-capable, emit
+            // ApplyHostContext alongside (stack) or instead of (replace/no-match)
+            // the legacy string. Legacy string bytes + cadence are unchanged.
+            let PendingMessage {
+                payload: message,
+                window_info,
+            } = pm;
+            let filter = configured_filter();
+            let ctx = host_context_for_window(&window_info, verbose);
             let notifier = get_notifier();
             let notifier = notifier.lock().unwrap();
-            let _len = message.len();
-            let _t0 = Instant::now();
-            let _res = notifier.notify(message);
-            let _send_ms = _t0.elapsed().as_millis();
-            if verbose {
-                eprintln!(
-                    "[{}ms] send took {}ms ({} bytes)",
-                    crate::core::now_ms(),
-                    _send_ms,
-                    _len
-                );
-            }
+            let _res =
+                dispatch_window_send(&**notifier, &filter, &message, ctx, "debounced", verbose);
             if let Err(e) = _res {
                 eprintln!("Error sending debounced notification: {}", e);
             }
@@ -732,32 +717,14 @@ pub fn notify_qmk(
     };
 
     if send_immediately {
-        if verbose {
-            let sanitized = message.replace('\x1D', "|");
-            println!(
-                "[{}ms] Notified QMK (immediate): {}",
-                crate::core::now_ms(),
-                sanitized
-            );
-        }
-
-        #[cfg(test)]
-        println!("Sending notification immediately: {}", message);
-
+        // Routes through dispatch_window_send (HOST_RULES.md §8(4)); the string
+        // result is propagated via `?` (preserved from the pre-host-rules path).
+        let filter = configured_filter();
+        let ctx = host_context_for_window(window_info, verbose);
         let notifier = get_notifier();
         let notifier = notifier.lock().unwrap();
-        let _len = message.len();
-        let _t0 = Instant::now();
-        let _res = notifier.notify(message);
-        let _send_ms = _t0.elapsed().as_millis();
-        if verbose {
-            eprintln!(
-                "[{}ms] send took {}ms ({} bytes)",
-                crate::core::now_ms(),
-                _send_ms,
-                _len
-            );
-        }
+        let _res =
+            dispatch_window_send(&**notifier, &filter, &message, ctx, "immediate", verbose);
         _res?;
     } else if verbose {
         let sanitized = message.replace('\x1D', "|");
@@ -769,6 +736,236 @@ pub fn notify_qmk(
     }
 
     Ok(())
+}
+
+// ============================================================================
+// Host-context send pipeline (P4.M3.T1.S1 / HOST_RULES.md §8(4))
+// ============================================================================
+// When the connected board is host-capable (proto v2 + feature bit) AND a
+// `rules.toml` is present, evaluate it against each window change and emit
+// `ApplyHostContext` alongside (stack) or instead of (replace/no-match) the
+// legacy `SendMessage` string. When host rules are disabled (legacy board, no
+// `rules.toml`, or a malformed file) the legacy string-only path runs
+// bit-for-bit as before. Both send blocks (the debounce worker flush and
+// `notify_qmk`'s immediate path) route through [`dispatch_window_send`].
+
+/// Does the connected keyboard's keymap declare board rules? Populated by
+/// [`perform_handshake`] (the firmware's `board_rules_present` bit) alongside
+/// [`HOST_CAPABLE`]; read by [`host_context_for_window`] to pass into
+/// [`crate::core::rules::evaluate`] so the stack-vs-replace decision knows
+/// whether the board would run its own rules for the string. `false` until a
+/// capable handshake sets it, and on legacy/offline boards (where host rules
+/// are disabled anyway).
+static BOARD_HAS_RULES: AtomicBool = AtomicBool::new(false);
+
+/// Read [`BOARD_HAS_RULES`]. Only consulted when [`host_capable`] is `true`
+/// (the send gate), so a stale value on a non-capable board is never read.
+pub fn board_has_rules() -> bool {
+    BOARD_HAS_RULES.load(Ordering::SeqCst)
+}
+
+/// Evaluate `rules.toml` against one window, or `None` when host rules are
+/// disabled (not host-capable, no `rules.toml` present, or a malformed file).
+///
+/// Returning `None` signals [`dispatch_window_send`] to send the legacy string
+/// only — identical to the pre-host-rules behavior (HOST_RULES.md §8(8)).
+///
+/// # Example
+///
+/// ```rust,ignore
+/// let ctx = host_context_for_window(&window_info, verbose);
+/// match ctx {
+///     None => { /* legacy string-only path */ }
+///     Some(c) => { /* stack / replace / no-match per c.any_match & c.clear_board */ }
+/// }
+/// ```
+fn host_context_for_window(
+    window_info: &WindowInfo,
+    verbose: bool,
+) -> Option<crate::core::rules::HostContext> {
+    if !host_capable() {
+        return None; // legacy/offline -> string-only (today's behavior)
+    }
+    let path = crate::core::rules::get_rules_paths()
+        .into_iter()
+        .find(|p| p.exists())?; // no rules.toml -> None -> string-only
+    let rules = match crate::core::rules::parse_rules(&path) {
+        Ok(r) => r,
+        Err(e) => {
+            if verbose {
+                eprintln!(
+                    "Warning: could not parse {}: {} — host rules disabled for this window",
+                    path.display(),
+                    e
+                );
+            }
+            return None; // malformed -> graceful string-only fallback
+        }
+    };
+    let names = callback_names();
+    Some(crate::core::rules::evaluate(
+        &rules,
+        &window_info.app_class,
+        &window_info.title,
+        &names,
+        board_has_rules(),
+    ))
+}
+
+/// The end-to-end per-window send (HOST_RULES.md §8(4)).
+///
+/// Branches on the optional host [`HostContext`]:
+/// - `None` (host rules disabled) → legacy string only.
+/// - stack (`any_match && !clear_board`) → string first, then context.
+/// - replace (`any_match && clear_board`) → context only (no string).
+/// - no-match (`!any_match`) → clear-host context only (no string).
+///
+/// Returns the legacy-string send `Result` so each call site keeps its own
+/// error-propagation policy (the worker swallows; `notify_qmk` propagates via
+/// `?`). The host-context send swallows its own errors (§5.4 retry parity) so
+/// it never changes the string-result propagation.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// let notifier = get_notifier();
+/// let notifier = notifier.lock().unwrap();
+/// let _res = dispatch_window_send(&**notifier, &filter, &message, ctx, "debounced", verbose);
+/// ```
+fn dispatch_window_send(
+    notifier: &dyn Notifier,
+    filter: &DeviceFilter,
+    message: &str,
+    ctx: Option<crate::core::rules::HostContext>,
+    label: &str,
+    verbose: bool,
+) -> Result<(), Box<dyn Error + Send + Sync>> {
+    match ctx {
+        // Host rules disabled (not capable / no rules.toml / malformed): legacy string only.
+        None => send_legacy_string(notifier, message, label, verbose),
+
+        // Stack: board runs (>=1 non-disabling matched rule). String first, then context.
+        Some(ctx) if ctx.any_match && !ctx.clear_board => {
+            let r = send_legacy_string(notifier, message, label, verbose);
+            send_host_context(notifier, filter, host_context_command(&ctx), verbose);
+            r
+        }
+
+        // Replace: all matched rules disabling, or board has no rules. Context only.
+        Some(ctx) if ctx.any_match => {
+            send_host_context(notifier, filter, host_context_command(&ctx), verbose);
+            Ok(())
+        }
+
+        // No match: clear host layer + disable all callbacks. No string.
+        Some(_) => {
+            send_host_context(notifier, filter, clear_host_context_command(), verbose);
+            Ok(())
+        }
+    }
+}
+
+/// Send the legacy `SendMessage` string with the exact pre-host-rules verbose
+/// log + timing (the `label` is "debounced" or "immediate"). The bytes passed
+/// to [`Notifier::notify`] are identical to the pre-host-rules code path —
+/// `notify` takes an owned `String`, so `.to_string()` does not change bytes.
+fn send_legacy_string(
+    notifier: &dyn Notifier,
+    message: &str,
+    label: &str,
+    verbose: bool,
+) -> Result<(), Box<dyn Error + Send + Sync>> {
+    if verbose {
+        let sanitized = message.replace('\x1D', "|");
+        println!(
+            "[{}ms] Notified QMK ({}): {}",
+            crate::core::now_ms(),
+            label,
+            sanitized
+        );
+    }
+    #[cfg(test)]
+    println!("Sending {} notification: {}", label, message);
+
+    let _len = message.len();
+    let _t0 = Instant::now();
+    let res = notifier.notify(message.to_string());
+    let _send_ms = _t0.elapsed().as_millis();
+    if verbose {
+        eprintln!(
+            "[{}ms] send took {}ms ({} bytes)",
+            crate::core::now_ms(),
+            _send_ms,
+            _len
+        );
+    }
+    res
+}
+
+/// Send a typed host-context [`RunCommand`] with `SendMessage`-style retry/cache
+/// parity (PRD §5.4): up to 3 attempts for device errors, then swallowed.
+/// Host-context failures never fail the overall window send (the legacy string,
+/// if any, already went out).
+fn send_host_context(
+    notifier: &dyn Notifier,
+    filter: &DeviceFilter,
+    command: qmk_notifier::RunCommand,
+    verbose: bool,
+) {
+    for attempt in 1..=3 {
+        match notifier.send_command(command.clone(), filter) {
+            Ok(_) => {
+                if verbose {
+                    eprintln!(
+                        "[{}ms] sent host context (attempt {}): {:?}",
+                        crate::core::now_ms(),
+                        attempt,
+                        command
+                    );
+                }
+                return;
+            }
+            Err(e) => {
+                let s = e.to_string().to_lowercase();
+                if s.contains("no device found")
+                    || s.contains("permission denied")
+                    || s.contains("failed to open")
+                {
+                    if attempt < 3 {
+                        thread::sleep(Duration::from_millis(100 * attempt as u64));
+                        continue;
+                    }
+                    eprintln!(
+                        "QMK device unavailable after {} attempts sending host context: {}",
+                        attempt, e
+                    );
+                    return; // swallowed (parity with notify's device-error swallow)
+                }
+                eprintln!("Error sending host context: {}", e);
+                return; // non-device error: log + swallow (don't fail the window send)
+            }
+        }
+    }
+}
+
+/// Build the `ApplyHostContext` command for a matched [`HostContext`] (stack or
+/// replace). `clear_board` carries the stack-vs-replace decision.
+fn host_context_command(ctx: &crate::core::rules::HostContext) -> qmk_notifier::RunCommand {
+    qmk_notifier::RunCommand::ApplyHostContext {
+        layer: ctx.layer,
+        callbacks: ctx.callback_ids.clone(),
+        clear_board: ctx.clear_board,
+    }
+}
+
+/// Build the no-match `ApplyHostContext` command: always clear the host layer
+/// (`None` / 0xFF) + disable all host callbacks. Per §8(4) no-match contract.
+fn clear_host_context_command() -> qmk_notifier::RunCommand {
+    qmk_notifier::RunCommand::ApplyHostContext {
+        layer: None,
+        callbacks: vec![],
+        clear_board: false,
+    }
 }
 
 #[cfg(test)]
@@ -1412,5 +1609,218 @@ disable = ["known_b", "phantom"]
         assert_eq!(handshake_action(Some(true), false), HandshakeAction::Loss);
         assert_eq!(handshake_action(Some(true), true), HandshakeAction::None);
         assert_eq!(handshake_action(Some(false), false), HandshakeAction::None);
+    }
+
+    // ========================================================================
+    // Host-context send pipeline (P4.M3.T1.S1 / HOST_RULES.md §8(4))
+    // ========================================================================
+    // The send ORCHESTRATION is tested by injecting `ctx: Option<HostContext>`
+    // directly into `dispatch_window_send` — no rules.toml file control needed
+    // (the gate IO is covered separately; evaluate() correctness is P3.M1.T2.S1's
+    // job, already green). The mock records `notify` -> MOCK_CALL_COUNT/
+    // MOCK_LAST_MESSAGE and `send_command` -> MOCK_SEND_COMMAND_CALLS in separate
+    // channels, so the string-before-context ORDER is structurally guaranteed by
+    // the source order in dispatch_window_send's stack arm (send_legacy_string
+    // precedes send_host_context) and asserted here via counts + command shape.
+
+    /// Helper: build a default test DeviceFilter (the mock ignores it).
+    fn test_filter() -> DeviceFilter {
+        DeviceFilter {
+            vendor_id: Some(0x1234),
+            product_id: Some(0x5678),
+            usage_page: 0xFF60,
+            usage: 0x61,
+        }
+    }
+
+    #[test]
+    fn test_dispatch_legacy_string_only_when_no_host_context() {
+        // ctx=None (host rules disabled) -> legacy string ONLY, no typed command.
+        reset_test_state();
+        reset_handshake_state();
+        set_notifier(Box::new(MockNotifier::new()));
+
+        let f = test_filter();
+        let message = "App\x1DTitle";
+        {
+            let notifier = get_notifier();
+            let n = notifier.lock().unwrap();
+            let _res =
+                dispatch_window_send(&**n, &f, message, None, "debounced", false);
+            assert!(_res.is_ok());
+        }
+
+        assert_eq!(MockNotifier::get_call_count(), 1);
+        assert_eq!(MockNotifier::get_last_message().as_deref(), Some("App\x1DTitle"));
+        assert!(MockNotifier::get_send_command_calls().is_empty());
+    }
+
+    #[test]
+    fn test_dispatch_stack_sends_string_then_context() {
+        // Stack (any_match && !clear_board): string FIRST then context (clear:false).
+        reset_test_state();
+        reset_handshake_state();
+        set_notifier(Box::new(MockNotifier::new()));
+
+        use crate::core::rules::HostContext;
+        let ctx = HostContext {
+            layer: Some(224),
+            callback_ids: vec![0, 1],
+            clear_board: false,
+            any_match: true,
+        };
+        let f = test_filter();
+        let message = "App\x1DTitle";
+        {
+            let notifier = get_notifier();
+            let n = notifier.lock().unwrap();
+            let _res = dispatch_window_send(
+                &**n,
+                &f,
+                message,
+                Some(ctx),
+                "immediate",
+                false,
+            );
+            assert!(_res.is_ok());
+        }
+
+        // String sent (count 1) + one ApplyHostContext{layer:Some(224),clear:false}.
+        assert_eq!(MockNotifier::get_call_count(), 1);
+        assert_eq!(MockNotifier::get_last_message().as_deref(), Some("App\x1DTitle"));
+        let calls = MockNotifier::get_send_command_calls();
+        assert_eq!(calls.len(), 1);
+        assert!(matches!(
+            calls[0],
+            qmk_notifier::RunCommand::ApplyHostContext {
+                layer: Some(224),
+                callbacks: _,
+                clear_board: false,
+            }
+        ));
+    }
+
+    #[test]
+    fn test_dispatch_replace_sends_context_only() {
+        // Replace (any_match && clear_board): context ONLY (clear:true), NO string.
+        reset_test_state();
+        reset_handshake_state();
+        set_notifier(Box::new(MockNotifier::new()));
+
+        use crate::core::rules::HostContext;
+        let ctx = HostContext {
+            layer: Some(225),
+            callback_ids: vec![2],
+            clear_board: true,
+            any_match: true,
+        };
+        let f = test_filter();
+        let message = "App\x1DTitle";
+        {
+            let notifier = get_notifier();
+            let n = notifier.lock().unwrap();
+            let _res = dispatch_window_send(
+                &**n,
+                &f,
+                message,
+                Some(ctx),
+                "debounced",
+                false,
+            );
+            assert!(_res.is_ok());
+        }
+
+        // NO string sent (count 0); one ApplyHostContext{...,clear:true}.
+        assert_eq!(MockNotifier::get_call_count(), 0);
+        let calls = MockNotifier::get_send_command_calls();
+        assert_eq!(calls.len(), 1);
+        assert!(matches!(
+            calls[0],
+            qmk_notifier::RunCommand::ApplyHostContext {
+                layer: Some(225),
+                clear_board: true,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn test_dispatch_no_match_sends_clear_context() {
+        // No match (!any_match): clear-host context ONLY (layer:None), NO string.
+        reset_test_state();
+        reset_handshake_state();
+        set_notifier(Box::new(MockNotifier::new()));
+
+        use crate::core::rules::HostContext;
+        let ctx = HostContext {
+            layer: None,
+            callback_ids: vec![],
+            clear_board: false,
+            any_match: false,
+        };
+        let f = test_filter();
+        let message = "App\x1DTitle";
+        {
+            let notifier = get_notifier();
+            let n = notifier.lock().unwrap();
+            let _res = dispatch_window_send(
+                &**n,
+                &f,
+                message,
+                Some(ctx),
+                "immediate",
+                false,
+            );
+            assert!(_res.is_ok());
+        }
+
+        // NO string sent (count 0); one ApplyHostContext{layer:None,clear:false}.
+        assert_eq!(MockNotifier::get_call_count(), 0);
+        let calls = MockNotifier::get_send_command_calls();
+        assert_eq!(calls.len(), 1);
+        assert!(matches!(
+            calls[0],
+            qmk_notifier::RunCommand::ApplyHostContext {
+                layer: None,
+                callbacks: _,
+                clear_board: false,
+            }
+        ));
+    }
+
+    #[test]
+    fn test_host_context_for_window_none_when_not_capable() {
+        // The gate: when not host-capable, host_context_for_window returns None
+        // (regardless of rules.toml) -> caller sends the legacy string only.
+        reset_test_state();
+        reset_handshake_state();
+        set_notifier(Box::new(MockNotifier::new()));
+
+        assert!(!host_capable()); // sanity: reset cleared the capability bit
+        let window_info = WindowInfo::new("TestApp".to_string(), "Title".to_string());
+        assert!(host_context_for_window(&window_info, false).is_none());
+    }
+
+    #[test]
+    fn test_notify_qmk_legacy_string_when_not_capable() {
+        // Full notify_qmk path on a legacy board: host rules disabled -> the
+        // legacy string is sent exactly once (first message is immediate) and
+        // no typed ApplyHostContext command is emitted.
+        reset_test_state();
+        reset_handshake_state();
+        set_notifier(Box::new(MockNotifier::new()));
+
+        assert!(!host_capable());
+        let window_info = WindowInfo::new("TestApp".to_string(), "Test Title".to_string());
+        let result = notify_qmk(&window_info, false);
+        assert!(result.is_ok());
+
+        assert!(wait_for_count(1, Duration::from_secs(2)));
+        assert_eq!(MockNotifier::get_call_count(), 1);
+        assert_eq!(
+            MockNotifier::get_last_message().as_deref(),
+            Some("TestApp\x1DTest Title")
+        );
+        assert!(MockNotifier::get_send_command_calls().is_empty());
     }
 }

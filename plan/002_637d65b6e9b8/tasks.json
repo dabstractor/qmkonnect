@@ -522,7 +522,7 @@
       "type": "Phase",
       "id": "P4",
       "title": "QMKonnect Pipeline Integration",
-      "status": "Ready",
+      "status": "Complete",
       "description": "Integrate the pattern matcher (P2) and rules system (P3) into the notification pipeline: extend the Notifier trait, pin the new crate version, implement the startup capability handshake + SET_OS, and extend notify_qmk() to evaluate rules and send APPLY_HOST_CONTEXT. This is the core integration work that makes host-side rules functional.",
       "milestones": [
         {
@@ -655,21 +655,21 @@
           "type": "Milestone",
           "id": "P4.M3",
           "title": "notify_qmk Host-Context Send Logic",
-          "status": "Ready",
+          "status": "Complete",
           "description": "Extend the debounce worker's send step to evaluate rules and send APPLY_HOST_CONTEXT in stack or replace mode, or clear on no-match. This is the core per-window-changes send logic.",
           "tasks": [
             {
               "type": "Task",
               "id": "P4.M3.T1",
               "title": "Host-Context Send Logic (stack, replace, no-match clear)",
-              "status": "Ready",
+              "status": "Complete",
               "description": "After the debounced string send, evaluate rules and send the appropriate APPLY_HOST_CONTEXT command, or clear on no-match.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P4.M3.T1.S1",
                   "title": "Implement host-context evaluation and send in debounce worker",
-                  "status": "Ready",
+                  "status": "Complete",
                   "story_points": 2,
                   "dependencies": [
                     "P4.M1.T2.S2",
@@ -700,21 +700,21 @@
           "type": "Milestone",
           "id": "P5.M1",
           "title": "CLI Flags (--list-callbacks, --validate-rules, --rules-path)",
-          "status": "Planned",
+          "status": "Researching",
           "description": "Add the new CLI subcommands for host-rules diagnostics and validation.",
           "tasks": [
             {
               "type": "Task",
               "id": "P5.M1.T1",
               "title": "Implement --list-callbacks, --validate-rules, --rules-path CLI flags",
-              "status": "Planned",
+              "status": "Researching",
               "description": "Add the new CLI flags to the hand-rolled CLI scanner in src/main.rs.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P5.M1.T1.S1",
                   "title": "Add --list-callbacks and --validate-rules dispatch in main.rs",
-                  "status": "Planned",
+                  "status": "Researching",
                   "story_points": 2,
                   "dependencies": [
                     "P4.M2.T1.S1",
