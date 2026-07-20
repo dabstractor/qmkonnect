@@ -529,7 +529,7 @@
           "type": "Milestone",
           "id": "P4.M1",
           "title": "Notifier Trait Extension & Crate Dependency Pin",
-          "status": "Researching",
+          "status": "Complete",
           "description": "Extend the Notifier trait to support typed commands, implement QmkNotifier's typed methods, pin qmk_notifier v0.3.0 in Cargo.toml, and update the DebounceState to carry WindowInfo.",
           "tasks": [
             {
@@ -561,7 +561,7 @@
               "type": "Task",
               "id": "P4.M1.T2",
               "title": "Pin qmk_notifier v0.3.0 and Extend DebounceState",
-              "status": "Researching",
+              "status": "Complete",
               "description": "Update Cargo.toml to pin the new crate tag, extend DebounceState to carry WindowInfo, and update the debounce worker.",
               "subtasks": [
                 {
@@ -583,7 +583,7 @@
                   "type": "Subtask",
                   "id": "P4.M1.T2.S2",
                   "title": "Extend DebounceState to carry WindowInfo for host-context evaluation",
-                  "status": "Researching",
+                  "status": "Complete",
                   "story_points": 2,
                   "dependencies": [
                     "P4.M1.T2.S1"
@@ -617,7 +617,7 @@
                   "type": "Subtask",
                   "id": "P4.M2.T1.S1",
                   "title": "Implement handshake function and global capability state",
-                  "status": "Planned",
+                  "status": "Researching",
                   "story_points": 2,
                   "dependencies": [
                     "P4.M1.T1.S1",

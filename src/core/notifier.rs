@@ -249,13 +249,23 @@ impl Notifier for QmkNotifier {
 static NOTIFIER: Lazy<Arc<Mutex<Box<dyn Notifier>>>> =
     Lazy::new(|| Arc::new(Mutex::new(Box::new(QmkNotifier) as Box<dyn Notifier>)));
 
+// A debounced window-change message awaiting its flush: the formatted string
+// payload (sent as the legacy `notify` string) together with the originating
+// [`WindowInfo`]. The window is carried so the host-side-rules send
+// (P4.M3.T1.S1) can evaluate `rules.toml` and emit `APPLY_HOST_CONTEXT` at
+// flush time — without it the worker would only know the `\x1D`-joined blob.
+struct PendingMessage {
+    payload: String,
+    window_info: WindowInfo,
+}
+
 // Debounce state. A single, long-lived worker thread (see WORKER) consumes
 // `pending` messages, replacing the former "spawn a thread per burst" scheme.
 struct DebounceState {
     /// `None` until the first notification has actually been sent.
     last_sent_time: Option<Instant>,
     /// Latest message queued for a debounced send.
-    pending: Option<String>,
+    pending: Option<PendingMessage>,
     verbose: bool,
     /// Debounce window; 0 disables coalescing (every change sends immediately).
     /// Loaded from config at init.
@@ -292,16 +302,16 @@ fn debounce_worker() {
             }
 
             // Wait out the debounce window relative to the last send.
-            let mut to_send: Option<(String, bool)> = None;
+            let mut to_send: Option<(PendingMessage, bool)> = None;
             while to_send.is_none() {
                 let last = state.last_sent_time.unwrap_or_else(Instant::now);
                 let target = last + state.interval;
                 let now = Instant::now();
                 if now >= target {
-                    let msg = state.pending.take().unwrap();
+                    let pm = state.pending.take().unwrap();
                     let verbose = state.verbose;
                     state.last_sent_time = Some(Instant::now());
-                    to_send = Some((msg, verbose));
+                    to_send = Some((pm, verbose));
                 } else {
                     state = COND.wait_timeout(state, target - now).unwrap().0;
                 }
@@ -309,7 +319,12 @@ fn debounce_worker() {
             to_send
         };
 
-        if let Some((message, verbose)) = to_send {
+        if let Some((pm, verbose)) = to_send {
+            // `pm` carries the formatted payload (sent below) AND the originating
+            // WindowInfo. P4.M3.T1.S1 consumes `pm.window_info` here to evaluate
+            // rules.toml and emit APPLY_HOST_CONTEXT alongside the string send.
+            let message = pm.payload; // partial move -> String; pm.window_info remains for P4.M3.T1.S1
+
             if verbose {
                 let sanitized = message.replace('\x1D', "|");
                 println!(
@@ -386,7 +401,10 @@ pub fn notify_qmk(
             state.pending = None;
             true
         } else {
-            state.pending = Some(message.clone());
+            state.pending = Some(PendingMessage {
+                payload: message.clone(),
+                window_info: window_info.clone(),
+            });
             COND.notify_one();
             false
         }
@@ -680,6 +698,42 @@ mod tests {
         let count = MockNotifier::get_call_count();
         println!("Final call count after threaded test: {}", count);
         assert!(count >= 1);
+    }
+
+    #[test]
+    fn test_debounced_pending_carries_window_info() {
+        reset_test_state();
+        set_notifier(Box::new(MockNotifier::new()));
+        // Long window: the worker will NOT flush while we inspect `pending`.
+        STATE.lock().unwrap().interval = Duration::from_secs(10);
+
+        // Prime last_sent_time with an immediate send (so the next call debounces).
+        let _ = notify_qmk(&WindowInfo::new("App1".into(), "Title1".into()), false);
+        assert!(wait_for_count(1, Duration::from_millis(500)));
+
+        // Second call inside the window -> queued as PendingMessage.
+        let w2 = WindowInfo::new("App2".into(), "Title2".into());
+        let _ = notify_qmk(&w2, false);
+
+        // White-box: pending now carries BOTH the formatted payload AND the WindowInfo.
+        let snap = {
+            let st = STATE.lock().unwrap();
+            st.pending
+                .as_ref()
+                .map(|p| (p.payload.clone(), p.window_info.clone()))
+        };
+        let (payload, wi) = snap.expect("pending should hold the queued message");
+        assert_eq!(payload, "App2\x1DTitle2");
+        assert_eq!(wi, w2);
+
+        // Cleanup: shrink the interval back to the reset default so the worker
+        // flushes the queued w2 quickly (pending -> None via the normal take()
+        // path) BEFORE the next test's reset_test_state() runs. Leaving a 10s
+        // interval + Some(..) pending would race reset's `pending = None`: the
+        // worker's wait_timeout would later reach `take().unwrap()` on an empty
+        // pending and poison the shared mutex.
+        STATE.lock().unwrap().interval = Duration::from_millis(50);
+        assert!(wait_for_count(2, Duration::from_millis(500)));
     }
 
     #[test]
