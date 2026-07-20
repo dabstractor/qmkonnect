@@ -617,7 +617,7 @@
                   "type": "Subtask",
                   "id": "P4.M2.T1.S1",
                   "title": "Implement handshake function and global capability state",
-                  "status": "Researching",
+                  "status": "Ready",
                   "story_points": 2,
                   "dependencies": [
                     "P4.M1.T1.S1",
