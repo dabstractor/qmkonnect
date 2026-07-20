@@ -6,10 +6,10 @@ Version: 0.2.4 · Status: Beta · Owner: Mulletware · License: MIT
 > **Host-side window rules:** edit
 > layer/callback rules in `rules.toml` with no reflash. Fully specified in the
 > companion `HOST_RULES.md`; the **typed-command wire contract is owned by the
-> firmware spec** ([`dabstractor/qmk-notifier` `PRD.md`
-> §4.6](https://github.com/dabstractor/qmk-notifier/blob/main/PRD.md)), transported
-> by the `qmk_notifier` crate ([`PRD.md`
-> §10](https://github.com/dabstractor/qmk_notifier/blob/main/PRD.md)). See F11/F12
+> firmware spec** ([`dabstractor/qmk_notifier` `PRD.md`
+> §4.6](https://github.com/dabstractor/qmk_notifier/blob/main/PRD.md)), transported
+> by the `qmk-notifier` crate ([`PRD.md`
+> §10](https://github.com/dabstractor/qmk-notifier/blob/main/PRD.md)). See F11/F12
 > below and the Document Map.
 
 > This is the **master** document for the QMKonnect desktop application. It
@@ -25,7 +25,7 @@ Version: 0.2.4 · Status: Beta · Owner: Mulletware · License: MIT
 **QMKonnect** is a cross-platform desktop daemon that detects the foreground
 window (its application class and title) and streams that information to a QMK
 keyboard over USB Raw HID. The keyboard — running the companion
-**[qmk-notifier](https://github.com/dabstractor/qmk-notifier)** firmware module
+**[qmk_notifier](https://github.com/dabstractor/qmk_notifier)** firmware module
 — pattern-matches the incoming string against user-defined rules and reacts by
 switching layers and/or invoking callbacks. The result is a *context-aware
 keyboard*: your keymap adapts automatically to the app you're using.
@@ -37,7 +37,7 @@ firmware. The two halves communicate over a tiny, well-defined wire protocol
 
 ```
    ┌──────────────────────────┐      Raw HID (usage 0xFF60/0x61)     ┌─────────────────────────┐
-   │  QMKonnect (desktop)     │  ─────────────────────────────────►  │  qmk-notifier (firmware)│
+   │  QMKonnect (desktop)     │  ─────────────────────────────────►  │  qmk_notifier (firmware)│
    │  Windows / macOS / Linux │   "{app_class}\x1D{title}\x03"       │  layer switch / callback│
    └──────────────────────────┘                                       └─────────────────────────┘
         ▲ watches foreground window                                          ▲ runs on the MCU
@@ -50,14 +50,16 @@ QMKonnect is one node in a small ecosystem. A dev agent must understand all of:
 | Project | Repo | Role |
 |---|---|---|
 | **QMKonnect** | `dabstractor/qmkonnect` (this) | Cross-platform desktop app: window detection + Raw HID send |
-| **qmk-notifier** | `dabstractor/qmk-notifier` | QMK **firmware module** (C): receives, reassembles, pattern-matches, acts |
-| **qmk_notifier** | `dabstractor/qmk_notifier` (note underscore) | Rust **library** the desktop app links for the Raw HID transport (device cache, burst-write, framing) |
+| **qmk_notifier** | `dabstractor/qmk_notifier` | QMK **firmware module** (C): receives, reassembles, pattern-matches, acts |
+| **qmk-notifier** | `dabstractor/qmk-notifier` (note hyphen) | Rust **library** the desktop app links for the Raw HID transport (device cache, burst-write, framing) |
 | **qmk_firmware** | `qmk/qmk_firmware` | Upstream QMK; the keyboard's firmware that hosts both modules above |
 
-> **Naming hazard (read once):** `qmk-notifier` (hyphen) is the firmware C
-> module; `qmk_notifier` (underscore) is the Rust transport crate. QMKonnect
-> depends on the latter (`qmk_notifier` v0.2.1, git tag). The user's keymap
-> depends on the former. Both are required end-to-end.
+> **Naming hazard (read once):** `qmk_notifier` (underscore) is the firmware C
+> module; `qmk-notifier` (hyphen) is the Rust transport crate. QMKonnect
+> depends on the latter (`qmk-notifier` v0.3.0, git tag). The user's keymap
+> depends on the former. In Rust source the crate is imported under the alias
+> `qmk_notifier`, so the code reads `qmk_notifier::run` even though the package
+> and repo are `qmk-notifier`. Both are required end-to-end.
 
 ---
 
@@ -66,7 +68,7 @@ QMKonnect is one node in a small ecosystem. A dev agent must understand all of:
 ### 2.1 Goals
 
 1. **Zero-config for a single standard QMK keyboard.** On every platform, a user
-   with a default QMK keyboard running qmk-notifier needs to install QMKonnect
+   with a default QMK keyboard running qmk_notifier needs to install QMKonnect
    and *nothing else* — no vendor/product IDs, no udev reload, no sudo. Device
    discovery is by the stable QMK Raw HID signature (usage page `0xFF60` /
    usage `0x61`).
@@ -106,7 +108,7 @@ QMKonnect is one node in a small ecosystem. A dev agent must understand all of:
   Dactyl-Manuform) who wants context layers (vim mode in terminals, a numpad
   layer in Calculator, gaming layers for Steam games). This is the primary
   persona; the reference keymap in this PRD is exactly that user.
-- **QMK hobbyist** who runs qmk-notifier and wants a turnkey desktop notifier
+- **QMK hobbyist** who runs qmk_notifier and wants a turnkey desktop notifier
   without hand-editing config or writing a script.
 - **Tinkerer on a non-Hyprland desktop** — partially served today; a clear
   roadmap exists (see §12 and `PLATFORMS.md`).
@@ -126,7 +128,7 @@ QMKonnect is one node in a small ecosystem. A dev agent must understand all of:
 | F7 | "Open at Login" toggle, default on (HKCU Run / SMAppService / systemd) | `UI.md` §4 |
 | F8 | Per-platform installer + CI release pipeline | `PACKAGING.md` |
 | F9 | Linux: static udev rule + usage-page helper + root-aware reload | `LINUX.md` |
-| F10 | Companion firmware module contract (`qmk-notifier`) | `FIRMWARE.md` |
+| F10 | Companion firmware module contract (`qmk_notifier`) | `FIRMWARE.md` |
 | **F11** | **Host-side window rules:** edit `rules.toml` to map apps → layers/callbacks with **no reflash** (stacks on top of board rules) | `HOST_RULES.md` |
 | **F12** | **Named callback registry** + typed Raw HID commands (`QUERY_INFO` / `QUERY_CALLBACK` / `APPLY_HOST_CONTEXT`) with a capability handshake | `HOST_RULES.md` |
 
@@ -157,7 +159,7 @@ Wayland compositors. The Rust **MSRV is 1.88** (enforced by `rust-version`).
    collapsed to exactly one follow-up send of the newest value.
 4. **`QmkNotifier::notify`** builds `RunParameters` (resolving the device filter
    from config on every call) and calls `qmk_notifier::run`.
-5. **`qmk_notifier` crate** appends the `ETX` (0x03) terminator, frames the
+5. **`qmk-notifier` crate** appends the `ETX` (0x03) terminator, frames the
    payload into 32-byte Raw HID reports prefixed `0x81 0x9F`, burst-writes to
    every matching interface (cached), and drains acks.
 6. **Keyboard firmware** (`notifier.c`) validates the `0x81 0x9F` header,
@@ -275,7 +277,7 @@ failures degrade silently and recover automatically.)
 ## 11. Success Criteria (how "done" is judged)
 
 1. A fresh install on any supported platform, with a default QMK keyboard +
-   qmk-notifier firmware, **switches keyboard layers when the user changes app**
+   qmk_notifier firmware, **switches keyboard layers when the user changes app**
    with zero configuration.
 2. Unplugging the keyboard shows "○ No Device Connected" in the tray within a
    few seconds; replugging restores "● Device Connected" and notifications
@@ -293,7 +295,7 @@ failures degrade silently and recover automatically.)
 
 - **Host-side window rules.** Edit layer/callback rules in `rules.toml` on the host — no reflash — stacking
   on top of the board's `DEFINE_*` rules. Fully specified in `HOST_RULES.md`; it
-  spans the `qmk_notifier` crate, the `qmk-notifier` firmware, and this app.
+  spans the `qmk-notifier` crate, the `qmk_notifier` firmware, and this app.
 - **Linux surface is narrow** (Hyprland-only). Broader Wayland + X11 is planned.
 - **Binaries are unsigned** (Windows) / ad-hoc signed, not notarized (macOS).
   This causes the macOS Screen-Recording re-prompt loop on every rebuild; a
@@ -320,8 +322,8 @@ failures degrade silently and recover automatically.)
 | **Raw HID** | QMK feature (`RAW_ENABLE`) exposing a 32-byte vendor-defined HID interface. |
 | **usage page / usage** | HID descriptor fields. QMK Raw HID defaults: page `0xFF60`, usage `0x61`. |
 | **SNI** | StatusNotifierItem — the freedesktop D-Bus tray spec Linux bars host. |
-| **qmk_notifier** (underscore) | The Rust transport crate QMKonnect links. |
-| **qmk-notifier** (hyphen) | The C firmware module that runs on the keyboard. |
+| **qmk_notifier** (underscore) | The C firmware module that runs on the keyboard. |
+| **qmk-notifier** (hyphen) | The Rust transport crate QMKonnect links. |
 | **`WT(class, title)`** | Firmware macro building a `class\x1Dtitle` pattern. |
 | **device filter** | Resolved `{vid?, pid?, usage_page, usage}` used to match HID interfaces. |
 | **burst-write** | Sending all 32-byte reports of a long message back-to-back without per-report ack. |
@@ -343,13 +345,13 @@ PRD.
 |---|---|
 | **`PRD.md`** (this) | Product vision, goals, users, features, glossary, doc map. |
 | @ARCHITECTURE.md | Repository layout, module map, end-to-end data flow, concurrency/threading model, trait design, error model, the platform-divergence problem. |
-| @PROTOCOL.md | The Raw HID wire protocol: payload format, report framing, constants, the `qmk_notifier` crate contract, device matching & discovery, retry/cache. |
+| @PROTOCOL.md | The Raw HID wire protocol: payload format, report framing, constants, the `qmk-notifier` crate contract, device matching & discovery, retry/cache. |
 | @PLATFORMS.md | Per-OS window monitoring (Windows WinEventHook, macOS NSWorkspace, Hyprland IPC, X11), window filtering, config paths, permissions. |
 | @UI.md | Tray/menu-bar UI, menu layouts, Settings dialogs, "Show Window Information" dialogs, device-status indicator, "Open at Login" autostart. |
 | @LINUX.md | Linux-specific: static udev rule, `qmkonnect-hid-id` helper, config-driven fallback rule, dangerous-rule detection/repair, root-aware `--reload`, systemd service, SNI tray, GTK window-info dialog. |
 | @CONFIG.md | TOML schema, defaults, render body, config paths per OS, CLI flag reference. |
 | @PACKAGING.md | Cargo build profile, per-platform installers (Inno/PKGBUILD/DMG), CI release workflow, code signing, the dev test loop. |
-| @FIRMWARE.md | The `qmk-notifier` firmware module contract, keymap integration steps, pattern-matching syntax, the user's reference keymap. |
+| @FIRMWARE.md | The `qmk_notifier` firmware module contract, keymap integration steps, pattern-matching syntax, the user's reference keymap. |
 | @HOST_RULES.md | **Host-side `rules.toml`** (no-reflash layer/callback rules, per-rule `disable_firmware_config`), the typed-command wire mirror (canonical: firmware `PRD.md` §4.6), named callback registry, three-repo rollout. |
 
 > **Living source of truth:** the production codebase itself

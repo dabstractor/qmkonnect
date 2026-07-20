@@ -789,21 +789,21 @@
       "type": "Phase",
       "id": "P6",
       "title": "Documentation Sync",
-      "status": "Researching",
+      "status": "Ready",
       "description": "Update all changeset-level documentation to reflect the host-side window rules feature. Per SOW §5 Mode B, this final task covers cross-cutting docs (README, configuration, qmk-integration, examples, troubleshooting) that span the whole changeset. Per-feature docs that ride with the implementing subtask are already handled via Mode A in their respective context_scope.",
       "milestones": [
         {
           "type": "Milestone",
           "id": "P6.M1",
           "title": "Sync changeset-level documentation",
-          "status": "Researching",
+          "status": "Ready",
           "description": "Update the cross-cutting documentation files to surface the host-side rules feature, the new CLI flags, the rules.toml format, and the migration path from DEFINE_*.",
           "tasks": [
             {
               "type": "Task",
               "id": "P6.M1.T1",
               "title": "Sync changeset-level documentation",
-              "status": "Researching",
+              "status": "Ready",
               "description": "Update README.md, docs/configuration.md, docs/qmk-integration.md, docs/examples.md, docs/troubleshooting.md, and docs/llms_full.txt to document the host-side rules feature.",
               "subtasks": [
                 {
@@ -862,7 +862,7 @@
                   "type": "Subtask",
                   "id": "P6.M1.T1.S4",
                   "title": "Update README.md and regenerate docs/llms_full.txt",
-                  "status": "Researching",
+                  "status": "Ready",
                   "story_points": 1,
                   "dependencies": [
                     "P6.M1.T1.S1",

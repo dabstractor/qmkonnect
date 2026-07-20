@@ -5,6 +5,8 @@
 .aider*
 /.claude
 /.kiro
+/.pi
+/.pi-subagents
 
 # Build artifacts — never commit compiled output or installers
 *.msi
