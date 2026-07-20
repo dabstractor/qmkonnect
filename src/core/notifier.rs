@@ -459,6 +459,49 @@ pub fn reset_handshake_state() {
     HAS_HANDSHAKED.store(false, Ordering::SeqCst);
 }
 
+/// What the host-rules handshake lifecycle should do for a device-status transition.
+///
+/// Computed by [`handshake_action`] from the previous and current
+/// [`is_device_connected`] results, and consumed by the device-status poll
+/// threads ([`crate::tray`] on macOS/Windows, [`crate::linux_tray`] on Linux) and
+/// the startup path so the three call sites stay in lockstep.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HandshakeAction {
+    /// No transition, or `None → false` at startup: nothing to do.
+    None,
+    /// Device became present (`None → true` or `Some(false) → true`): run
+    /// [`perform_handshake`]. Idempotent via [`HAS_HANDSHAKED`] — a no-op if the
+    /// runner already handshooked at startup, so the poll thread's first tick on
+    /// an already-connected device is harmless.
+    Gain,
+    /// Device went away (`Some(true) → false`): call [`reset_handshake_state`] so
+    /// the next [`HandshakeAction::Gain`] re-runs the handshake.
+    Loss,
+}
+
+/// Classify a device-status transition into a handshake lifecycle action.
+///
+/// Pure mapping; unit-tested without a device or UI thread. The poll threads call
+/// this with their previous and latest [`is_device_connected`] results.
+///
+/// | `prev`          | `now`   | Action  |
+/// | --------------- | ------- | ------- |
+/// | `None`          | `true`  | `Gain`  | (startup already connected)
+/// | `None`          | `false` | `None`  |
+/// | `Some(false)`   | `true`  | `Gain`  | (reconnect)
+/// | `Some(true)`    | `true`  | `None`  | (no change)
+/// | `Some(false)`   | `false` | `None`  | (no change)
+/// | `Some(true)`    | `false` | `Loss`  | (real disconnect)
+pub fn handshake_action(prev: Option<bool>, now: bool) -> HandshakeAction {
+    match (prev, now) {
+        (Some(true), false) => HandshakeAction::Loss,           // real disconnect
+        (p, true) if p != Some(true) => HandshakeAction::Gain,  // None→true OR false→true
+        _ => HandshakeAction::None,                              // no change OR None→false
+    }
+}
+// NOTE: the Gain arm is GUARDED (`if p != Some(true)`) — the naive `(_, true)
+// => Gain` would mis-classify (Some(true), true) (no change) as Gain.
+
 impl Notifier for QmkNotifier {
     fn notify(&self, message: String) -> Result<(), Box<dyn Error + Send + Sync>> {
         let f = configured_filter();
@@ -1359,5 +1402,15 @@ disable = ["known_b", "phantom"]
         known.insert("known_b".to_string(), 1u8);
         let unknown = unknown_callback_names(&rules, &known);
         assert_eq!(unknown, vec!["ghost".to_string(), "phantom".to_string()]);
+    }
+
+    #[test]
+    fn test_handshake_action_transitions() {
+        assert_eq!(handshake_action(None, true), HandshakeAction::Gain);
+        assert_eq!(handshake_action(None, false), HandshakeAction::None);
+        assert_eq!(handshake_action(Some(false), true), HandshakeAction::Gain);
+        assert_eq!(handshake_action(Some(true), false), HandshakeAction::Loss);
+        assert_eq!(handshake_action(Some(true), true), HandshakeAction::None);
+        assert_eq!(handshake_action(Some(false), false), HandshakeAction::None);
     }
 }

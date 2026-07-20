@@ -25,6 +25,12 @@ impl PlatformRunner for LinuxRunner {
 
         // Read-only startup probe so a typo'd VID/PID is obvious immediately (#16).
         crate::core::notifier::startup_device_probe(self.verbose);
+        // If a device is already connected at startup, run the capability handshake
+        // now (poll-thread reconnects are handled in linux_tray.rs / tray.rs).
+        // Completes before the poll thread exists; idempotent via HAS_HANDSHAKED.
+        if crate::core::notifier::is_device_connected() {
+            crate::core::notifier::perform_handshake(self.verbose);
+        }
 
         // Exit promptly on Ctrl+C / SIGTERM. We rely on systemd Restart=always
         // (and `panic = "abort"` in release) for crash recovery instead of the
@@ -43,7 +49,7 @@ impl PlatformRunner for LinuxRunner {
             // keep the handle alive for the process lifetime. Failure (e.g. no
             // session bus) is logged, not fatal.
             #[cfg(feature = "linux-tray")]
-            let _tray_handle = crate::linux_tray::spawn();
+            let _tray_handle = crate::linux_tray::spawn(self.verbose);
 
             monitor.start()?;
         }
@@ -57,7 +63,7 @@ impl PlatformRunner for LinuxRunner {
             // The SNI tray (if enabled) runs on its own thread; keep the handle
             // alive for the process lifetime.
             #[cfg(feature = "linux-tray")]
-            let _tray_handle = crate::linux_tray::spawn();
+            let _tray_handle = crate::linux_tray::spawn(self.verbose);
 
             let monitor_handle = std::thread::spawn(move || {
                 if let Err(e) = monitor.start() {
@@ -67,7 +73,7 @@ impl PlatformRunner for LinuxRunner {
 
             #[cfg(not(feature = "linux-tray"))]
             {
-                crate::tray::setup_tray();
+                crate::tray::setup_tray(self.verbose);
                 if self.verbose {
                     println!("System tray icon initialized");
                 }

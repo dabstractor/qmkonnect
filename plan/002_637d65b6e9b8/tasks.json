@@ -603,14 +603,14 @@
           "type": "Milestone",
           "id": "P4.M2",
           "title": "Startup Handshake & Capability Detection",
-          "status": "Ready",
+          "status": "Complete",
           "description": "Implement the capability handshake (QUERY_INFO → callback sweep → SET_OS) that runs at startup and on device reconnect, and the capability state tracking that gates host-rules.",
           "tasks": [
             {
               "type": "Task",
               "id": "P4.M2.T1",
               "title": "Capability Handshake (QUERY_INFO, QUERY_CALLBACK sweep, SET_OS)",
-              "status": "Ready",
+              "status": "Complete",
               "description": "Implement the handshake that detects host-capable firmware, builds the name→id callback map, sends SET_OS, and sets the global capable flag.",
               "subtasks": [
                 {
@@ -634,7 +634,7 @@
                   "type": "Subtask",
                   "id": "P4.M2.T1.S2",
                   "title": "Integrate handshake into startup and device-status poll",
-                  "status": "Ready",
+                  "status": "Complete",
                   "story_points": 1,
                   "dependencies": [
                     "P4.M2.T1.S1"

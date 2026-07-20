@@ -247,7 +247,7 @@ fn handle_open_at_login_click(item: &tray_icon::menu::CheckMenuItem) {
     item.set_checked(crate::autostart::is_enabled());
 }
 
-pub fn setup_tray() {
+pub fn setup_tray(verbose: bool) {
     // Use the standard tray-icon implementation for all platforms
     // The dock icon hiding is handled by Info.plist LSUIElement=true
 
@@ -378,6 +378,19 @@ pub fn setup_tray() {
             loop {
                 let connected = crate::core::notifier::is_device_connected();
                 if last != Some(connected) {
+                    // Handshake lifecycle on THIS poll thread (non-blocking to the
+                    // UI event loop). Gain ⇒ perform_handshake (idempotent via
+                    // HAS_HANDSHAKED if the runner already handshooked at startup);
+                    // Loss ⇒ reset so the next gain re-runs.
+                    match crate::core::notifier::handshake_action(last, connected) {
+                        crate::core::notifier::HandshakeAction::Gain => {
+                            crate::core::notifier::perform_handshake(verbose);
+                        }
+                        crate::core::notifier::HandshakeAction::Loss => {
+                            crate::core::notifier::reset_handshake_state();
+                        }
+                        crate::core::notifier::HandshakeAction::None => {}
+                    }
                     last = Some(connected);
                     let _ = status_proxy.send_event(UserEvent::DeviceStatus(connected));
                 }

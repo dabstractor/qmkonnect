@@ -228,7 +228,7 @@ impl ksni::Tray for QmkTray {
 /// for the process lifetime (dropping it unregisters the tray). On the rare
 /// failure (no D-Bus) the error is logged and `None` is returned so the
 /// notifier keeps running trayless instead of hard-failing (§9).
-pub fn spawn() -> Option<ksni::blocking::Handle<QmkTray>> {
+pub fn spawn(verbose: bool) -> Option<ksni::blocking::Handle<QmkTray>> {
     let handle = match QmkTray::new().assume_sni_available(true).spawn() {
         Ok(h) => h,
         Err(e) => {
@@ -258,6 +258,21 @@ pub fn spawn() -> Option<ksni::blocking::Handle<QmkTray>> {
                 last_dark.unwrap_or(true)
             };
             tick = tick.wrapping_add(1);
+
+            // Handshake lifecycle on a real device transition. Runs on THIS poll
+            // thread — NEVER inside poll_handle.update, whose closure executes on
+            // ksni's D-Bus thread (HID I/O there would wedge the tray icon).
+            if last_device != Some(connected) {
+                match crate::core::notifier::handshake_action(last_device, connected) {
+                    crate::core::notifier::HandshakeAction::Gain => {
+                        crate::core::notifier::perform_handshake(verbose);
+                    }
+                    crate::core::notifier::HandshakeAction::Loss => {
+                        crate::core::notifier::reset_handshake_state();
+                    }
+                    crate::core::notifier::HandshakeAction::None => {}
+                }
+            }
 
             if last_device != Some(connected) || last_dark != Some(dark) {
                 last_device = Some(connected);

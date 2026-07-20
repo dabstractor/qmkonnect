@@ -25,6 +25,12 @@ impl PlatformRunner for MacOSRunner {
 
         // Read-only startup probe so a typo'd VID/PID is obvious immediately (#16).
         crate::core::notifier::startup_device_probe(self.verbose);
+        // If a device is already connected at startup, run the capability handshake
+        // now (poll-thread reconnects are handled in tray.rs). Completes before the
+        // poll thread exists; idempotent via HAS_HANDSHAKED.
+        if crate::core::notifier::is_device_connected() {
+            crate::core::notifier::perform_handshake(self.verbose);
+        }
 
         // Set up signal handling for immediate exit
         ctrlc::set_handler(move || {
@@ -41,7 +47,7 @@ impl PlatformRunner for MacOSRunner {
         });
 
         // Setup tray icon for macOS - this will block until the user quits
-        crate::tray::setup_tray();
+        crate::tray::setup_tray(self.verbose);
 
         if self.verbose {
             println!("System tray closed, shutting down...");
