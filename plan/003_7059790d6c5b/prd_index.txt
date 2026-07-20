@@ -1,0 +1,208 @@
+h1.0 PRD — QMKonnect
+ h2.0 1. What QMKonnect Is
+  h3.0 1.1 The broader ecosystem
+ h2.1 2. Goals & Non-Goals
+  h3.1 2.1 Goals
+  h3.2 2.2 Non-Goals (explicitly out of scope for the beta)
+ h2.2 3. Target Users & Personas
+ h2.3 4. Top-Level Feature Set
+ h2.4 5. Supported Platforms (Compatibility Matrix)
+ h2.5 6. The End-to-End Data Flow (30-second tour)
+ h2.6 7. Key Product Behaviors (the "feel")
+ h2.7 8. Configuration Summary (full detail: CONFIG.md)
+ h2.8 9. Security & Privacy
+ h2.9 10. Non-Functional Requirements
+ h2.10 11. Success Criteria (how "done" is judged)
+ h2.11 12. Beta Status & Future Work
+ h2.12 13. Glossary
+ h2.13 14. Document Map
+ h2.14 1. Repository Layout
+ h2.15 2. Module Responsibilities
+  h3.3 2.1 core/ — platform-independent core
+  h3.4 2.2 platforms/ — window detection (per-OS)
+  h3.5 2.3 runners/ — process lifecycle (per-OS)
+  h3.6 2.4 tray.rs — macOS + Windows UI
+  h3.7 2.5 linux_tray.rs — Linux SNI tray (feature linux-tray)
+  h3.8 2.6 autostart.rs — Windows autostart (HKCU Run)
+  h3.9 2.7 bin/hid_id.rs — udev helper
+ h2.16 3. The Platform Divergence Problem (and how the code resolves it)
+ h2.17 4. End-to-End Data Flow (detailed)
+ h2.18 5. The Notification Pipeline & Debouncer (src/core/notifier.rs)
+  h3.10 5.1 The Notifier trait
+  h3.11 5.2 Device filter resolution (configured_filter)
+  h3.12 5.3 Debounce design (the key correctness property)
+  h3.13 5.4 Send retry & graceful failure (QmkNotifier::notify)
+  h3.14 5.5 Startup probe (startup_device_probe)
+  h3.15 5.6 Status probe (is_device_connected)
+  h3.16 5.7 Host-side-rules extension
+ h2.19 6. Concurrency Model (per component)
+ h2.20 7. Process Lifecycle (runners/)
+  h3.17 7.1 Windows (runners/windows.rs)
+  h3.18 7.2 macOS (runners/macos.rs)
+  h3.19 7.3 Linux (runners/linux.rs)
+ h2.21 8. Error Model
+ h2.22 9. Build Profile & MSRV
+ h2.23 10. Key Invariants a Dev Agent Must Preserve
+ h2.24 1. The Payload (logical message)
+ h2.25 2. Report Framing (the byte-level protocol)
+  h3.20 2.1 HID interface
+  h3.21 2.2 Logical report size = 32 bytes
+  h3.22 2.3 On-the-wire layout (what hidapi::HidDevice::write receives)
+  h3.23 2.4 Message framing across reports
+  h3.24 2.5 Why burst-write is safe without per-report ACK
+ h2.26 3. Device Discovery & Matching
+  h3.25 3.1 The match predicate (pure)
+  h3.26 3.2 The two discovery modes
+  h3.27 3.3 Defaults exposed by the qmk-notifier crate
+  h3.28 3.4 VID/PID shown vs. matched
+ h2.27 4. The qmk-notifier Crate Contract (v0.3.0)
+  h3.29 4.1 Public API surface (what QMKonnect calls)
+  h3.30 4.2 run(SendMessage) flow
+  h3.31 4.3 Error types the app reacts to
+  h3.32 4.4 Why a device cache
+ h2.28 5. The Firmware Reception Side (summary — full detail: SPEC_FIRMWARE.md)
+ h2.29 6. Discovery / Diagnostics CLI
+ h2.30 7. Protocol Constant Reference
+ h2.31 8. Typed-Command Namespace
+ h2.32 1. The Shared Contract
+  h3.33 1.1 What application_class is, per platform
+  h3.34 1.2 Titles
+  h3.35 1.3 Empty-workspace semantics
+  h3.36 1.4 Window filtering (should_ignore_window, Windows/macOS)
+ h2.33 2. Windows Monitor (src/platforms/windows.rs)
+  h3.37 2.1 Detection mechanism (belt + suspenders)
+  h3.38 2.2 handle_focus_change(hwnd)
+  h3.39 2.3 Thread-safe globals (replaced former static mut UB)
+  h3.40 2.4 list_foreground_windows() (the tray dialog data)
+  h3.41 2.5 Config paths (get_config_paths)
+ h2.34 3. macOS Monitor (src/platforms/macos.rs)
+  h3.42 3.1 Detection mechanism
+  h3.43 3.2 get_active_window_info()
+  h3.44 3.3 list_foreground_windows() (tray dialog data)
+  h3.45 3.4 Config paths
+ h2.35 4. Permission Model (per-OS)
+  h3.46 4.1 Windows
+  h3.47 4.2 macOS — Screen Recording (not Accessibility)
+  h3.48 4.3 Linux — hidraw permissions (full detail: SPEC_LINUX.md)
+ h2.36 5. Hyprland Monitor (src/platforms/hyprland.rs)
+  h3.49 5.1 Detection mechanism
+  h3.50 5.2 handle_window_state_change
+  h3.51 5.3 Reconnect backoff (fixes #7)
+  h3.52 5.4 Polling strategies (two distinct ones)
+  h3.53 5.5 list_foreground_windows() (tray dialog data)
+ h2.37 6. X11 Monitor (src/platforms/x11.rs) — fallback, non-default build
+ h2.38 7. Where Each Monitor Runs (thread summary)
+ h2.39 8. Internal Window Filtering Reference (Windows)
+ h2.40 1. The Tray Surface (per platform)
+  h3.54 1.1 Menu layout (macOS / Windows, identical item set modulo labels)
+  h3.55 1.2 The Linux SNI menu (src/linux_tray.rs)
+  h3.56 1.3 Icon handling
+  h3.57 1.4 The EventLoopProxy pattern (macOS/Windows)
+ h2.41 2. Settings Dialogs
+  h3.58 2.1 Windows — native Win32 dialog (show_settings_dialog)
+  h3.59 2.2 macOS — NSAlert + accessory view (show_macos_settings_dialog)
+  h3.60 2.3 Linux — zenity --forms (show_settings_dialog_linux)
+  h3.61 2.4 parse_id_field / parse_id (shared logic)
+ h2.42 3. "Show Window Information" Dialogs
+  h3.62 3.1 Windows — native Win32 (show_window_info_dialog)
+  h3.63 3.2 macOS — NSWindow + NSScrollView (show_macos_window_info_dialog)
+  h3.64 3.3 Linux — native GTK popup, zenity fallback (show_window_info_linux)
+  h3.65 3.4 Shared row store
+ h2.43 4. Device-Connection Status Indicator
+ h2.44 5. Tray Lifecycle in the Runners
+ h2.45 6. Autostart ("Open at Login" / "Launch at Login")
+  h3.66 6.1 Windows — HKCU Run key (src/autostart.rs)
+  h3.67 6.2 macOS — SMAppService (tray.rs mod autostart)
+  h3.68 6.3 Linux — systemd user service (SPEC_LINUX.md §6)
+ h2.46 7. Activation Policy & Dock Icon (macOS)
+ h2.47 1. The Two-Rule Strategy ("hybrid")
+ h2.48 2. The Static Rule
+ h2.49 3. The qmkonnect-hid-id Helper (src/bin/hid_id.rs)
+  h3.69 3.1 Behavior
+  h3.70 3.2 HID item parsing (short + long items)
+  h3.71 3.3 Verified byte signatures (real hardware)
+ h2.50 4. The Config-Driven Fallback Rule + Root-Aware Reload (src/platforms/linux.rs)
+  h3.72 4.1 render_vidpid_rule(vendor_id, product_id) -> Option<String>
+  h3.73 4.2 update_udev_rules(vendor_id, product_id, verbose) (used by --reload)
+  h3.74 4.3 reload_udev_rules()
+  h3.75 4.4 Root-aware config resolution (resolve_config_for_reload) — fixes #26
+ h2.51 5. Dangerous-Legacy-Rule Detection & Repair
+  h3.76 5.1 is_rule_globally_dangerous(content) -> bool
+  h3.77 5.2 rule_line_has_leading_match_key(line) -> bool
+  h3.78 5.3 Repair path
+ h2.52 6. The systemd User Service
+  h3.79 6.1 Template (packaging/linux/systemd/qmkonnect.service.template)
+  h3.80 6.2 Why the service is optional
+ h2.53 7. SNI Tray (src/linux_tray.rs, feature linux-tray)
+  h3.81 7.1 spawn() -> Option<Handle>
+  h3.82 7.2 Color-scheme detection (detect_dark_mode)
+  h3.83 7.3 Why no notify-rust
+ h2.54 8. Config Paths (Linux)
+ h2.55 9. Linux Dependencies (Cargo.toml)
+ h2.56 1. Config Schema (src/core/mod.rs)
+  h3.84 1.1 Field reference
+  h3.85 1.2 Resolution at use sites
+ h2.57 2. The Shared Config-Body Renderer (render_config_body)
+ h2.58 3. Config Paths (per-OS)
+ h2.59 4. CLI Reference (src/main.rs)
+  h3.86 4.1 Flag semantics
+  h3.87 4.2 Logging
+ h2.60 5. Parsing Robustness
+ h2.61 6. Config UX per Platform (summary; full detail SPEC_UI.md §2)
+ h2.62 1. Cargo Build Profile
+ h2.63 2. Features & Binaries
+ h2.64 3. Windows Packaging
+  h3.88 3.1 The shipped installer — Inno Setup (per-user, no admin)
+  h3.89 3.2 install.ps1 / uninstall.ps1 (the PowerShell equivalent)
+  h3.90 3.3 The legacy WiX MSI (Session-0 service) — NOT shipped
+  h3.91 3.4 Runtime dependencies
+ h2.65 4. Linux Packaging
+  h3.92 4.1 Arch PKGBUILD (packaging/linux/arch/)
+  h3.93 4.2 qmkonnect.install (pacman hooks)
+  h3.94 4.3 Other distros (binary install)
+ h2.66 5. macOS Packaging
+  h3.95 5.1 packaging/macos/build.sh
+  h3.96 5.2 clean.sh — run BEFORE every reinstall
+  h3.97 5.3 install.sh / uninstall.sh
+  h3.98 5.4 Test via open /Applications/QMKonnect.app
+ h2.67 6. The Dev Test Loop (AGENTS.md)
+  h3.99 6.1 macOS
+  h3.100 6.2 Windows (PowerShell)
+  h3.101 6.3 Linux
+ h2.68 7. CI Release (.github/workflows/release.yml)
+ h2.69 8. Release Chore (release.toml + cargo-release)
+ h2.70 9. Build Outputs (gitignored, never commit)
+ h2.71 1. The Module at a Glance
+ h2.72 2. Integration Steps (the user's keymap)
+  h3.102 Step 1 — add the submodule
+  h3.103 Step 2 — include the module's rules.mk (in your keymap's rules.mk)
+  h3.104 Step 3 — wire raw_hid_receive (in your keymap.c)
+  h3.105 Step 4 — define your rules (anywhere #include-d from keymap.c)
+  h3.106 Step 5 — build & flash
+ h2.73 3. The Module API (macros & structs)
+  h3.107 3.1 DEFINE_SERIAL_LAYERS({ … })
+  h3.108 3.2 DEFINE_SERIAL_COMMANDS({ … })
+  h3.109 3.3 WT(class, title) / WINDOW_TITLE(class, title)
+ h2.74 4. Pattern-Matching Syntax (pattern_match.c)
+  h3.110 4.1 The delimiter-aware matcher (match_pattern in notifier.c)
+ h2.75 5. Firmware Reception Flow (hid_notify → process_full_message)
+ h2.76 6. The Reference Keymap (validated against this PRD)
+  h3.111 6.1 Hardware (keyboard.json)
+ h2.77 7. Desktop ↔ Firmware Contract Summary
+ h2.78 8. Debugging the Firmware Side
+ h2.79 1. Goal & Deliverables
+ h2.80 2. Context: How It Works Today & the Three-Repo Reality
+ h2.81 3. Locked Design Decisions
+ h2.82 4. Architecture & Coexistence Model
+ h2.83 5. Wire Protocol (typed commands)
+ h2.84 6. Firmware Spec (qmk_notifier)
+ h2.85 7. Crate Spec (qmk-notifier, Rust)
+ h2.86 8. QMKonnect Spec (this repo)
+ h2.87 9. rules.toml Schema Reference
+ h2.88 10. Migration from DEFINE_*
+ h2.89 11. Implementation Breakdown (by repo)
+ h2.90 12. Testing Plan
+ h2.91 13. Risks & Open Questions
+ h2.92 14. Appendix — File Layout Touched & Pattern Subset
+---
+code:51 para:187 list:108 table:24 quote:30
