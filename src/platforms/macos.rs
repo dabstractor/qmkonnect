@@ -43,6 +43,32 @@ const NIL: *mut Object = std::ptr::null_mut();
 // Replacing the former `static mut VERBOSE` (data race / UB) with an atomic.
 static VERBOSE: AtomicBool = AtomicBool::new(false);
 
+// Channel that hands the frontmost-window info captured by the AppKit
+// notification observer (which fires on the MAIN thread) to a dedicated
+// background worker that runs [`notifier::notify_qmk`].
+//
+// WHY this exists (status-tray-freeze-after-sleep bug):
+// `notify_qmk` performs synchronous HID I/O (`qmk_notifier` -> `hidapi`). On
+// macOS, hidapi schedules its IOHIDManager on `CFRunLoopGetCurrent()`
+// (hid.c:442/934) and, during enumeration, explicitly spins that run loop via
+// `CFRunLoopRunInMode` (hid.c:495). AppKit delivers
+// `NSWorkspaceDidActivateApplicationNotification` to our observer ON THE MAIN
+// THREAD. So calling `notify_qmk` straight from the observer makes the HID
+// enumerate/read re-enter the main CFRunLoop; that re-entrant spin re-delivers
+// any queued app-activation notifications (which accumulate while the Mac
+// sleeps / sits idle), re-entering the observer while `notify_qmk` still holds
+// the global `NOTIFIER` Mutex. `std::sync::Mutex` is non-reentrant, so the
+// re-entrant `notify_qmk` blocks forever on a lock the same thread already
+// holds: the main thread is wedged and the menu-bar item stops responding. (A
+// live `sample` of the wedged process shows exactly this — the main thread
+// parked in `__psynch_mutexwait` beneath a re-entrant
+// `applicationStatusSubsystemCallback` / LaunchServices notification block.)
+// Routing the event to a worker thread means the main thread never touches HID
+// and never re-enters its run loop from inside the observer, breaking the
+// deadlock at its root.
+static NOTIFY_TX: std::sync::OnceLock<std::sync::mpsc::SyncSender<WindowInfo>> =
+    std::sync::OnceLock::new();
+
 pub struct MacOSMonitor {
     verbose: bool,
     running: bool,
@@ -87,6 +113,20 @@ impl MacOSMonitor {
         // Publish the verbose flag for the Objective-C callback.
         VERBOSE.store(self.verbose, Ordering::SeqCst);
 
+        // Spawn the off-main-thread notify worker exactly once. See NOTIFY_TX
+        // for why notify_qmk must never run on the main thread.
+        if NOTIFY_TX.get().is_none() {
+            let (tx, rx) = std::sync::mpsc::sync_channel::<WindowInfo>(64);
+            if NOTIFY_TX.set(tx).is_ok() {
+                std::thread::spawn(move || {
+                    while let Ok(window_info) = rx.recv() {
+                        let verbose = VERBOSE.load(Ordering::SeqCst);
+                        let _ = notifier::notify_qmk(&window_info, verbose);
+                    }
+                });
+            }
+        }
+
         let workspace: *mut Object = unsafe { msg_send![class!(NSWorkspace), sharedWorkspace] };
         let notification_center: *mut Object = unsafe { msg_send![workspace, notificationCenter] };
 
@@ -102,9 +142,18 @@ impl MacOSMonitor {
                 .ok_or("Failed to declare RustNotificationObserver class")?;
 
             extern "C" fn notification_handler(_: &Object, _: Sel, _: *mut Object) {
-                let verbose = VERBOSE.load(Ordering::SeqCst);
+                // Capture the frontmost window on the main thread (cheap:
+                // NSWorkspace + CGWindowList — no HID, no locks) and hand it to
+                // the background worker. See NOTIFY_TX for why `notify_qmk`
+                // must NOT run on this thread.
                 if let Ok(Some(window_info)) = get_active_window_info() {
-                    let _ = notifier::notify_qmk(&window_info, verbose);
+                    if let Some(tx) = NOTIFY_TX.get() {
+                        // Non-blocking: if the worker is busy and the bounded
+                        // queue is full, drop the event. Rapid switches are
+                        // coalesced by the debouncer anyway, and the main
+                        // thread must never block here.
+                        let _ = tx.try_send(window_info);
+                    }
                 }
             }
 
