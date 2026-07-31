@@ -53,8 +53,8 @@ This tool is part of a broader ecosystem:
 
 - **Host-Side Window Rules**:
   - **Change layers & callbacks without reflashing** — edit a `rules.toml` file
-    on your computer, then click **Reload rules** in the tray/menu bar; no
-    firmware rebuild needed
+    on your computer (the **Edit rules** tray item opens it; changes hot-reload
+    on the next window change); no firmware rebuild needed
   - Host rules **stack on top of** your board's existing `DEFINE_SERIAL_*`
     rules (the board's rules run first, then host rules apply on top)
   - Requires firmware that advertises the typed-command capability
@@ -844,6 +844,19 @@ These are the **same C functions** you already pass to `DEFINE_SERIAL_COMMANDS`
 entirely and the firmware provides empty defaults (`callback_count == 0`), the
 feature stays off, and your keymap behaves byte-for-byte as it does today.
 
+**Why the pair lives on the board.** The `on_enable`/`on_disable` pairing is
+firmware semantics — the inverse of a keyboard mode is a property of the
+keyboard, not of the window you're focused on — so the board owns it. The host
+references the whole named mode (never the functions individually) and only
+decides *which modes should be on* for the current window: its `enable`/`disable`
+lists are desired-set algebra over names, and the firmware's diff translates
+membership changes into `on_enable`/`on_disable` calls. That makes focus-out undo
+automatic (you never wire it) and "every mode has an inverse" a structural
+guarantee rather than something you must remember. This mirrors layers exactly:
+the board defines the vocabulary (layer indices, named modes); the host composes
+policy by reference. See [How callbacks work]({{ site.baseurl }}/configuration#how-callbacks-work)
+in the Configuration Guide for the full table of the three concepts.
+
 ### Migration: from `DEFINE_*` to `rules.toml`
 
 Migration is **incremental and optional** — move one rule at a time, or none at
@@ -852,18 +865,18 @@ all. Board rules keep working throughout.
 1. **Expose your callbacks by name** — add `DEFINE_HOST_CALLBACKS({ … })`
    (above) listing the functions you already use in `DEFINE_SERIAL_COMMANDS`.
    Reflash **once**. (This is the only step that ever requires a reflash.)
-2. **Move a layer rule to the host** — add a `[[layer_rules]]` entry to
-   `rules.toml`, then **remove** the matching row from `DEFINE_SERIAL_LAYERS`.
-   (Keeping it in both isn't harmful, but it means the same layer is driven by
-   two trackers at once, which is confusing.) No reflash needed for this or any
-   later edit.
-3. **Move a callback rule to the host** — add a `[[callback_rules]]` entry,
-   then **remove** the matching row from `DEFINE_SERIAL_COMMANDS`. Here removal
-   matters: callbacks are additive, so if a rule stays in both, the same
-   `on_enable` would fire twice.
-4. **Iterate without reflashing** — edit `rules.toml` and click the tray's
-   **Reload rules** (or restart QMKonnect). Every future rule change is a host
-   edit, no firmware rebuild.
+2. **Move a layer rule to the host** — add a `[[rule]]` entry with a `layer`
+   field to `rules.toml`, then **remove** the matching row from
+   `DEFINE_SERIAL_LAYERS`. (Keeping it in both isn't harmful, but it means the
+   same layer is driven by two trackers at once, which is confusing.) No reflash
+   needed for this or any later edit.
+3. **Move a callback rule to the host** — add a `[[rule]]` entry with
+   `enable`/`disable`, then **remove** the matching row from
+   `DEFINE_SERIAL_COMMANDS`. Here removal matters: callbacks are additive, so if
+   a rule stays in both, the same `on_enable` would fire twice.
+4. **Iterate without reflashing** — edit `rules.toml`; changes hot-reload on the
+   next window change (or open it via the tray's **Edit rules** item). Every
+   future rule change is a host edit, no firmware rebuild.
 
 For example, the firmware callback rule
 `{ WT("steam_app*", "*"), &disable_vim }` (already listed in
@@ -871,7 +884,7 @@ For example, the firmware callback rule
 host rule:
 
 ```toml
-[[callback_rules]]
+[[rule]]
 match = ["steam_app*", "*"]        # [class, title]  == WT(class, title)
 enable = ["disable_vim"]
 ```
@@ -885,9 +898,11 @@ documented in the [Configuration Guide]({{ site.baseurl }}/configuration).
 
 The firmware keeps **two independent state planes**: your **board** layer and
 callbacks (driven by the legacy string + `DEFINE_*`, exactly as today) and a
-separate **host** layer and callback set (driven by `rules.toml`). Host layers
-are reserved **≥ 224** so they always resolve above your board layers; `255`
-clears the host layer. The two planes touch only at two seams, and QMKonnect
+separate **host** layer and callback set (driven by `rules.toml`). A host layer
+is a **raw QMK layer index** (no reserved range): pick one above your highest
+board layer so it wins in stack mode, within your `layer_state` width (≤15 by
+default, ≤31 with `LAYER_STATE_32BIT`); `255` clears the host layer. The two
+planes touch only at two seams, and QMKonnect
 picks which one per window:
 
 - **Stack** (the default): QMKonnect sends the window **string first** — so your
@@ -905,8 +920,9 @@ flag in `rules.toml`: a window is *replace* only when **every** rule that
 matches it is disabling (or the board has no rules of its own); if even one
 matched rule is non-disabling, the window *stacks*. See the
 [Configuration Guide]({{ site.baseurl }}/configuration) for the field-level
-detail. If no window matches, the host layer is cleared and all host callbacks
-are disabled (there is no "keep" option).
+detail. If no host rule matches, only the host layer is cleared and host
+callbacks disabled — the board's own rules still run (host and board are
+independent silos; there is no "keep" option).
 
 ## Testing Your Integration
 
@@ -1236,23 +1252,19 @@ active window.
 
 ### Schema reference
 
-`rules.toml` has one optional table and two table-arrays:
+`rules.toml` has one optional table and one table-array:
 
 | Section / Key | Required | Default | Description |
 | --- | :---: | --- | --- |
 | `[host]` table | no | — | Global host defaults. |
 | `[host] disable_firmware_config` | no | `false` | Global stack/replace default. `false` = the board runs its own rules too (**stack**); `true` = the host takes over (**replace**). Per-rule `disable_firmware_config` overrides this. See [Stack vs. replace](#stack-vs-replace-disable_firmware_config). |
-| `[[layer_rules]]` table-array | no | `[]` | Layer rules. **First match wins**; one host layer is active at a time. |
-| `[[layer_rules]] match` | **yes** | — | Window pattern. A bare string (`"alacritty"`) matches the **window class only**; a two-element array (`["*chrome*", "*youtube*"]`) matches **class and title** (equivalent to the firmware `WT(class, title)`). Supports `*`, `^`, `$`, `+`, character classes (`\d \w \s …`), and `.` — full parity with the firmware matcher. |
-| `[[layer_rules]] layer` | **yes** | — | The host layer number to activate. Must be **≥ 224** (the host layer range; `255` clears the layer). |
-| `[[layer_rules]] case_sensitive` | no | `false` | Whether `match` is case-sensitive. |
-| `[[layer_rules]] disable_firmware_config` | no | inherits `[host]` | Per-rule stack/replace override. Absent ⇒ uses the `[host]` default. |
-| `[[callback_rules]]` table-array | no | `[]` | Callback rules. **All matches fire.** Names come from your keyboard's callback registry (run `qmkonnect --list-callbacks` to see them). |
-| `[[callback_rules]] match` | **yes** | — | Window pattern (same form as `[[layer_rules]] match`). |
-| `[[callback_rules]] enable` | no | `[]` | Callback names to enable on focus-in. |
-| `[[callback_rules]] disable` | no | `[]` | Callback names to force off (explicit exclusion). Focus-out `on_disable` also fires automatically when a callback leaves the active set. |
-| `[[callback_rules]] case_sensitive` | no | `false` | Whether `match` is case-sensitive. |
-| `[[callback_rules]] disable_firmware_config` | no | inherits `[host]` | Per-rule stack/replace override. |
+| `[[rule]]` table-array | no | `[]` | Host rules — one entry per (app × behavior). For each matching rule, `layer` is **first-match-wins** (one host layer active at a time); `enable`/`disable` accumulate across **all** matches (all-match). A rule MUST set at least one of `layer` / `enable` / `disable` (one that sets none is a parse error); it may set layer only, callbacks only, or both. Names come from your keyboard's callback registry (run `qmkonnect --list-callbacks` to see them). |
+| `[[rule]] match` | **yes** | — | Window pattern. A bare string (`"alacritty"`) matches the **window class only**; a two-element array (`["*chrome*", "*youtube*"]`) matches **class and title** (equivalent to the firmware `WT(class, title)`). Supports `*`, `^`, `$`, `+`, character classes (`\d \w \s …`), and `.` — full parity with the firmware matcher. |
+| `[[rule]] layer` | no | `None` | Optional — the host layer number to activate. A **raw QMK layer index**, not a reserved range. When set it must be `<` your firmware's `layer_state_t` width (≤15 by default, ≤31 with `LAYER_STATE_32BIT`; larger indices are undefined behavior in `layer_on`), and `!= 255` (`0xFF` is the wire "clear layer" sentinel — writing it would silently *clear* the host layer, so `parse_rules`/`--validate-rules` reject it). To make the host layer win in **stack** mode, pick an index above your highest board layer; in **replace** mode any valid index wins. A rule may set `enable`/`disable` only and leave this unset. |
+| `[[rule]] enable` | no | `[]` | Callback names to enable on focus-in. |
+| `[[rule]] disable` | no | `[]` | Callback names to force off (**explicit exclusion**, order-independent: a `disable` in any matching rule always wins over an `enable` in any other matching rule). Focus-out `on_disable` also fires automatically when a callback leaves the active set. |
+| `[[rule]] case_sensitive` | no | `false` | Whether `match` is case-sensitive. |
+| `[[rule]] disable_firmware_config` | no | inherits `[host]` | Per-rule stack/replace override. Absent ⇒ uses the `[host]` default. |
 
 **Creating the file.** Run `qmkonnect -c` to seed a fully-commented `rules.toml`
 template alongside your `config.toml` (it is a no-op if `rules.toml` already
@@ -1268,34 +1280,38 @@ Here is the complete annotated example (from `spec/HOST_RULES.md` §9) — what 
 # rules.toml — host-side window rules.
 # disable_firmware_config chooses, per window, whether the board runs its own
 # rules (stack) or is cleared and driven solely by the host (replace). Global
-# default under [host]; per-rule override below. Host layers are >= 224.
+# default under [host]; per-rule override below.
 # Run `qmkonnect --validate-rules` after editing.
 
 [host]
 disable_firmware_config = false   # global default: false = stack (board runs), true = replace
-# On no match the host layer is always cleared and all host callbacks disabled.
+# On no host match: the host layer is cleared + host callbacks disabled, but the
+# BOARD still runs (its string is still sent) — host/board are independent silos.
 
-# Layer rules: FIRST match wins. One host layer active at a time (>= 224).
-[[layer_rules]]
+# Rules: one [[rule]] per (app × behavior). For each matching rule, `layer` is
+# first-match-wins (one host layer active — exclusive); `enable`/`disable`
+# accumulate across ALL matches (all-match). A rule MUST set at least one of
+# `layer` / `enable` / `disable` — one that sets none is a parse error (it may set
+# layer only, callbacks only, or both). `layer` is a RAW QMK layer index (no fixed
+# floor): pick one defined in your keymap, < your layer_state width (<=15 default,
+# <=31 with LAYER_STATE_32BIT), above your highest board layer (so it wins in
+# stack mode), and != 255 (the "clear" sentinel).
+[[rule]]
 match = "alacritty"                       # class-only pattern
-layer = 224
+layer = 10
 disable_firmware_config = true           # optional override (default inherits [host])
 
-[[layer_rules]]
+[[rule]]
 match = ["*chrome*", "*youtube*"]         # [class_pattern, title_pattern] (== WT())
-layer = 225
+layer = 11
 case_sensitive = false                    # optional, default false
 
-# Callback rules: ALL matches fire. Names come from the keyboard's registry
-# (run `qmkonnect --list-callbacks` to see them). The disable list is an
-# explicit-exclusion override; focus-out on_disable fires automatically via the
-# desired-set diff.
-[[callback_rules]]
+[[rule]]
 match = "neovide"
 enable = ["vim_lazy", "disable_vim"]      # run on focus-in
 disable = ["vim_lazy"]                    # optional: force-off override
 
-[[callback_rules]]
+[[rule]]
 match = ["*chrome*", "*claude*"]
 enable = ["vim_lazy", "disable_vim"]
 disable_firmware_config = true           # for this window, skip the string -> board can't match
@@ -1303,6 +1319,50 @@ disable_firmware_config = true           # for this window, skip the string -> b
 
 For ready-made `rules.toml` recipes, see the
 [Examples]({{ site.baseurl }}/examples).
+
+### How callbacks work
+
+The word "disable" shows up in **two layers** — firmware and host — and
+understanding the split is the one thing that makes callback rules click.
+
+**The board owns transitions** (the `DEFINE_HOST_CALLBACKS` registry in your
+firmware). Each named callback is a pair of C functions: `on_enable` (activate
+the mode) and `on_disable` (its inverse — deactivate it; `NULL` for a one-shot).
+This pairing is firmware semantics: *how* to turn a keyboard mode on and *how* to
+undo it is a property of your keyboard, not of which window is focused. The host
+references the whole named mode — never the individual functions — and cannot
+re-pair them from `rules.toml`.
+
+**The host owns set-membership** (the `enable`/`disable` lists here in
+`rules.toml`). Per window it computes the *desired enabled set* of callback names:
+`union(all matching rules' enable) − union(all matching rules' disable)`, then
+hands just that final set to the board.
+
+| Concept | Lives in | Meaning |
+| --- | --- | --- |
+| `on_enable` | firmware, per callback | function that **activates** the mode (runs when the name *enters* the desired set) |
+| `on_disable` | firmware, per callback | function that **deactivates** it — its inverse (runs when the name *leaves* the set); `NULL` for one-shots |
+| `enable` | `rules.toml`, per rule | names to **add** to the desired set for this window |
+| `disable` | `rules.toml`, per rule | names to **exclude** from the desired set (order-independent: beats any `enable`, in any matching rule) |
+
+The practical consequences:
+
+- **Focus-out is automatic.** When you focus away from a window, its callbacks
+  leave the desired set and the board fires each one's `on_disable`. You never
+  wire focus-out — the `enable`/`disable` lists only describe which modes
+  *should be on*; the firmware handles the enter/exit transitions.
+- **`disable` ≠ "run the off-function."** A rule's `disable = ["vim_lazy"]`
+  means "keep `vim_lazy` out of the desired set for this window" (so it never
+  turns on, or turns back off if a sibling rule enabled it). The paired
+  `disable_vim` off-function fires only as a side effect of `vim_lazy` actually
+  leaving the set.
+- **Callbacks mirror layers.** The board defines the *vocabulary* — layer
+  indices in your keymap, named modes in `DEFINE_HOST_CALLBACKS` — and the host
+  composes *policy* by reference (`layer = N`, `enable = ["name"]`). Just as you
+  can't invent a brand-new layer from `rules.toml`, you can't invent a new
+  callback mode without a firmware change; you recombine existing named modes per
+  window. Adding a *new* mode is the one callback edit that still needs a reflash;
+  recombining existing ones never does.
 
 ### Stack vs. replace (`disable_firmware_config`)
 
@@ -1321,18 +1381,21 @@ own rules:
 The value is resolved per rule:
 
 - The **global default** is `[host] disable_firmware_config` (default `false`).
-- Each `[[layer_rules]]` / `[[callback_rules]]` may set an optional
-  `disable_firmware_config` to override it. **Absent ⇒ inherits the `[host]`
-  default.**
+- Each `[[rule]]` may set an optional `disable_firmware_config` to override it.
+  **Absent ⇒ inherits the `[host]` default.**
 - A rule's **effective** flag is its override if set, else the `[host]` default.
 
 The per-window decision is an **AND** over all rules that matched that window:
 
-- The window is **replace** iff **every** matched rule's effective flag is `true`
-  — *or* the board has no rules of its own.
+- The window is **replace** iff it matched ≥1 rule **and** every matched rule's
+  effective flag is `true` — *or* the board has no rules of its own.
 - If even **one** matched rule is non-disabling, the window is **stack**.
-- **No match:** the host layer is always cleared (`255`) and all host callbacks
-  are disabled. (There is no "keep" option.)
+- (A host no-match is neither: the board still runs, and only the host layer is
+  cleared — see above.)
+- **No host match:** the host layer is cleared (`255`) and all host callbacks are
+  disabled — **but the board still runs**: QMKonnect still sends the window
+  string, so your board's own `DEFINE_*` rules fire normally (host and board are
+  independent silos — a host no-match never suppresses the board).
 
 **Rule of thumb:** set `disable_firmware_config = true` on a rule when you want
 the host to fully own that window (e.g. a browser site where the board's app
@@ -1864,35 +1927,38 @@ id is just the array index. The pattern (`"steam_app*"`, `WT("cs2","*")`, …) i
 
 ### After: the same rules as `rules.toml`
 
-Move those rules into `rules.toml` (alongside `config.toml`). Host layers are
-reserved **≥ 224** (so they resolve above your board layers), so the firmware
-`_GAMING = 1` becomes host `layer = 224`:
+Move those rules into `rules.toml` (alongside `config.toml`). The `layer` value
+is a **raw QMK layer index** — the same `#define` your keymap already uses
+(`_GAMING`, `_NUMPAD`, …), **not** a reserved range and **not** remapped. Pick
+host-driven layers that sit **above** your board layers (so they win under QMK's
+highest-set-bit rule in stack mode) and that your `layer_state` can represent
+(≤15 by default, ≤31 with `LAYER_STATE_32BIT`); `255` is the wire "clear"
+sentinel. (The earlier guidance to remap `_GAMING = 1` → `layer = 224` is
+withdrawn — `layer_state` cannot hold bit 224.)
 
 ```toml
 [host]
 disable_firmware_config = false   # global default: STACK (board rules still run)
 
-# Layer rules — FIRST match wins. Host layers are >= 224.
-[[layer_rules]]
+# Rules — `layer` is first-match-wins (one host layer active); `enable`/`disable`
+# accumulate across ALL matches. One [[rule]] can set layer AND callbacks for the
+# same app at once. `layer` = a real QMK layer index from your keymap.
+[[rule]]
 match = "steam_app*"                       # class-only pattern (board rules also run)
-layer = 224
+layer = 10
+enable = ["enable_gaming"]                 # layer + callbacks for one app, in one rule
 
-[[layer_rules]]
+[[rule]]
 match = ["cs2", "Counter-Strike 2"]        # [class, title]  == WT(class, title)
-layer = 224
+layer = 10
 
 # Replace: for this window the host takes over and the board is skipped.
-[[layer_rules]]
+[[rule]]
 match = ["*chrome*", "*youtube*"]
-layer = 225
+layer = 11
 disable_firmware_config = true
 
-# Callback rules — ALL matches fire. Names come from DEFINE_HOST_CALLBACKS.
-[[callback_rules]]
-match = "steam_app*"
-enable = ["enable_gaming"]
-
-[[callback_rules]]
+[[rule]]
 match = "*word*"
 enable = ["disable_gaming"]
 ```
@@ -1911,11 +1977,11 @@ rule makes the whole window *stack* (the board's rules run, then the host layer
 applies on top).
 
 - **A Steam game** (`steam_app_*`) → **stack**. The board runs its own
-  `DEFINE_SERIAL_*` rules for that window, the host layer `224` applies **on top**,
+  `DEFINE_SERIAL_*` rules for that window, the host layer `10` applies **on top**,
   and the host `enable_gaming` callback fires after the board callbacks.
 - **YouTube in Chrome** (`*chrome*` + `*youtube*`) → **replace** (`disable_firmware_config = true`).
   No window string is sent, so the board can't match; the firmware clears its own
-  board layer/command and applies only the host layer `225`.
+  board layer/command and applies only the host layer `11`.
 - **MS Word** (`*word*`) → only a callback rule matches (no layer rule), so the
   host layer is unchanged and the board runs normally; the host `disable_gaming`
   callback fires. If **no** rule matches a window, the host layer is cleared and
@@ -2492,10 +2558,16 @@ qmkonnect --validate-rules                  # prints:  rules.toml invalid: {erro
 qmkonnect --validate-rules --rules-path ~/rules.draft.toml   # validate a draft elsewhere
 ```
 
-**Fix**: every `[[layer_rules]]` entry **requires** `match` and `layer` (an entry
-missing either is an error); `match` is either a bare string (`"steam_app*"`,
-class-only) or a **2-element** array (`["*chrome*", "*youtube*"]` — class and
-title; 1- or 3-element arrays are errors); `layer` must be **≥ 224**. See the
+**Fix**: every `[[rule]]` entry **requires** `match` and at least one of `layer`
+/ `enable` / `disable` (an entry setting none of those is an error); `match` is
+either a bare string (`"steam_app*"`, class-only) or a **2-element** array
+(`["*chrome*", "*youtube*"]` — class and title; 1- or 3-element arrays are
+errors); `layer` is **optional** — a **raw QMK layer index** (no reserved range)
+when set, and must then be `<` your `layer_state` width (≤31 with
+`LAYER_STATE_32BIT`) and `!= 255` (the wire "clear layer" sentinel, which would
+silently *clear* the host layer and is rejected). To win in **stack** mode it
+must be above your highest board layer; in **replace** mode any valid index
+wins. See the
 [Configuration Guide]({{ site.baseurl }}/configuration) for the full field table.
 
 ### Device shows connected but rules not applying
@@ -2518,13 +2590,16 @@ title; 1- or 3-element arrays are errors); `layer` must be **≥ 224**. See the
    (or use the tray's "Show Window Information"). A `*chrome*` rule won't match a
    class reported as `Google Chrome` — adjust the pattern or use a `[class, title]`
    array.
-4. **Reloaded after editing?** Click the tray's **Reload rules** item (macOS,
-   Windows, and Linux all have it) or restart QMKonnect — `rules.toml` is not
-   re-read on every focus change.
+4. **Edit took effect?** `rules.toml` **is** re-parsed on every window focus
+   change — switch windows and back. (Or open it via the tray's **Edit rules**
+   item.) If the file failed to parse, a desktop notification fired and host
+   rules fell back to string-only; run `qmkonnect --validate-rules` to see the error.
 5. **Callback name correct?** `qmkonnect --list-callbacks` (see *Callback name
    not found* above).
-6. **Layer ≥ 224?** Host layers must be ≥ 224 (`255` clears); a low number won't
-   resolve above your board layers.
+6. **Layer index valid?** `layer` is a raw QMK layer index (no reserved range):
+   it must be `<` your `layer_state` width (≤31 with `LAYER_STATE_32BIT`) and
+   `!= 255` (the wire "clear layer" sentinel). To win in **stack** mode it must
+   be above your highest board layer; in **replace** mode any valid index wins.
 
 See the [Configuration Guide]({{ site.baseurl }}/configuration) for the schema and
 CLI flags, and the [Examples]({{ site.baseurl }}/examples) for a complete recipe.
