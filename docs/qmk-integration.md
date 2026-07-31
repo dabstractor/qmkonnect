@@ -250,8 +250,9 @@ flag in `rules.toml`: a window is *replace* only when **every** rule that
 matches it is disabling (or the board has no rules of its own); if even one
 matched rule is non-disabling, the window *stacks*. See the
 [Configuration Guide]({{ site.baseurl }}/configuration) for the field-level
-detail. If no window matches, the host layer is cleared and all host callbacks
-are disabled (there is no "keep" option).
+detail. If no host rule matches, only the host layer is cleared and host
+callbacks disabled — the board's own rules still run (host and board are
+independent silos; there is no "keep" option).
 
 ## Testing Your Integration
 

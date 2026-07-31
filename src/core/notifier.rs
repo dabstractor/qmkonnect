@@ -980,9 +980,12 @@ fn host_context_for_window(
 ///
 /// Branches on the optional host [`crate::core::rules::HostContext`]:
 /// - `None` (host rules disabled) → legacy string only.
-/// - stack (`any_match && !clear_board`) → string first, then context.
-/// - replace (`any_match && clear_board`) → context only (no string).
-/// - no-match (`!any_match`) → clear-host context only (no string).
+/// - non-replace (`!clear_board` — covers stack **and** no-match) → string
+///   first, then context. The board silo always runs (C13); for a no-match the
+///   context just clears the host layer/callbacks (clear_board=false ⇒ the
+///   board is untouched).
+/// - replace (`clear_board`: matched, every rule disabling, or no board rules)
+///   → context only (no string).
 ///
 /// Returns the legacy-string send `Result` so each call site keeps its own
 /// error-propagation policy (the worker swallows; `notify_qmk` propagates via
@@ -1008,22 +1011,19 @@ fn dispatch_window_send(
         // Host rules disabled (not capable / no rules.toml / malformed): legacy string only.
         None => send_legacy_string(notifier, message, label, verbose),
 
-        // Stack: board runs (>=1 non-disabling matched rule). String first, then context.
-        Some(ctx) if ctx.any_match && !ctx.clear_board => {
+        // Non-replace (stack OR no-match): the board silo always runs (C13) —
+        // send the string first, then the host context. For a stack match the
+        // context applies the host layer on top; for a no-match it clears the
+        // host layer/callbacks only (clear_board=false ⇒ board untouched).
+        Some(ctx) if !ctx.clear_board => {
             let r = send_legacy_string(notifier, message, label, verbose);
             send_host_context(notifier, filter, host_context_command(&ctx), verbose);
             r
         }
 
-        // Replace: all matched rules disabling, or board has no rules. Context only.
-        Some(ctx) if ctx.any_match => {
-            send_host_context(notifier, filter, host_context_command(&ctx), verbose);
-            Ok(())
-        }
-
-        // No match: clear host layer + disable all callbacks. No string.
-        // `ctx.clear_board` carries the global `[host].disable_firmware_config`
-        // default (HOST_RULES.md §8(4) "<per flag>").
+        // Replace (matched, every rule disabling, or board has no rules):
+        // context only — no string, so the board can't match and the firmware
+        // clears its own board layer/cmd via clear_board=1.
         Some(ctx) => {
             send_host_context(notifier, filter, host_context_command(&ctx), verbose);
             Ok(())
@@ -2044,8 +2044,10 @@ disable = ["known_b", "phantom"]
     }
 
     #[test]
-    fn test_dispatch_no_match_sends_clear_context() {
-        // No match (!any_match): clear-host context ONLY (layer:None), NO string.
+    fn test_dispatch_no_match_sends_string_then_clear_context() {
+        // C13: a host no-match NEVER suppresses the board — the string IS sent
+        // (board silo runs), THEN ApplyHostContext{layer:None,clear:false} clears
+        // the host layer/callbacks only (board untouched).
         reset_test_state();
         reset_handshake_state();
         set_notifier(Box::new(MockNotifier::new()));
@@ -2066,8 +2068,13 @@ disable = ["known_b", "phantom"]
             assert!(_res.is_ok());
         }
 
-        // NO string sent (count 0); one ApplyHostContext{layer:None,clear:false}.
-        assert_eq!(MockNotifier::get_call_count(), 0);
+        // String sent FIRST (count 1, message preserved), then one
+        // ApplyHostContext{layer:None,clear:false} (board untouched).
+        assert_eq!(MockNotifier::get_call_count(), 1);
+        assert_eq!(
+            MockNotifier::get_last_message().as_deref(),
+            Some("App\x1DTitle")
+        );
         let calls = MockNotifier::get_send_command_calls();
         assert_eq!(calls.len(), 1);
         assert!(matches!(

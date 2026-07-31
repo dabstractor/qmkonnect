@@ -299,7 +299,8 @@ Here is the complete annotated example (from `spec/HOST_RULES.md` §9) — what 
 
 [host]
 disable_firmware_config = false   # global default: false = stack (board runs), true = replace
-# On no match the host layer is always cleared and all host callbacks disabled.
+# On no host match: the host layer is cleared + host callbacks disabled, but the
+# BOARD still runs (its string is still sent) — host/board are independent silos.
 
 # Layer rules: FIRST match wins. One host layer active at a time.
 # `layer` is a raw QMK layer index (no reserved range): pick one defined in your
@@ -357,11 +358,15 @@ The value is resolved per rule:
 
 The per-window decision is an **AND** over all rules that matched that window:
 
-- The window is **replace** iff **every** matched rule's effective flag is `true`
-  — *or* the board has no rules of its own.
+- The window is **replace** iff it matched ≥1 rule **and** every matched rule's
+  effective flag is `true` — *or* the board has no rules of its own.
 - If even **one** matched rule is non-disabling, the window is **stack**.
-- **No match:** the host layer is always cleared (`255`) and all host callbacks
-  are disabled. (There is no "keep" option.)
+- (A host no-match is neither: the board still runs, and only the host layer is
+  cleared — see above.)
+- **No host match:** the host layer is cleared (`255`) and all host callbacks are
+  disabled — **but the board still runs**: QMKonnect still sends the window
+  string, so your board's own `DEFINE_*` rules fire normally (host and board are
+  independent silos — a host no-match never suppresses the board).
 
 **Rule of thumb:** set `disable_firmware_config = true` on a rule when you want
 the host to fully own that window (e.g. a browser site where the board's app

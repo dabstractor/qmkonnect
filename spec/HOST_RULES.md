@@ -106,9 +106,10 @@ Because the wire protocol is shared, this feature touches **all three repos**:
   (`\d \D \w \W \s \S \b \B .`) — they are linear-time in the firmware NFA, so
   there is no perf reason to subset. C5 — capability handshake with graceful
   fallback (gated on `proto_ver == 2`). C6 — VIA coexistence is a future phase
-  (feature_flags bit `0x04` reserved). **C7 — no-match ⇒ always clear** (the
-  `on_no_match = "keep"` option is dropped; the host layer is cleared and host
-  callbacks' `on_disable` fires via the desired-set diff). C8 — **all matching
+  (feature_flags bit `0x04` reserved). **C7 — host no-match ⇒ clear host only**
+  (the `on_no_match = "keep"` option is dropped; the host layer is cleared and
+  host callbacks' `on_disable` fires via the desired-set diff — **host silo
+  only**; the board is untouched, see C13). C8 — **all matching
   callbacks fire**; layers are exclusive (first-match-wins, one host layer). C9 —
   one global ruleset for v1 (per-keyboard overrides later). **C10 —
   `disable_firmware_config` per-rule** (default `false`, global default under
@@ -127,7 +128,17 @@ Because the wire protocol is shared, this feature touches **all three repos**:
   that on typical compilers wraps to bit `224 mod 32 = 0`, silently activating
   the base layer.)* **C12 — host is
   the OS source of truth** while connected: `SET_OS` once at connect
-  (host-authoritative; firmware `OS_DETECTION` is the offline fallback).
+  (host-authoritative; firmware `OS_DETECTION` is the offline fallback). **C13 —
+  independent silos**: board rules (`DEFINE_*`, driven by the window string) and
+  host rules (`rules.toml`, driven by `APPLY_HOST_CONTEXT`) each run in their own
+  silo. The host sends the window string for every window that is not in explicit
+  "replace" mode — **including host no-match windows** — so the board's silo
+  always runs (it self-clears on its own no-match). A host no-match clears
+  **only** the host layer/callbacks (`APPLY_HOST_CONTEXT{layer:0xFF,
+  clear_board:false}`); it never suppresses or clears the board. The sole
+  cross-silo action is an explicit per-window "replace"
+  (`disable_firmware_config=true` on a matched rule → no string +
+  `clear_board=1`), a deliberate opt-out — not a no-match side effect.
 
 ## 4. Architecture & Coexistence Model
 
@@ -158,15 +169,19 @@ evaluate host rules against s
    ◄── response[0]=0x51 ack                  ◄── response[0]=0x51 ack
         │
         ▼
-on no match ⇒ APPLY_HOST_CONTEXT{layer=0xFF, set=empty}  (clear host layer + disable all host callbacks)
+on no host match (not replace) ⇒ ① Send STRING_MATCH(s)   (board silo runs — sets/clears its OWN activated_layer/cmd from the string)
+                             + ② APPLY_HOST_CONTEXT{layer:0xFF, set=empty, clear_board=false}  (clears HOST layer+callbacks ONLY; board untouched — C13)
 update host state for next diff/logging
 ```
 
 **Coexistence semantics (precise):**
 
-- The host decides, per window, whether the board runs: send the **string first**
-  iff the board has rules **and** ≥1 matched rule is non-disabling (stack);
-  otherwise send **only** `APPLY_HOST_CONTEXT` with `clear_board=1` (replace).
+- The host sends the **window string** for every window that is not in explicit
+  "replace" mode — including host no-match windows — so the board's silo always
+  runs (C13). Only an explicit per-window "replace" (every matched rule
+  `disable_firmware_config=true`) withholds the string and sets `clear_board=1`;
+  a host no-match sends the string **and** `APPLY_HOST_CONTEXT{layer:0xFF,
+  clear_board:false}` (clears host only, never the board).
   The string is shared by both board lanes, so it is sent at most once.
 - Firmware maintains **two independent layer trackers**: `activated_layer`
   (board, selected per-OS via round-A multi-OS) and `host_layer` (driven by
@@ -348,9 +363,11 @@ model). For one debounced window change:
 - **Replace** (all matched rules disabling, OR board has no rules): send **only**
   `ApplyHostContext { layer: L_h, callbacks, clear_board: true }` (no string →
   board can't match → firmware clears its board layer/cmd via the flag).
-- **No match:** `ApplyHostContext { layer: None (0xFF), callbacks: empty,
-  clear_board: <per flag> }` — always clear the host layer + disable all host
-  callbacks (`on_no_match` is always clear; the `keep` option is withdrawn).
+- **No host match:** send the **string** first (the board silo still runs — it
+  sets/clears its own `activated_layer`/command from the string, C13), then
+  `ApplyHostContext { layer: None (0xFF), callbacks: empty, clear_board: false }`
+  — clears the **host** layer + callbacks only (`clear_board: false` ⇒ board
+  untouched). A host no-match never suppresses or clears the board.
 - The `Notifier` trait / `QmkNotifier` gain the capability so the test mock
   asserts ordering (string before context). Retry/cache parity with `SendMessage`.
 
@@ -473,9 +490,11 @@ pub enum Pattern {
 ```
 
 A rule's effective `disable_firmware_config` = its override if `Some`, else the
-`[host]` default. The window is **replace** iff every matched rule's effective
-flag is `true` (the string is shared by both board lanes, so it is sent iff the
-board has rules **and** ≥1 matched rule is non-disabling). Match semantics are a
+`[host]` default. The window is **replace** iff it matched ≥1 rule **and** every
+matched rule's effective flag is `true`; only then is the string withheld. The
+string is sent for every other window — stack matches **and host no-match
+windows** — so the board silo always runs (C13; a host no-match clears host state
+only, never the board). Match semantics are a
 **full-parity port** of the firmware `pattern_match.c` (incl. `+` and
 `\d \D \w \W \s \S \b \B .` — all linear-time in the NFA). `case_sensitive` per
 rule (default `false`).

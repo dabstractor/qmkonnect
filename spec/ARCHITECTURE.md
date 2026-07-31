@@ -275,8 +275,8 @@ In summary, after the debounced string send, QMKonnect additionally:
   (the host is the OS source of truth while connected);
 - evaluates `rules.toml` against the window and sends an `APPLY_HOST_CONTEXT`
   typed command (the `clear_board` flag selects per-window stack vs replace —
-  see `HOST_RULES.md` §4); on no-match it always clears the host layer +
-  callbacks.
+  see `HOST_RULES.md` §4); on no-match it clears the host layer + callbacks
+  only — the board's own rules still run (host/board are independent silos, C13).
 The debounce worker itself is unchanged — the host-context send happens within
 the same debounced "send" step (one window change ⇒ ≤2 sends: string + context,
 or context-only in replace mode). Retry/cache for the typed command match the

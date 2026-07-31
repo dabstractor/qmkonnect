@@ -464,15 +464,17 @@ pub fn evaluate(
     let desired: BTreeSet<u8> = enabled.difference(&disabled).copied().collect();
 
     // No match -> short-circuit BEFORE the formula (G2: all() is vacuously true
-    // on an empty Vec, which would wrongly yield clear_board=true). The
-    // `clear_board` bit carries the global `[host].disable_firmware_config`
-    // default (HOST_RULES.md §8(4) "<per flag>"), so a user who globally opts
-    // into replace still clears the board on a no-match window.
+    // on an empty Vec, which would wrongly yield clear_board=true). Per C13
+    // (independent silos) a host no-match NEVER suppresses the board: the host
+    // clears only its own layer/callbacks (`clear_board: false`), and the board
+    // silo still runs (the dispatcher sends the window string). The global
+    // `[host].disable_firmware_config` default no longer affects no-match
+    // windows — it applies only to matched windows.
     if matched_effective.is_empty() {
         return HostContext {
             layer: None,
             callback_ids: vec![],
-            clear_board: host_default,
+            clear_board: false,
             any_match: false,
         };
     }
@@ -878,12 +880,13 @@ enable = ["vim_lazy"]
         );
     }
 
-    /// B5 regression: the no-match `clear_board` bit must carry the global
-    /// `[host].disable_firmware_config` default (HOST_RULES.md §8(4) "<per flag>"),
-    /// not be hardcoded to `false`. With the global default set to `true`, a
-    /// no-match window must clear the board.
+    /// C13 regression: a host no-match NEVER suppresses the board. Even with the
+    /// global `[host].disable_firmware_config = true` default, a no-match window
+    /// returns `clear_board: false` (the host clears only its own
+    /// layer/callbacks; the board silo still runs). The global default now
+    /// affects matched windows only.
     #[test]
-    fn test_evaluate_no_match_carries_global_default_true() {
+    fn test_evaluate_no_match_clear_board_always_false() {
         let toml = r#"
 [host]
 disable_firmware_config = true
@@ -900,7 +903,7 @@ layer = 224
             HostContext {
                 layer: None,
                 callback_ids: vec![],
-                clear_board: true, // inherits [host].disable_firmware_config = true
+                clear_board: false, // C13: host no-match never clears the board
                 any_match: false,
             }
         );
