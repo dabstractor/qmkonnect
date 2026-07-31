@@ -77,12 +77,11 @@ fn run() -> Result<(), Box<dyn Error>> {
         return Ok(());
     }
 
-    // Check for configuration mode
-    if args.iter().any(|arg| arg == "-c" || arg == "--config") {
-        return create_config();
-    }
-
-    // Check for reload mode
+    // Check for reload mode FIRST (#29): `-r`/`--reload` accepts `--config
+    // <path>` as a *value* flag (see `parse_value_flag`), so the create-config
+    // check below — which treats `--config` as a boolean — must not run when a
+    // reload was requested. Otherwise `qmkonnect -r --config /path` (the form
+    // shown in `--help`) is silently diverted to create-config mode.
     if args.iter().any(|arg| arg == "-r" || arg == "--reload") {
         // Value flags for root-aware config resolution (Linux #26): a sudo'd
         // `qmkonnect -r` has HOME=/root, so let the user point us at their config
@@ -91,6 +90,11 @@ fn run() -> Result<(), Box<dyn Error>> {
         let user = parse_value_flag(&args, "--user");
         let uid = parse_value_flag(&args, "--uid").and_then(|s| s.parse::<u32>().ok());
         return reload_config(verbose, config, user, uid);
+    }
+
+    // Check for configuration mode (after reload so `-r --config <path>` wins)
+    if args.iter().any(|arg| arg == "-c" || arg == "--config") {
+        return create_config();
     }
 
     // Check for platform list mode
@@ -264,8 +268,8 @@ fn collect_callback_names(
 /// firmware-parity empty-core short-circuit: it matches ONLY windows whose
 /// class/title is empty — not "all windows". The fix is the `*` wildcard.
 /// These never fail validation (the behaviour is spec-compliant); they only
-/// flag the footgun. Pure (no IO) over [`rules::pattern_is_empty_core`], so it
-/// is unit-testable; [`validate_rules`] prints each returned line to stderr.
+/// flag the footgun. Pure (no IO) over [`crate::core::rules::pattern_is_empty_core`],
+/// so it is unit-testable; [`validate_rules`] prints each returned line to stderr.
 fn empty_pattern_warnings(rules: &crate::core::rules::RuleSet) -> Vec<String> {
     let mut out = Vec::new();
     // Two filtered passes over the unified `rules` array preserve the per-type
@@ -309,7 +313,7 @@ fn empty_pattern_warnings(rules: &crate::core::rules::RuleSet) -> Vec<String> {
 /// The two-pass evaluator resolves such a name to DISABLED (the
 /// explicit-exclusion override wins), so the `enable` entry is dead. Never
 /// fails validation; just flags the contradiction. Pure (no IO) over
-/// [`rules::contradictory_callback_names`]; [`validate_rules`] prints each line.
+/// [`crate::core::rules::contradictory_callback_names`]; [`validate_rules`] prints each line.
 fn contradictory_callback_warnings(rules: &crate::core::rules::RuleSet) -> Vec<String> {
     crate::core::rules::contradictory_callback_names(rules)
         .into_iter()
@@ -367,7 +371,7 @@ fn list_callbacks(verbose: bool) -> Result<(), Box<dyn Error>> {
 /// them silently and a device may be disconnected).
 ///
 /// NOTE (D5b/#7): the handshake below runs in **read-only mode**
-/// ([`HandshakeOptions::validation`]) — it skips `SET_OS` (so the lint never
+/// ([`crate::core::notifier::HandshakeOptions::validation`]) — it skips `SET_OS` (so the lint never
 /// mutates firmware state, #6) AND skips the handshake's own default-rules
 /// callback-name check (so mismatch warnings about
 /// `~/.config/qmkonnect/rules.toml` do NOT intermix with the output for the
@@ -636,7 +640,10 @@ disable = ["beta", "disable_vim"]
         assert_eq!(ws.len(), 2, "one warning per empty-pattern rule");
         assert!(ws[0].contains("layer rule #1"));
         assert!(ws[1].contains("callback rule #1"));
-        assert!(ws.iter().all(|w| w.contains("*")), "each must suggest the * wildcard");
+        assert!(
+            ws.iter().all(|w| w.contains("*")),
+            "each must suggest the * wildcard"
+        );
     }
 
     #[test]
@@ -674,7 +681,11 @@ disable = ["baz"]
 "#;
         let rules: crate::core::rules::RuleSet = toml::from_str(toml).unwrap();
         let ws = contradictory_callback_warnings(&rules);
-        assert_eq!(ws.len(), 1, "only the same-rule overlap (foo) is contradictory");
+        assert_eq!(
+            ws.len(),
+            1,
+            "only the same-rule overlap (foo) is contradictory"
+        );
         assert!(ws[0].contains("foo"));
         assert!(ws[0].contains("disable wins"));
     }

@@ -451,8 +451,6 @@ fn sanitize_list_value(s: &str) -> String {
     s.replace('|', "\u{00A6}")
 }
 
-
-
 /// Copy `text` to the Wayland/X11 clipboard, preferring `wl-copy`
 /// (wl-clipboard, standard on Wayland) and falling back to `xclip`. Returns
 /// whether a clipboard tool was available.
@@ -979,6 +977,4 @@ mod tests {
             );
         }
     }
-
-    
 }

@@ -645,10 +645,7 @@ match = ["a", "b"]
 layer = 224
 "#;
         let rs: RuleSet = toml::from_str(parts).unwrap();
-        assert_eq!(
-            rs.rules[0].pattern,
-            Pattern::Parts("a".into(), "b".into())
-        );
+        assert_eq!(rs.rules[0].pattern, Pattern::Parts("a".into(), "b".into()));
     }
 
     #[test]
@@ -1157,10 +1154,10 @@ disable_firmware_config = true
         let rules: RuleSet = toml::from_str(toml).unwrap();
         let n2i = name_map(&[("vim_lazy", 1), ("disable_vim", 2)]);
         let ctx = evaluate(&rules, "kitty", "anything", &n2i, true);
-        assert_eq!(ctx.layer, Some(9));        // layer from the same rule
+        assert_eq!(ctx.layer, Some(9)); // layer from the same rule
         assert_eq!(ctx.callback_ids, vec![2]); // vim_lazy disabled, disable_vim survives
         assert!(ctx.any_match);
-        assert!(ctx.clear_board);              // single matched rule, effective true -> replace
+        assert!(ctx.clear_board); // single matched rule, effective true -> replace
     }
 
     #[test]
@@ -1252,7 +1249,8 @@ enable = ["x"]
         let n2i = name_map(&[("x", 1)]);
         let ctx = evaluate(&rules, "a", "t", &n2i, true);
         assert_eq!(
-            ctx.callback_ids, vec![] as Vec<u8>,
+            ctx.callback_ids,
+            vec![] as Vec<u8>,
             "disable must win regardless of rule order (order-independent exclusion)"
         );
         assert!(ctx.any_match);
@@ -1345,7 +1343,10 @@ enable = ["foo", "bar"]
 disable = ["foo"]
 "#;
         let rules: RuleSet = toml::from_str(toml).unwrap();
-        assert_eq!(contradictory_callback_names(&rules), vec!["foo".to_string()]);
+        assert_eq!(
+            contradictory_callback_names(&rules),
+            vec!["foo".to_string()]
+        );
     }
 
     #[test]
@@ -1394,8 +1395,17 @@ disable = ["z", "m"]
     fn test_pattern_is_empty_core_parts() {
         // Either empty half of a Parts is the same footgun (that half matches
         // only the empty string).
-        assert!(pattern_is_empty_core(&Pattern::Parts("".into(), "*".into())));
-        assert!(pattern_is_empty_core(&Pattern::Parts("*".into(), "".into())));
-        assert!(!pattern_is_empty_core(&Pattern::Parts("*".into(), "*".into())));
+        assert!(pattern_is_empty_core(&Pattern::Parts(
+            "".into(),
+            "*".into()
+        )));
+        assert!(pattern_is_empty_core(&Pattern::Parts(
+            "*".into(),
+            "".into()
+        )));
+        assert!(!pattern_is_empty_core(&Pattern::Parts(
+            "*".into(),
+            "*".into()
+        )));
     }
 }

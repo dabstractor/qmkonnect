@@ -373,7 +373,8 @@ pub fn perform_handshake_with(verbose: bool, opts: HandshakeOptions) {
             // Skipped in the read-only `--validate-rules` mode (#6) so the lint
             // never mutates firmware `current_os`.
             if opts.set_os {
-                if let Err(e) = n.send_command(qmk_notifier::RunCommand::SetOs(host_os()), &filter) {
+                if let Err(e) = n.send_command(qmk_notifier::RunCommand::SetOs(host_os()), &filter)
+                {
                     eprintln!("Warning: SET_OS failed during handshake: {}", e);
                 }
             }
@@ -396,7 +397,10 @@ pub fn perform_handshake_with(verbose: bool, opts: HandshakeOptions) {
                     eprintln!(
                         "Warning: callback sweep exceeded {}s budget at index {} \
                          ({} of {} done) — stopping early to avoid wedging notifications",
-                        CALLBACK_SWEEP_DEADLINE.as_secs(), i, local.len(), sweep_cap
+                        CALLBACK_SWEEP_DEADLINE.as_secs(),
+                        i,
+                        local.len(),
+                        sweep_cap
                     );
                     break;
                 }

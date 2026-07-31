@@ -33,8 +33,6 @@ mod objc_types {
     }
 }
 
-
-
 enum UserEvent {
     MenuEvent(MenuEvent),
     /// Latest device-presence probe result, delivered from the background
@@ -45,7 +43,6 @@ enum UserEvent {
     /// status, delivered after the deferred first-run register completes.
     #[cfg(target_os = "macos")]
     AutostartSync,
-    
 }
 
 // Shared result slot for the Windows settings dialog, replacing the former
@@ -518,8 +515,6 @@ pub fn setup_tray(verbose: bool) {
             Event::UserEvent(UserEvent::AutostartSync) => {
                 launch_at_login_i.set_checked(autostart::is_enabled());
             }
-
-            
 
             _ => {}
         }
