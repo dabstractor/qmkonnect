@@ -114,11 +114,14 @@ Because the wire protocol is shared, this feature touches **all three repos**:
   (feature_flags bit `0x04` reserved). **C7 — host no-match ⇒ clear host only**
   (the `on_no_match = "keep"` option is dropped; the host layer is cleared and
   host callbacks' `on_disable` fires via the desired-set diff — **host silo
-  only**; the board is untouched, see C13). C8 — **all matching
-  callbacks fire**; layers are exclusive (first-match-wins, one host layer). C9 —
+  only**; the board is untouched, see C13). C8 — **one `[[rule]]` array**:
+  per matching rule, the `layer` field is first-match-wins (layers are exclusive —
+  one host layer active) while `enable`/`disable` accumulate across all matches
+  (all-match). Each rule must set at least one of `layer`/`enable`/`disable`
+  (else a parse error). C9 —
   one global ruleset for v1 (per-keyboard overrides later). **C10 —
   `disable_firmware_config` per-rule** (default `false`, global default under
-  `[host]`, per-rule override on `[[layer_rules]]`/`[[callback_rules]]`): a
+  `[host]`, per-rule override on `[[rule]]`): a
   matched rule with it `true` contributes to a **replace** decision for that
   window. **C11 — host layer is a raw QMK layer index** (no fixed reserved range): the
   firmware applies it verbatim via `layer_on()`/`layer_off()` and performs **no**
@@ -161,8 +164,7 @@ build string  s = "{app_class}\x1D{title}"        (existing)
         ▼
 (if host-capable AND rules.toml present)
 evaluate host rules against s
-   • layer_rules   : first match → L_h  (else none)
-   • callback_rules: ALL matches → desired callback id set
+   • rules: first match with a `layer` → L_h (else none); ALL matches' enable/disable → desired callback id set
    • window is "replace" iff EVERY matched rule has disable_firmware_config=true
         │
    ┌──── replace, OR board has no rules ────┐   ┌── stack (>=1 rule non-disabling) AND board has rules ──┐
@@ -365,10 +367,13 @@ as parity tests. Semantics:
 - `Pattern::Parts(c, t)`: both halves must match.
 
 **(3) Per-window evaluation** (`src/core/notifier.rs`). After debounce:
-1. **Layer:** first matching `layer_rule` ⇒ `L_h` (else none).
-2. **Callbacks:** **all** matching `callback_rules` ⇒ desired enabled id set;
-   each rule's `disable` names are an **explicit exclusion** (removed from the
-   desired set, so the firmware's diff fires their `on_disable`).
+1. **One pass over `[[rule]]`** (file order). For each matching rule: if it sets
+   `layer` and none is chosen yet ⇒ `L_h` (first-match-wins; one host layer —
+   exclusive). Its `enable`/`disable` names accumulate into the callback sets
+   (all-match). A rule may set `layer` only, callbacks only, or both.
+2. **Callbacks:** desired enabled id set = `union(enable) − union(disable)` across
+   all matching rules; `disable` is an **explicit exclusion** (removed from the
+   desired set, so the firmware's diff fires the paired `on_disable`).
 3. **Stack-vs-replace:** the window is **replace** iff every matched rule's
    effective `disable_firmware_config` is `true`.
 
@@ -442,30 +447,30 @@ arrive.
 disable_firmware_config = false   # global default: false = stack (board runs), true = replace
 # On no match the host layer is always cleared and all host callbacks disabled.
 
-# Layer rules: FIRST match wins. One host layer active at a time.
-# `layer` is a RAW QMK layer index (no fixed floor): must be < your layer_state
-# width (<=15 default, <=31 with LAYER_STATE_32BIT), > your highest board layer
-# to win in stack mode, and != 255 (the wire "clear" sentinel, rejected).
-[[layer_rules]]
+# Rules: one [[rule]] per (app × behavior). For each matching rule, `layer` is
+# first-match-wins (one host layer active — exclusive); `enable`/`disable`
+# accumulate across ALL matches (all-match). A rule MUST set at least one of
+# `layer` / `enable` / `disable` — one that sets none is a parse error (it may
+# set layer only, callbacks only, or both). `layer` is a RAW QMK layer index
+# (no fixed floor):
+# < your layer_state width (<=15 default, <=31 with LAYER_STATE_32BIT), > your
+# highest board layer to win in stack mode, and != 255 (the "clear" sentinel).
+[[rule]]
 match = "alacritty"                       # class-only pattern
 layer = 10
 disable_firmware_config = true           # optional override (default inherits [host])
 
-[[layer_rules]]
+[[rule]]
 match = ["*chrome*", "*youtube*"]         # [class_pattern, title_pattern] (== WT())
 layer = 11
 case_sensitive = false                    # optional, default false
 
-# Callback rules: ALL matches fire. Names come from the keyboard's registry
-# (run `qmkonnect --list-callbacks` to see them). The disable list is an
-# explicit-exclusion override; focus-out on_disable fires automatically via the
-# desired-set diff.
-[[callback_rules]]
+[[rule]]
 match = "neovide"
 enable = ["vim_lazy", "disable_vim"]      # run on focus-in
 disable = ["vim_lazy"]                    # optional: force-off override
 
-[[callback_rules]]
+[[rule]]
 match = ["*chrome*", "*claude*"]
 enable = ["vim_lazy", "disable_vim"]
 disable_firmware_config = true           # for this window, skip the string -> board can't match
@@ -479,8 +484,7 @@ use serde::Deserialize;
 #[derive(Debug, Deserialize, Default)]
 pub struct RuleSet {
     #[serde(default)] pub host: HostDefaults,
-    #[serde(default, rename = "layer_rules")]    pub layer_rules: Vec<LayerRule>,
-    #[serde(default, rename = "callback_rules")] pub callback_rules: Vec<CallbackRule>,
+    #[serde(default, rename = "rule")] pub rules: Vec<Rule>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -490,16 +494,9 @@ pub struct HostDefaults {
 impl Default for HostDefaults { fn default() -> Self { Self { disable_firmware_config: false } } }
 
 #[derive(Debug, Deserialize)]
-pub struct LayerRule {
+pub struct Rule {
     #[serde(rename = "match")] pub pattern: Pattern,
-    pub layer: u8,
-    #[serde(default)] pub case_sensitive: bool,
-    #[serde(default)] pub disable_firmware_config: Option<bool>,  // None => inherit [host]
-}
-
-#[derive(Debug, Deserialize)]
-pub struct CallbackRule {
-    #[serde(rename = "match")] pub pattern: Pattern,
+    #[serde(default)] pub layer: Option<u8>,               // None => this rule sets no layer
     #[serde(default)] pub enable: Vec<String>,
     #[serde(default)] pub disable: Vec<String>,
     #[serde(default)] pub case_sensitive: bool,
@@ -513,6 +510,11 @@ pub enum Pattern {
     Parts(String, String),          // ["cls","ttl"]
 }
 ```
+
+**Validity.** Every `[[rule]]` must set at least one of `layer`, `enable`, or
+`disable` (in addition to the required `match`); a rule that sets none is
+rejected at parse time (same boundary as the `0xFF` layer sentinel and a missing
+`match`). `layer == 255` is likewise rejected (the wire "clear" sentinel).
 
 A rule's effective `disable_firmware_config` = its override if `Some`, else the
 `[host]` default. The window is **replace** iff it matched ≥1 rule **and** every
@@ -531,13 +533,13 @@ Board rules keep working, so migration is **incremental and optional**:
 1. **Expose callbacks by name** (one-time firmware change): add
    `DEFINE_HOST_CALLBACKS({ … })` listing the functions you already use in
    `DEFINE_SERIAL_COMMANDS`. Reflash once.
-2. **Move a layer rule to the host:** add a `[[layer_rules]]` entry to
-   `rules.toml`; **remove** it from `DEFINE_SERIAL_LAYERS` to avoid the same
-   layer being driven by both trackers (harmless but confusing). No reflash
+2. **Move a layer rule to the host:** add a `[[rule]]` entry with a `layer`
+   field to `rules.toml`; **remove** it from `DEFINE_SERIAL_LAYERS` to avoid the
+   same layer being driven by both trackers (harmless but confusing). No reflash
    needed for future edits.
-3. **Move a callback rule to the host:** add a `[[callback_rules]]` entry;
-   **remove** it from `DEFINE_SERIAL_COMMANDS` (callbacks are additive — if kept
-   in both, the same `on_enable` would fire twice).
+3. **Move a callback rule to the host:** add a `[[rule]]` entry with
+   `enable`/`disable`; **remove** it from `DEFINE_SERIAL_COMMANDS` (callbacks are
+   additive — if kept in both, the same `on_enable` would fire twice).
 4. Iterate by editing `rules.toml` — changes hot-reload on the next window
    change (or use the "Edit rules" tray item) — no reflashing.
 
@@ -607,8 +609,9 @@ context-only (replace); integration per `AGENTS.md`.
   (removed from the desired enabled set; the firmware's diff fires `on_disable`).
   Focus-out `on_disable` also fires automatically when a callback leaves the
   desired set across window changes.
-- **Q3 — Board matcher stays first-match.** Host callbacks use all-match (C8);
-  board `DEFINE_SERIAL_COMMANDS` keeps first-match for backward compatibility.
+- **Q3 — Board matcher stays first-match.** Host callbacks accumulate
+  (all-match, C8) while host layers are first-match-wins; the board
+  `DEFINE_SERIAL_COMMANDS` keeps first-match for backward compatibility.
 
 ## 14. Appendix — File Layout Touched & Pattern Subset
 
