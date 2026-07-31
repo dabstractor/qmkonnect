@@ -28,6 +28,7 @@ About QMKonnect                              ← PredefinedMenuItem::about
 ─────────────                                ← separator
 [Launch at Login  /  Open at Login]          ← CheckMenuItem (macOS / Windows)
 Settings                                     ← MenuItem
+Edit rules…                                  ← seed rules.toml if absent, then open in system editor (xdg-open / open / start)
 ─────────────                                ← separator
 Show Window Information...                   ← MenuItem (macOS/Windows only)
 ─────────────                                ← separator
@@ -50,6 +51,7 @@ Quit                                         ← MenuItem
 (hidden structural toggle)                   ← visible:false, forces LayoutUpdated redraw
 ─────────────
 Settings…                                    ← zenity --forms (writes config.toml)
+Edit rules                                   ← seed rules.toml if absent, then xdg-open
 ─────────────
 Show Window Information                      ← notify-send / native GTK popup
 ─────────────
@@ -131,7 +133,10 @@ effect within ~3 s (no restart).
     (`install -m644 …/99-qmkonnect.rules && udevadm … && rm`). If pkexec is
     unavailable/cancelled, surface "Run: `sudo qmkonnect -r`" (which is now
     root-aware — `SPEC_LINUX.md` §4).
-- Notifications via `notify-send` (`--app-name=QMKonnect --icon=input-keyboard`).
+- Notifications via `notify-send` (`--app-name=QMKonnect --icon=input-keyboard`) —
+  also fires an automatic **"rules.toml invalid"** notification when `rules.toml`
+  fails to parse (host rules fall back to string-only — never silent). macOS uses
+  `NSUserNotification`/`UNUserNotificationCenter`; Windows a toast — same trigger.
 
 ### 2.4 `parse_id_field` / `parse_id` (shared logic)
 - Trim; empty **or** literal `"auto"`/`"AUTO"` ⇒ `Ok(None)`.

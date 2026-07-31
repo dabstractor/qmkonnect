@@ -36,7 +36,8 @@ apply on top. Nothing existing is removed or deprecated.
 - **`qmkonnect`:** `rules.toml` parsing + validation, host-side rule evaluation,
   a startup capability/name handshake, `notify_qmk` extended to send the host
   context after the legacy string, CLI flags (`--list-callbacks`,
-  `--validate-rules`), a "Reload rules" tray item, and per-platform rules-file
+  `--validate-rules`), an "Edit rules" tray item (opens `rules.toml` in the
+  system editor, seeding it from the template if absent), and per-platform rules-file
   paths.
 - **Docs:** updates to `docs/qmk-integration.md`, `docs/configuration.md`,
   `docs/examples.md`, `docs/troubleshooting.md`, `Readme.md`, and a regenerated
@@ -44,8 +45,9 @@ apply on top. Nothing existing is removed or deprecated.
 
 **Success definition.**
 
-- A user can add/change a layer or callback rule by editing `rules.toml` and
-  clicking "Reload rules" — **no reflash**.
+- A user can add/change a layer or callback rule by editing `rules.toml`; it
+  hot-reloads on the next window change (or is opened via the "Edit rules" tray
+  item) — **no reflash**, and no manual reload step.
 - Board (`DEFINE_*`) rules keep working unchanged; host rules apply on top in the
   documented order (board layer first → host layer on top; board callbacks first
   → host callbacks after).
@@ -101,7 +103,10 @@ Because the wire protocol is shared, this feature touches **all three repos**:
   existing `on_enable`/`on_disable` pattern). Host-side actions (shell/launch)
   and host-driven keyboard macros are **out of scope**.
 - **C1 — Format: TOML.** C2 — separate `rules.toml` next to `config.toml`. C3 —
-  hot-reload (fs watch + tray "Reload rules"). **C4 — full matcher parity**: port
+  hot-reload by re-parsing `rules.toml` on every window focus change (no fs
+  watch, no manual reload) + an "Edit rules" tray item (system editor;
+  seed-if-absent); a parse failure is never silent (desktop notification +
+  string-only fallback — §7). **C4 — full matcher parity**: port
   the firmware `pattern_match.c` to Rust **including** `+` and the classes
   (`\d \D \w \W \s \S \b \B .`) — they are linear-time in the firmware NFA, so
   there is no perf reason to subset. C5 — capability handshake with graceful
@@ -396,8 +401,16 @@ device transition via the existing `is_device_connected()` poll, deduped by the
 names; non-zero exit on error); `--rules-path`. `-c`/`--config` seeds a commented
 `rules.toml` template.
 
-**(7) Tray/UX:** add **"Reload rules"** to all three menus (re-read `rules.toml`,
-re-validate, re-handshake if needed). Optional status line: `proto v2 · N callbacks`.
+**(7) Tray/UX:** add **"Edit rules"** to all three menus — seed `rules.toml` from
+the commented template if absent (same body as `-c`), then open it in the system
+default editor (`xdg-open` / `open` / `cmd /C start`). Rule changes apply
+automatically — `rules.toml` is re-parsed on every window focus change, so there
+is **no apply button**. **Validation is automatic, not manual:** if `rules.toml`
+fails to parse, fire a **desktop notification** (`notify-send` on Linux,
+`NSUserNotification` on macOS, toast on Windows) carrying the parse error and
+fall back to string-only — never silent. The deliberate on-demand check remains
+`--validate-rules` (CLI). (The former "Reload rules" item is withdrawn: redundant
+for applying rules, and its validation feedback was log-only.)
 
 **(8) Backward compatibility:** no `rules.toml` ⇒ identical to today; legacy
 firmware (`proto_ver != 2` / timeout) ⇒ string-only, board rules unaffected; new
@@ -513,7 +526,8 @@ Board rules keep working, so migration is **incremental and optional**:
 3. **Move a callback rule to the host:** add a `[[callback_rules]]` entry;
    **remove** it from `DEFINE_SERIAL_COMMANDS` (callbacks are additive — if kept
    in both, the same `on_enable` would fire twice).
-4. Iterate by editing `rules.toml` + "Reload rules" — no reflashing.
+4. Iterate by editing `rules.toml` — changes hot-reload on the next window
+   change (or use the "Edit rules" tray item) — no reflashing.
 
 ## 11. Implementation Breakdown (by repo)
 
@@ -528,7 +542,8 @@ One coordinated change across the three repos:
 - **`qmkonnect`:** pin the crate; `src/core/rules.rs` + `src/core/pattern.rs`
   (full-parity matcher + ported corpus); handshake + `SET_OS`; the `notify_qmk`
   `disable_firmware_config`/`clear_board` send logic + state; CLI flags; tray
-  "Reload rules"; config-path integration; tests.
+  "Edit rules" + parse-failure desktop notification; config-path integration;
+  tests.
 - **Docs:** `Readme.md`, `docs/qmk-integration.md`, `docs/configuration.md`,
   `docs/examples.md`, `docs/troubleshooting.md`, regenerated `docs/llms_full.txt`.
 - **VIA coexistence (separate, out of scope here):** a dispatching
@@ -595,7 +610,7 @@ qmkonnect/
   src/core/pattern.rs                     # NEW: full-parity matcher (ported from firmware)
   src/core/mod.rs                         # wire rules into config/startup
   src/main.rs                             # --list-callbacks / --validate-rules
-  src/tray.rs / src/linux_tray.rs         # "Reload rules" menu item
+  src/tray.rs / src/linux_tray.rs         # "Edit rules" menu item + parse-failure notification
   Readme.md, docs/*.md, docs/llms_full.txt
 qmk-notifier/  (external crate)
   src/lib.rs / src/core.rs                # RunCommand variants, HostOs, CommandResponse, run()

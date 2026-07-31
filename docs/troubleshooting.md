@@ -548,9 +548,10 @@ wins. See the
    (or use the tray's "Show Window Information"). A `*chrome*` rule won't match a
    class reported as `Google Chrome` — adjust the pattern or use a `[class, title]`
    array.
-4. **Reloaded after editing?** Click the tray's **Reload rules** item (macOS,
-   Windows, and Linux all have it) or restart QMKonnect — `rules.toml` is not
-   re-read on every focus change.
+4. **Edit took effect?** `rules.toml` **is** re-parsed on every window focus
+   change — switch windows and back. (Or open it via the tray's **Edit rules**
+   item.) If the file failed to parse, a desktop notification fired and host
+   rules fell back to string-only; run `qmkonnect --validate-rules` to see the error.
 5. **Callback name correct?** `qmkonnect --list-callbacks` (see *Callback name
    not found* above).
 6. **Layer index valid?** `layer` is a raw QMK layer index (no reserved range):

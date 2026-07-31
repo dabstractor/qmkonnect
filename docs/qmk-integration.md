@@ -204,9 +204,9 @@ all. Board rules keep working throughout.
    then **remove** the matching row from `DEFINE_SERIAL_COMMANDS`. Here removal
    matters: callbacks are additive, so if a rule stays in both, the same
    `on_enable` would fire twice.
-4. **Iterate without reflashing** — edit `rules.toml` and click the tray's
-   **Reload rules** (or restart QMKonnect). Every future rule change is a host
-   edit, no firmware rebuild.
+4. **Iterate without reflashing** — edit `rules.toml`; changes hot-reload on the
+   next window change (or open it via the tray's **Edit rules** item). Every
+   future rule change is a host edit, no firmware rebuild.
 
 For example, the firmware callback rule
 `{ WT("steam_app*", "*"), &disable_vim }` (already listed in

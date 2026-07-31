@@ -32,8 +32,8 @@ This tool is part of a broader ecosystem:
 
 - **Host-Side Window Rules**:
   - **Change layers & callbacks without reflashing** — edit a `rules.toml` file
-    on your computer, then click **Reload rules** in the tray/menu bar; no
-    firmware rebuild needed
+    on your computer (the **Edit rules** tray item opens it; changes hot-reload
+    on the next window change); no firmware rebuild needed
   - Host rules **stack on top of** your board's existing `DEFINE_SERIAL_*`
     rules (the board's rules run first, then host rules apply on top)
   - Requires firmware that advertises the typed-command capability
