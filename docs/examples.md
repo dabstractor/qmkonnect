@@ -292,27 +292,25 @@ withdrawn — `layer_state` cannot hold bit 224.)
 [host]
 disable_firmware_config = false   # global default: STACK (board rules still run)
 
-# Layer rules — FIRST match wins. `layer` = a real QMK layer index from your keymap.
-[[layer_rules]]
+# Rules — `layer` is first-match-wins (one host layer active); `enable`/`disable`
+# accumulate across ALL matches. One [[rule]] can set layer AND callbacks for the
+# same app at once. `layer` = a real QMK layer index from your keymap.
+[[rule]]
 match = "steam_app*"                       # class-only pattern (board rules also run)
 layer = 10
+enable = ["enable_gaming"]                 # layer + callbacks for one app, in one rule
 
-[[layer_rules]]
+[[rule]]
 match = ["cs2", "Counter-Strike 2"]        # [class, title]  == WT(class, title)
 layer = 10
 
 # Replace: for this window the host takes over and the board is skipped.
-[[layer_rules]]
+[[rule]]
 match = ["*chrome*", "*youtube*"]
 layer = 11
 disable_firmware_config = true
 
-# Callback rules — ALL matches fire. Names come from DEFINE_HOST_CALLBACKS.
-[[callback_rules]]
-match = "steam_app*"
-enable = ["enable_gaming"]
-
-[[callback_rules]]
+[[rule]]
 match = "*word*"
 enable = ["disable_gaming"]
 ```

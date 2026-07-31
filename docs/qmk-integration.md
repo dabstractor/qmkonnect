@@ -208,15 +208,15 @@ all. Board rules keep working throughout.
 1. **Expose your callbacks by name** — add `DEFINE_HOST_CALLBACKS({ … })`
    (above) listing the functions you already use in `DEFINE_SERIAL_COMMANDS`.
    Reflash **once**. (This is the only step that ever requires a reflash.)
-2. **Move a layer rule to the host** — add a `[[layer_rules]]` entry to
-   `rules.toml`, then **remove** the matching row from `DEFINE_SERIAL_LAYERS`.
-   (Keeping it in both isn't harmful, but it means the same layer is driven by
-   two trackers at once, which is confusing.) No reflash needed for this or any
-   later edit.
-3. **Move a callback rule to the host** — add a `[[callback_rules]]` entry,
-   then **remove** the matching row from `DEFINE_SERIAL_COMMANDS`. Here removal
-   matters: callbacks are additive, so if a rule stays in both, the same
-   `on_enable` would fire twice.
+2. **Move a layer rule to the host** — add a `[[rule]]` entry with a `layer`
+   field to `rules.toml`, then **remove** the matching row from
+   `DEFINE_SERIAL_LAYERS`. (Keeping it in both isn't harmful, but it means the
+   same layer is driven by two trackers at once, which is confusing.) No reflash
+   needed for this or any later edit.
+3. **Move a callback rule to the host** — add a `[[rule]]` entry with
+   `enable`/`disable`, then **remove** the matching row from
+   `DEFINE_SERIAL_COMMANDS`. Here removal matters: callbacks are additive, so if
+   a rule stays in both, the same `on_enable` would fire twice.
 4. **Iterate without reflashing** — edit `rules.toml`; changes hot-reload on the
    next window change (or open it via the tray's **Edit rules** item). Every
    future rule change is a host edit, no firmware rebuild.
@@ -227,7 +227,7 @@ For example, the firmware callback rule
 host rule:
 
 ```toml
-[[callback_rules]]
+[[rule]]
 match = ["steam_app*", "*"]        # [class, title]  == WT(class, title)
 enable = ["disable_vim"]
 ```

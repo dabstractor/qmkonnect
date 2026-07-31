@@ -262,23 +262,19 @@ active window.
 
 ### Schema reference
 
-`rules.toml` has one optional table and two table-arrays:
+`rules.toml` has one optional table and one table-array:
 
 | Section / Key | Required | Default | Description |
 | --- | :---: | --- | --- |
 | `[host]` table | no | — | Global host defaults. |
 | `[host] disable_firmware_config` | no | `false` | Global stack/replace default. `false` = the board runs its own rules too (**stack**); `true` = the host takes over (**replace**). Per-rule `disable_firmware_config` overrides this. See [Stack vs. replace](#stack-vs-replace-disable_firmware_config). |
-| `[[layer_rules]]` table-array | no | `[]` | Layer rules. **First match wins**; one host layer is active at a time. |
-| `[[layer_rules]] match` | **yes** | — | Window pattern. A bare string (`"alacritty"`) matches the **window class only**; a two-element array (`["*chrome*", "*youtube*"]`) matches **class and title** (equivalent to the firmware `WT(class, title)`). Supports `*`, `^`, `$`, `+`, character classes (`\d \w \s …`), and `.` — full parity with the firmware matcher. |
-| `[[layer_rules]] layer` | **yes** | — | The host layer number to activate — a **raw QMK layer index**, not a reserved range. Must be `<` your firmware's `layer_state_t` width (≤15 by default, ≤31 with `LAYER_STATE_32BIT`; larger indices are undefined behavior in `layer_on`), and `!= 255` (`0xFF` is the wire "clear layer" sentinel — writing it would silently *clear* the host layer, so `parse_rules`/`--validate-rules` reject it). To make the host layer win in **stack** mode, pick an index above your highest board layer; in **replace** mode any valid index wins. |
-| `[[layer_rules]] case_sensitive` | no | `false` | Whether `match` is case-sensitive. |
-| `[[layer_rules]] disable_firmware_config` | no | inherits `[host]` | Per-rule stack/replace override. Absent ⇒ uses the `[host]` default. |
-| `[[callback_rules]]` table-array | no | `[]` | Callback rules. **All matches fire.** Names come from your keyboard's callback registry (run `qmkonnect --list-callbacks` to see them). |
-| `[[callback_rules]] match` | **yes** | — | Window pattern (same form as `[[layer_rules]] match`). |
-| `[[callback_rules]] enable` | no | `[]` | Callback names to enable on focus-in. |
-| `[[callback_rules]] disable` | no | `[]` | Callback names to force off (**explicit exclusion**, order-independent: a `disable` in any matching rule always wins over an `enable` in any other matching rule). Focus-out `on_disable` also fires automatically when a callback leaves the active set. |
-| `[[callback_rules]] case_sensitive` | no | `false` | Whether `match` is case-sensitive. |
-| `[[callback_rules]] disable_firmware_config` | no | inherits `[host]` | Per-rule stack/replace override. |
+| `[[rule]]` table-array | no | `[]` | Host rules — one entry per (app × behavior). For each matching rule, `layer` is **first-match-wins** (one host layer active at a time); `enable`/`disable` accumulate across **all** matches (all-match). A rule MUST set at least one of `layer` / `enable` / `disable` (one that sets none is a parse error); it may set layer only, callbacks only, or both. Names come from your keyboard's callback registry (run `qmkonnect --list-callbacks` to see them). |
+| `[[rule]] match` | **yes** | — | Window pattern. A bare string (`"alacritty"`) matches the **window class only**; a two-element array (`["*chrome*", "*youtube*"]`) matches **class and title** (equivalent to the firmware `WT(class, title)`). Supports `*`, `^`, `$`, `+`, character classes (`\d \w \s …`), and `.` — full parity with the firmware matcher. |
+| `[[rule]] layer` | no | `None` | Optional — the host layer number to activate. A **raw QMK layer index**, not a reserved range. When set it must be `<` your firmware's `layer_state_t` width (≤15 by default, ≤31 with `LAYER_STATE_32BIT`; larger indices are undefined behavior in `layer_on`), and `!= 255` (`0xFF` is the wire "clear layer" sentinel — writing it would silently *clear* the host layer, so `parse_rules`/`--validate-rules` reject it). To make the host layer win in **stack** mode, pick an index above your highest board layer; in **replace** mode any valid index wins. A rule may set `enable`/`disable` only and leave this unset. |
+| `[[rule]] enable` | no | `[]` | Callback names to enable on focus-in. |
+| `[[rule]] disable` | no | `[]` | Callback names to force off (**explicit exclusion**, order-independent: a `disable` in any matching rule always wins over an `enable` in any other matching rule). Focus-out `on_disable` also fires automatically when a callback leaves the active set. |
+| `[[rule]] case_sensitive` | no | `false` | Whether `match` is case-sensitive. |
+| `[[rule]] disable_firmware_config` | no | inherits `[host]` | Per-rule stack/replace override. Absent ⇒ uses the `[host]` default. |
 
 **Creating the file.** Run `qmkonnect -c` to seed a fully-commented `rules.toml`
 template alongside your `config.toml` (it is a no-op if `rules.toml` already
@@ -302,30 +298,30 @@ disable_firmware_config = false   # global default: false = stack (board runs), 
 # On no host match: the host layer is cleared + host callbacks disabled, but the
 # BOARD still runs (its string is still sent) — host/board are independent silos.
 
-# Layer rules: FIRST match wins. One host layer active at a time.
-# `layer` is a raw QMK layer index (no reserved range): pick one defined in your
-# keymap, < your layer_state width (<=15 default, <=31 with LAYER_STATE_32BIT),
-# above your highest board layer (so it wins in stack mode), and != 255.
-[[layer_rules]]
+# Rules: one [[rule]] per (app × behavior). For each matching rule, `layer` is
+# first-match-wins (one host layer active — exclusive); `enable`/`disable`
+# accumulate across ALL matches (all-match). A rule MUST set at least one of
+# `layer` / `enable` / `disable` — one that sets none is a parse error (it may set
+# layer only, callbacks only, or both). `layer` is a RAW QMK layer index (no fixed
+# floor): pick one defined in your keymap, < your layer_state width (<=15 default,
+# <=31 with LAYER_STATE_32BIT), above your highest board layer (so it wins in
+# stack mode), and != 255 (the "clear" sentinel).
+[[rule]]
 match = "alacritty"                       # class-only pattern
 layer = 10
 disable_firmware_config = true           # optional override (default inherits [host])
 
-[[layer_rules]]
+[[rule]]
 match = ["*chrome*", "*youtube*"]         # [class_pattern, title_pattern] (== WT())
 layer = 11
 case_sensitive = false                    # optional, default false
 
-# Callback rules: ALL matches fire. Names come from the keyboard's registry
-# (run `qmkonnect --list-callbacks` to see them). The disable list is an
-# explicit-exclusion override; focus-out on_disable fires automatically via the
-# desired-set diff.
-[[callback_rules]]
+[[rule]]
 match = "neovide"
 enable = ["vim_lazy", "disable_vim"]      # run on focus-in
 disable = ["vim_lazy"]                    # optional: force-off override
 
-[[callback_rules]]
+[[rule]]
 match = ["*chrome*", "*claude*"]
 enable = ["vim_lazy", "disable_vim"]
 disable_firmware_config = true           # for this window, skip the string -> board can't match
@@ -395,9 +391,8 @@ own rules:
 The value is resolved per rule:
 
 - The **global default** is `[host] disable_firmware_config` (default `false`).
-- Each `[[layer_rules]]` / `[[callback_rules]]` may set an optional
-  `disable_firmware_config` to override it. **Absent ⇒ inherits the `[host]`
-  default.**
+- Each `[[rule]]` may set an optional `disable_firmware_config` to override it.
+  **Absent ⇒ inherits the `[host]` default.**
 - A rule's **effective** flag is its override if set, else the `[host]` default.
 
 The per-window decision is an **AND** over all rules that matched that window:

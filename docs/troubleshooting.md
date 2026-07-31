@@ -517,11 +517,12 @@ qmkonnect --validate-rules                  # prints:  rules.toml invalid: {erro
 qmkonnect --validate-rules --rules-path ~/rules.draft.toml   # validate a draft elsewhere
 ```
 
-**Fix**: every `[[layer_rules]]` entry **requires** `match` and `layer` (an entry
-missing either is an error); `match` is either a bare string (`"steam_app*"`,
-class-only) or a **2-element** array (`["*chrome*", "*youtube*"]` — class and
-title; 1- or 3-element arrays are errors); `layer` is a **raw QMK layer index**
-(no reserved range) — it must be `<` your `layer_state` width (≤31 with
+**Fix**: every `[[rule]]` entry **requires** `match` and at least one of `layer`
+/ `enable` / `disable` (an entry setting none of those is an error); `match` is
+either a bare string (`"steam_app*"`, class-only) or a **2-element** array
+(`["*chrome*", "*youtube*"]` — class and title; 1- or 3-element arrays are
+errors); `layer` is **optional** — a **raw QMK layer index** (no reserved range)
+when set, and must then be `<` your `layer_state` width (≤31 with
 `LAYER_STATE_32BIT`) and `!= 255` (the wire "clear layer" sentinel, which would
 silently *clear* the host layer and is rejected). To win in **stack** mode it
 must be above your highest board layer; in **replace** mode any valid index
