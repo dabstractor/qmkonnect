@@ -170,8 +170,8 @@ pub fn create_default_config(config_path: &Path) -> Result<(), Box<dyn Error>> {
 /// the user uncomments and edits entries. Mirrors [`render_config_body`].
 ///
 /// This is the host-rules counterpart to [`render_config_body`]: a pure renderer
-/// (no IO) kept here so the `-c` seeder (`create_default_rules`) and any future
-/// re-seeder (P5.M2 tray "Reload rules") agree on the file format.
+/// (no IO) kept here so the `-c` seeder ([`create_default_rules`]) and the
+/// "Edit rules" tray seeder ([`edit_rules`]) agree on the file format.
 ///
 /// # Example
 ///
@@ -272,6 +272,29 @@ pub fn create_default_rules(rules_path: &Path) -> Result<(), Box<dyn Error>> {
     );
 
     Ok(())
+}
+
+/// "Edit rules" tray action (HOST_RULES.md §7): ensure `rules.toml` exists —
+/// seed the commented template next to `config.toml` if absent (same body as
+/// `qmkonnect -c`; a no-op if it already exists) — then open it in the system
+/// default editor. Fire-and-forget (the tray spawns it on a background thread);
+/// errors are logged, not fatal.
+pub fn edit_rules() {
+    let dir = match crate::platforms::create_config_dir() {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("Edit rules: could not create config dir: {e}");
+            return;
+        }
+    };
+    let path = dir.join("rules.toml");
+    if let Err(e) = create_default_rules(&path) {
+        eprintln!("Edit rules: could not seed {}: {e}", path.display());
+        return;
+    }
+    if let Err(e) = crate::platforms::open_in_default_app(&path) {
+        eprintln!("Edit rules: could not open {}: {e}", path.display());
+    }
 }
 
 #[cfg(test)]

@@ -123,6 +123,89 @@ pub fn create_config_dir() -> Result<std::path::PathBuf, Box<dyn Error>> {
     }
 }
 
+/// Best-effort, non-blocking desktop notification (fire-and-forget). Surfaces a
+/// malformed `rules.toml` to the user (HOST_RULES.md §7). The caller
+/// (`host_context_for_window`) dedupes, so this fires at most once per broken
+/// state. Failures (no daemon / binary) are silently ignored.
+pub fn notify(title: &str, body: &str) {
+    #[cfg(target_os = "linux")]
+    {
+        let _ = std::process::Command::new("notify-send")
+            .args(["--app-name=QMKonnect", "--icon=input-keyboard", title, body])
+            .status();
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let script = format!(
+            "display notification {} with title {}",
+            osa_string(body),
+            osa_string(title)
+        );
+        let _ = std::process::Command::new("osascript")
+            .args(["-e", &script])
+            .status();
+    }
+    #[cfg(target_os = "windows")]
+    {
+        // Dep-free stand-in for a WinRT toast (a true toast needs an
+        // AppUserModelID + Start Menu shortcut to render). Non-blocking via a
+        // spawned thread; mirrors tray.rs's MessageBoxW idiom.
+        let body_w: Vec<u16> = body.encode_utf16().chain(std::iter::once(0)).collect();
+        let title_w: Vec<u16> = title.encode_utf16().chain(std::iter::once(0)).collect();
+        std::thread::spawn(move || {
+            use windows::core::PCWSTR;
+            use windows::Win32::Foundation::HWND;
+            use windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
+            unsafe {
+                let _ = MessageBoxW(
+                    HWND(0),
+                    PCWSTR(body_w.as_ptr()),
+                    PCWSTR(title_w.as_ptr()),
+                    MB_OK | MB_ICONERROR,
+                );
+            }
+        });
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+    {
+        let _ = (title, body); // unsupported platform — no-op
+    }
+}
+
+/// Quote a Rust string as an AppleScript (`osascript`) string literal.
+#[cfg(target_os = "macos")]
+fn osa_string(s: &str) -> String {
+    format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
+/// Open `path` in the system default application for its type (the "Edit rules"
+/// tray action — HOST_RULES.md §7). Returns the spawn `Result` so the caller
+/// can log a launch failure; the call itself returns once the app is launched.
+pub fn open_in_default_app(path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(target_os = "linux")]
+    {
+        std::process::Command::new("xdg-open").arg(path).status()?;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open").arg(path).status()?;
+    }
+    #[cfg(target_os = "windows")]
+    {
+        // `cmd /C start "" <path>` — the empty title is required or `start`
+        // treats the path as the window title.
+        std::process::Command::new("cmd")
+            .args(["/C", "start", ""])
+            .arg(path)
+            .status()?;
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+    {
+        return Err("open_in_default_app: unsupported platform".into());
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

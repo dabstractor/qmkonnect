@@ -214,6 +214,12 @@ static CALLBACK_NAMES: Lazy<Mutex<HashMap<String, u8>>> = Lazy::new(|| Mutex::ne
 /// (`is_device_connected()` false→true) to re-trigger.
 static HAS_HANDSHAKED: AtomicBool = AtomicBool::new(false);
 
+/// Dedup guard for the malformed-`rules.toml` desktop notification
+/// (HOST_RULES.md §7). Set the first time a parse failure is notified; cleared
+/// on a successful parse — so the notification fires at most once per broken
+/// state, not on every window focus change.
+static RULES_INVALID_NOTIFIED: AtomicBool = AtomicBool::new(false);
+
 /// The host OS, for the `SET_OS` command. Determined at build time from
 /// `cfg!(target_os)`; the host is the OS source of truth while connected
 /// (HOST_RULES.md §5 C12). Returns [`qmk_notifier::HostOs::Unsure`] on
@@ -954,8 +960,19 @@ fn host_context_for_window(
         .into_iter()
         .find(|p| p.exists())?; // no rules.toml -> None -> string-only
     let rules = match crate::core::rules::parse_rules(&path) {
-        Ok(r) => r,
+        Ok(r) => {
+            // A good parse re-arms the malformed-file notification (so a later
+            // breakage notifies again). HOST_RULES.md §7.
+            RULES_INVALID_NOTIFIED.store(false, Ordering::SeqCst);
+            r
+        }
         Err(e) => {
+            // §7: never silent on a bad file — fire ONE desktop notification per
+            // broken state (swap returns the prior flag; notify only on the
+            // false→true transition), then fall back to string-only.
+            if !RULES_INVALID_NOTIFIED.swap(true, Ordering::SeqCst) {
+                crate::platforms::notify("QMKonnect: rules.toml invalid", &format!("{e}"));
+            }
             if verbose {
                 eprintln!(
                     "Warning: could not parse {}: {} — host rules disabled for this window",
