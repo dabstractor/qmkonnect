@@ -226,7 +226,7 @@ fn parse_value_flag(args: &[String], name: &str) -> Option<String> {
 }
 
 /// Collect every callback name referenced by a parsed `rules.toml` (the union
-/// of all `callback_rules[].enable` + `callback_rules[].disable`), deduped +
+/// of all `rule[].enable` + `rule[].disable`), deduped +
 /// sorted. Pure (no IO, no globals) ⇒ thread-safe + unit-testable. Used by
 /// `--validate-rules` to report names not present in the live handshake map.
 /// (`BTreeSet` ⇒ deterministic sorted output.) Required because
@@ -238,7 +238,7 @@ fn parse_value_flag(args: &[String], name: &str) -> Option<String> {
 /// ```rust,ignore
 /// use qmkonnect::core::rules::RuleSet;
 /// let rules: RuleSet = toml::from_str(r#"
-/// [[callback_rules]]
+/// [[rule]]
 /// match = "a"
 /// enable = ["x", "y"]
 /// disable = ["x"]
@@ -250,7 +250,7 @@ fn collect_callback_names(
     rules: &crate::core::rules::RuleSet,
 ) -> std::collections::BTreeSet<String> {
     let mut names = std::collections::BTreeSet::new();
-    for rule in &rules.callback_rules {
+    for rule in &rules.rules {
         for n in rule.enable.iter().chain(rule.disable.iter()) {
             names.insert(n.clone());
         }
@@ -268,24 +268,36 @@ fn collect_callback_names(
 /// is unit-testable; [`validate_rules`] prints each returned line to stderr.
 fn empty_pattern_warnings(rules: &crate::core::rules::RuleSet) -> Vec<String> {
     let mut out = Vec::new();
-    for (i, rule) in rules.layer_rules.iter().enumerate() {
-        if crate::core::rules::pattern_is_empty_core(&rule.pattern) {
-            out.push(format!(
-                "⚠  layer rule #{} has an empty `match` pattern (an empty string): it matches only \
-                 windows whose class/title is empty, not all windows. Use the `*` wildcard for a \
-                 catch-all.",
-                i + 1
-            ));
+    // Two filtered passes over the unified `rules` array preserve the per-type
+    // 1-based numbering ("layer rule #N" / "callback rule #N") that the split
+    // schema had — a single enumerate would number by file position and break
+    // both the user-facing text and the test assertions.
+    let mut layer_n = 0;
+    for rule in &rules.rules {
+        if rule.layer.is_some() {
+            layer_n += 1;
+            if crate::core::rules::pattern_is_empty_core(&rule.pattern) {
+                out.push(format!(
+                    "⚠  layer rule #{} has an empty `match` pattern (an empty string): it matches only \
+                     windows whose class/title is empty, not all windows. Use the `*` wildcard for a \
+                     catch-all.",
+                    layer_n
+                ));
+            }
         }
     }
-    for (i, rule) in rules.callback_rules.iter().enumerate() {
-        if crate::core::rules::pattern_is_empty_core(&rule.pattern) {
-            out.push(format!(
-                "⚠  callback rule #{} has an empty `match` pattern (an empty string): it matches \
-                 only windows whose class/title is empty, not all windows. Use the `*` wildcard \
-                 for a catch-all.",
-                i + 1
-            ));
+    let mut cb_n = 0;
+    for rule in &rules.rules {
+        if rule.layer.is_none() {
+            cb_n += 1;
+            if crate::core::rules::pattern_is_empty_core(&rule.pattern) {
+                out.push(format!(
+                    "⚠  callback rule #{} has an empty `match` pattern (an empty string): it matches \
+                     only windows whose class/title is empty, not all windows. Use the `*` wildcard \
+                     for a catch-all.",
+                    cb_n
+                ));
+            }
         }
     }
     out
@@ -437,10 +449,11 @@ fn validate_rules(rules_path: Option<PathBuf>, verbose: bool) -> Result<(), Box<
         println!("Device not connected — callback-name validation skipped (schema-only).");
     }
 
+    let layer_count = rs.rules.iter().filter(|r| r.layer.is_some()).count();
+    let cb_count = rs.rules.iter().filter(|r| r.layer.is_none()).count();
     println!(
         "rules.toml valid: {} layer rules, {} callback rules.",
-        rs.layer_rules.len(),
-        rs.callback_rules.len()
+        layer_count, cb_count
     );
     Ok(())
 }
@@ -571,12 +584,12 @@ mod tests {
         // deduped + sorted. D6: this helper is required because
         // notifier::unknown_callback_names is private.
         let toml = r#"
-[[callback_rules]]
+[[rule]]
 match = "a"
 enable = ["vim_lazy", "disable_vim"]
 disable = ["vim_lazy"]
 
-[[callback_rules]]
+[[rule]]
 match = "b"
 enable = ["alpha"]
 disable = ["beta", "disable_vim"]
@@ -589,7 +602,7 @@ disable = ["beta", "disable_vim"]
 
     #[test]
     fn test_collect_callback_names_empty_when_no_rules() {
-        // A default RuleSet (no callback_rules) => empty set.
+        // A default RuleSet (no rules) => empty set.
         let rules = crate::core::rules::RuleSet::default();
         let names = collect_callback_names(&rules);
         assert!(names.is_empty());
@@ -603,14 +616,17 @@ disable = ["beta", "disable_vim"]
         // core footgun; a real pattern stays silent.
         use crate::core::pattern::Pattern;
         let mut rules = crate::core::rules::RuleSet::default();
-        rules.layer_rules.push(crate::core::rules::LayerRule {
+        rules.rules.push(crate::core::rules::Rule {
             pattern: Pattern::Single("".into()),
-            layer: 224,
+            layer: Some(224),
+            enable: vec![],
+            disable: vec![],
             case_sensitive: false,
             disable_firmware_config: None,
         });
-        rules.callback_rules.push(crate::core::rules::CallbackRule {
+        rules.rules.push(crate::core::rules::Rule {
             pattern: Pattern::Parts("*".into(), "".into()),
+            layer: None,
             enable: vec![],
             disable: vec![],
             case_sensitive: false,
@@ -627,10 +643,10 @@ disable = ["beta", "disable_vim"]
     fn test_empty_pattern_warnings_silent_for_real_patterns() {
         // A normal ruleset produces no empty-pattern warnings.
         let toml = r#"
-[[layer_rules]]
+[[rule]]
 match = "alacritty"
 layer = 224
-[[callback_rules]]
+[[rule]]
 match = "*"
 enable = ["x"]
 "#;
@@ -643,16 +659,16 @@ enable = ["x"]
         // A rule that both enables and disables "foo" -> one warning mentioning
         // foo and that disable wins. A cross-rule enable/disable is NOT flagged.
         let toml = r#"
-[[callback_rules]]
+[[rule]]
 match = "a"
 enable = ["foo", "bar"]
 disable = ["foo"]
 
-[[callback_rules]]
+[[rule]]
 match = "a"
 enable = ["baz"]
 
-[[callback_rules]]
+[[rule]]
 match = "a"
 disable = ["baz"]
 "#;

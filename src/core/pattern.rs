@@ -1087,7 +1087,7 @@ pub fn pattern_match(pattern: &str, s: &str, case_sensitive: bool) -> bool {
 // ============================================================================
 
 /// A host-side rule pattern — the typed form of the `match` field in
-/// `rules.toml`'s `[layer_rules]` / `[callback_rules]`.
+/// `rules.toml`'s `[[rule]]`.
 ///
 /// The firmware `match_pattern` receives its pattern as a raw C string that may
 /// embed a Group Separator byte (`GS`, `0x1D`, ASCII 29) — the

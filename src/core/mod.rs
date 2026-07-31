@@ -180,7 +180,7 @@ pub fn create_default_config(config_path: &Path) -> Result<(), Box<dyn Error>> {
 /// let body = render_rules_body();
 /// // Every active line is commented out, so:
 /// let rs: qmkonnect::core::rules::RuleSet = toml::from_str(&body).unwrap();
-/// assert!(rs.layer_rules.is_empty() && rs.callback_rules.is_empty());
+/// assert!(rs.rules.is_empty());
 /// ```
 pub fn render_rules_body() -> String {
     // Every active line is prefixed with `# ` (G7) so the seeded file parses to
@@ -205,30 +205,32 @@ pub fn render_rules_body() -> String {
 # [host]
 # disable_firmware_config = false
 
-# Layer rules: FIRST match wins. One host layer active at a time.
+# Rules: one [[rule]] per (app × behavior). For each matching rule, `layer` is
+# first-match-wins (one host layer active — exclusive); `enable`/`disable`
+# accumulate across ALL matches (all-match). A rule MUST set at least one of
+# `layer` / `enable` / `disable`; it may set layer only, callbacks only, or both.
 # `layer` is a RAW QMK layer index (no reserved range): must be != 255 (the
 # wire "clear" sentinel) and fit your layer_state width (<=15 default, <=31
 # with LAYER_STATE_32BIT); pick one above your highest board layer so it wins.
 # Patterns use shell-style globs: `*` is a wildcard, `^`/`$` anchor. A
 # catch-all is `match = "*"` — an empty `match = ""` matches ONLY windows
 # whose class is empty, not every window.
-# [[layer_rules]]
+# [[rule]]
 # match = "alacritty"                       # class-only pattern
 # layer = 10
 # disable_firmware_config = true           # optional override (inherits [host])
-
-# [[layer_rules]]
+#
+# [[rule]]
 # match = ["*chrome*", "*youtube*"]         # [class_pattern, title_pattern]
 # layer = 11
 # case_sensitive = false                    # optional, default false
-
-# Callback rules: ALL matches fire. Names come from `--list-callbacks`.
-# [[callback_rules]]
+#
+# [[rule]]
 # match = "neovide"
 # enable = ["vim_lazy", "disable_vim"]      # run on focus-in
 # disable = ["vim_lazy"]                    # optional: force-off override
-
-# [[callback_rules]]
+#
+# [[rule]]
 # match = ["*chrome*", "*claude*"]
 # enable = ["vim_lazy", "disable_vim"]
 # disable_firmware_config = true           # skip the string -> board can't match
@@ -374,8 +376,7 @@ mod tests {
         // The template must contain the §9 section markers so the user sees
         // the full schema shape to edit.
         assert!(body.contains("[host]"));
-        assert!(body.contains("[[layer_rules]]"));
-        assert!(body.contains("[[callback_rules]]"));
+        assert!(body.contains("[[rule]]"));
         assert!(body.contains("disable_firmware_config"));
     }
 
@@ -387,8 +388,7 @@ mod tests {
         let body = render_rules_body();
         let rs: rules::RuleSet = toml::from_str(&body)
             .expect("render_rules_body must parse to a valid all-default RuleSet");
-        assert!(rs.layer_rules.is_empty());
-        assert!(rs.callback_rules.is_empty());
+        assert!(rs.rules.is_empty());
         assert!(!(rs.host.disable_firmware_config));
     }
 

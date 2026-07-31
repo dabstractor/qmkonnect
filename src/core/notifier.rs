@@ -516,7 +516,7 @@ pub fn perform_handshake_with(verbose: bool, opts: HandshakeOptions) {
 /// disabled and there is nothing to validate. A malformed `rules.toml` is warned
 /// about and skipped (the strict failure is `--validate-rules`'s job, P5.M1) — it
 /// never fails the handshake. Unknown callback names (referenced in
-/// `[[callback_rules]]` `enable`/`disable` but absent from the keyboard's
+/// `[[rule]]` `enable`/`disable` but absent from the keyboard's
 /// registry) are warned, one per line. [`HOST_CAPABLE`] is unaffected (a broken
 /// rules file does not downgrade capability).
 fn validate_rules_callback_names(verbose: bool) {
@@ -569,7 +569,7 @@ fn unknown_callback_names(
     known: &HashMap<String, u8>,
 ) -> Vec<String> {
     let mut seen: BTreeSet<String> = BTreeSet::new();
-    for rule in &rules.callback_rules {
+    for rule in &rules.rules {
         for name in rule.enable.iter().chain(rule.disable.iter()) {
             if !known.contains_key(name) {
                 seen.insert(name.clone());
@@ -1912,7 +1912,7 @@ mod tests {
     fn test_unknown_callback_names_helper() {
         let rules: crate::core::rules::RuleSet = toml::from_str(
             r#"
-[[callback_rules]]
+[[rule]]
 match = "a"
 enable = ["known_a", "ghost"]
 disable = ["known_b", "phantom"]
