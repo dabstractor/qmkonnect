@@ -29,38 +29,43 @@ use std::path::{Path, PathBuf};
 use crate::core::pattern::{match_pattern, Pattern}; // P2.M1.T3.S2 — Single/Parts, #[serde(untagged)]
 use serde::Deserialize;
 
-/// The top-level `rules.toml` model — a `[host]` defaults table plus two
-/// table-arrays (`[[layer_rules]]` and `[[callback_rules]]`).
+/// The top-level `rules.toml` model — a `[host]` defaults table plus ONE
+/// table-array (`[[rule]]`, singular).
 ///
 /// Every field is `#[serde(default)]`, so a partial/empty `rules.toml` parses to
-/// an all-default ruleset (host stack default, empty rule vectors). See
+/// an all-default ruleset (host stack default, empty rule vector). See
 /// `spec/HOST_RULES.md` §9.
+///
+/// Evaluation is ONE pass over `[[rule]]` in file order (spec §8(3)): `layer`
+/// is first-match-wins (one host layer active — exclusive); `enable`/`disable`
+/// accumulate across ALL matches (all-match). A rule may set `layer` only,
+/// callbacks only, or both.
 ///
 /// ```toml
 /// [host]
 /// disable_firmware_config = false   # global default: false = stack (board runs), true = replace
 /// # On no match the host layer is always cleared and all host callbacks disabled.
 ///
-/// # Layer rules: FIRST match wins. One host layer active at a time.
+/// # Rules: one [[rule]] per (app × behavior). `layer` is first-match-wins
+/// # (one host layer active — exclusive); `enable`/`disable` accumulate across
+/// # ALL matches (all-match). A rule MUST set at least one of layer/enable/disable.
 /// # `layer` is a raw QMK layer index (no reserved range; != 255) — see §3 C11.
-/// [[layer_rules]]
+/// [[rule]]
 /// match = "alacritty"                       # class-only pattern
-/// layer = 224
+/// layer = 10
 /// disable_firmware_config = true           # optional override (default inherits [host])
 ///
-/// [[layer_rules]]
+/// [[rule]]
 /// match = ["*chrome*", "*youtube*"]         # [class_pattern, title_pattern] (== WT())
-/// layer = 225
+/// layer = 11
 /// case_sensitive = false                    # optional, default false
 ///
-/// # Callback rules: ALL matches fire. Names come from the keyboard's registry
-/// # (run `qmkonnect --list-callbacks` to see them).
-/// [[callback_rules]]
+/// [[rule]]
 /// match = "neovide"
 /// enable = ["vim_lazy", "disable_vim"]      # run on focus-in
 /// disable = ["vim_lazy"]                    # optional: force-off override
 ///
-/// [[callback_rules]]
+/// [[rule]]
 /// match = ["*chrome*", "*claude*"]
 /// enable = ["vim_lazy", "disable_vim"]
 /// disable_firmware_config = true           # for this window, skip the string -> board can't match
@@ -70,15 +75,12 @@ pub struct RuleSet {
     /// Global host defaults applied to every rule that does not override them.
     #[serde(default)]
     pub host: HostDefaults,
-    /// Ordered layer rules. Evaluation is **first-match-wins**
-    /// (P3.M1.T2.S1); one host layer is active at a time (`layer` is a raw QMK
-    /// layer index, `!= 255` — see spec/HOST_RULES.md §3 C11).
-    #[serde(default, rename = "layer_rules")]
-    pub layer_rules: Vec<LayerRule>,
-    /// Ordered callback rules. Evaluation fires **all matches**
-    /// (P3.M1.T2.S1); each may `enable`/`disable` callbacks by registry name.
-    #[serde(default, rename = "callback_rules")]
-    pub callback_rules: Vec<CallbackRule>,
+    /// Ordered rules. Evaluation is ONE pass in file order (spec §8(3)): `layer`
+    /// is first-match-wins (one host layer — exclusive); `enable`/`disable`
+    /// accumulate across ALL matches (all-match). TOML key is `[[rule]]`
+    /// (SINGULAR — serde `rename = "rule"`).
+    #[serde(default, rename = "rule")]
+    pub rules: Vec<Rule>,
 }
 
 /// The `[host]` table — global defaults applied to every rule that does not
@@ -96,81 +98,61 @@ pub struct RuleSet {
 pub struct HostDefaults {
     /// Global default for whether the board runs its own config (`false` = stack)
     /// or is replaced by the host layer (`true`). Per-rule
-    /// `disable_firmware_config: Option<bool>` (on [`LayerRule`]/[`CallbackRule`])
+    /// `disable_firmware_config: Option<bool>` (on [`Rule`])
     /// overrides this; `None` inherits this value.
     #[serde(default)]
     pub disable_firmware_config: bool, // default false (stack)
 }
 
-/// A `[[layer_rules]]` entry — maps a window [`Pattern`] to a host layer number.
+/// A `[[rule]]` entry — maps a window [`Pattern`] to an optional host layer
+/// and/or a set of callback names to `enable`/`disable` (by registry name).
 ///
-/// Layer rules are evaluated **first-match-wins**; `layer` is a **raw QMK layer
-/// index** with no reserved range (only `255`/`0xFF` is rejected as the wire
-/// "clear" sentinel — see `spec/HOST_RULES.md` §3 C11). `pattern` (TOML key
-/// `match`) and
-/// `layer` are **required** — a `[[layer_rules]]` missing either is a
-/// deserialization error (strictness for the future `--validate-rules`).
+/// The unified model (spec §9): one rule may set `layer` only, callbacks only,
+/// or both. `match` (TOML key) is **required**; every other field is optional
+/// with a `#[serde(default)]`. A rule that sets NONE of `layer`/`enable`/
+/// `disable` is rejected at parse time by [`validate_rules`] (see spec §9
+/// Validity).
+///
+/// Evaluation (spec §8(3), one pass): `layer` is **first-match-wins** among
+/// layer-setting rules (one host layer — exclusive); `enable`/`disable` fire
+/// **all-match** (every matching rule accumulates). `layer` is a **raw QMK
+/// layer index** with no reserved range (only `255`/`0xFF` is rejected as the
+/// wire "clear" sentinel — see `spec/HOST_RULES.md` §3 C11).
 ///
 /// ```toml
-/// [[layer_rules]]
+/// [[rule]]
 /// match = "alacritty"                       # class-only pattern (Pattern::Single)
-/// layer = 224
+/// layer = 10
 /// disable_firmware_config = true           # optional override (default inherits [host])
 ///
-/// [[layer_rules]]
+/// [[rule]]
 /// match = ["*chrome*", "*youtube*"]         # [class_pattern, title_pattern] (== WT(), Pattern::Parts)
-/// layer = 225
+/// layer = 11
 /// case_sensitive = false                    # optional, default false
+///
+/// [[rule]]
+/// match = "neovide"
+/// enable = ["vim_lazy", "disable_vim"]      # run on focus-in
+/// disable = ["vim_lazy"]                    # optional: force-off override
 /// ```
 #[derive(Debug, Deserialize)]
-pub struct LayerRule {
+pub struct Rule {
     /// Window pattern (TOML key `match`). A bare string → [`Pattern::Single`]
     /// (class-only); a 2-element array → [`Pattern::Parts`] (class + title, == firmware `WT()`).
     #[serde(rename = "match")]
     pub pattern: Pattern,
-    /// The host layer number to activate on match — a **raw QMK layer index**
-    /// (any `0..=254`; `255`/`0xFF` is rejected as the wire "clear" sentinel).
-    /// See spec/HOST_RULES.md §3 C11.
-    pub layer: u8,
-    /// Whether the [`Pattern`] matches case-sensitively. Defaults to `false`
-    /// (firmware default is case-insensitive).
+    /// The host layer to activate on match — a **raw QMK layer index** (`0..=254`;
+    /// `255`/`0xFF` is rejected as the wire "clear" sentinel). `None` (the default
+    /// when the key is absent) ⇒ this rule sets no layer. First-match-wins among
+    /// layer-setting rules. See spec/HOST_RULES.md §3 C11, §9.
     #[serde(default)]
-    pub case_sensitive: bool,
-    /// Per-rule override of [`HostDefaults::disable_firmware_config`]. `None`
-    /// (the default when the key is absent) ⇒ inherit the `[host]` global default
-    /// (resolved by P3.M1.T1.S2).
-    #[serde(default)]
-    pub disable_firmware_config: Option<bool>, // None => inherit [host]
-}
-
-/// A `[[callback_rules]]` entry — maps a window [`Pattern`] to a set of
-/// callback names to `enable`/`disable` (by registry name).
-///
-/// Callback rules are evaluated **all-match** (every matching rule fires).
-/// `pattern` (TOML key `match`) is **required**; `enable`/`disable` default to
-/// empty vectors (a rule may only `enable`, or only `disable`).
-///
-/// ```toml
-/// [[callback_rules]]
-/// match = "neovide"
-/// enable = ["vim_lazy", "disable_vim"]      # run on focus-in
-/// disable = ["vim_lazy"]                    # optional: force-off override
-///
-/// [[callback_rules]]
-/// match = ["*chrome*", "*claude*"]
-/// enable = ["vim_lazy", "disable_vim"]
-/// disable_firmware_config = true           # for this window, skip the string -> board can't match
-/// ```
-#[derive(Debug, Deserialize)]
-pub struct CallbackRule {
-    /// Window pattern (TOML key `match`). A bare string → [`Pattern::Single`];
-    /// a 2-element array → [`Pattern::Parts`] (== firmware `WT()`).
-    #[serde(rename = "match")]
-    pub pattern: Pattern,
+    pub layer: Option<u8>,
     /// Callback names to enable (run on focus-in). Defaults to empty when absent.
     #[serde(default)]
     pub enable: Vec<String>,
     /// Callback names to disable (force-off override). Defaults to empty when absent.
+    /// Order-independent explicit exclusion: any id in ANY matching rule's `disable`
+    /// is removed from the union of all `enable`s.
     #[serde(default)]
     pub disable: Vec<String>,
     /// Whether the [`Pattern`] matches case-sensitively. Defaults to `false`.
@@ -206,10 +188,10 @@ fn effective_disable_firmware_config(rule_override: Option<bool>, host_default: 
 /// This is the host-side-rules counterpart to [`crate::core::parse_config`]: it reads
 /// the file at `path` (via [`fs::read_to_string`]) and deserializes it with
 /// [`toml::from_str`]. A missing/unreadable file yields an [`io::Error`](std::io::Error);
-/// malformed TOML, or a `[[layer_rules]]`/`[[callback_rules]]` table missing the
-/// required `match` or `layer` key, yields a [`toml::de::Error`]. Both propagate
-/// as `Box<dyn Error>` — which is exactly the strict failure `--validate-rules`
-/// (P5.M1) reports.
+/// malformed TOML, or a `[[rule]]` table missing the required `match` key (or
+/// setting none of `layer`/`enable`/`disable`), yields a parse error. Both
+/// propagate as `Box<dyn Error>` — which is exactly the strict failure
+/// `--validate-rules` (P5.M1) reports.
 ///
 /// `path` is a SINGLE candidate (typically the first existing entry of
 /// [`get_rules_paths`]); resolving the candidate list is the caller's job, mirroring
@@ -228,11 +210,12 @@ fn effective_disable_firmware_config(rule_override: Option<bool>, host_default: 
 pub fn parse_rules(path: &Path) -> Result<RuleSet, Box<dyn Error>> {
     let text = fs::read_to_string(path)?;
     let rules: RuleSet = toml::from_str(&text)?;
-    validate_layers(&rules)?;
+    validate_rules(&rules)?;
     Ok(rules)
 }
 
-/// Validate that no `[[layer_rules]].layer` is the wire "clear" sentinel.
+/// Validate the `[[rule]]` table: reject the wire "clear" layer sentinel and
+/// match-only rules.
 ///
 /// A host layer is a **raw QMK layer index** applied verbatim by the firmware
 /// (`layer_on`/`layer_off`, no range check — see spec/HOST_RULES.md §3 C11).
@@ -246,17 +229,35 @@ pub fn parse_rules(path: &Path) -> Result<RuleSet, Box<dyn Error>> {
 /// `layer_state` cannot hold bit 224 even with `LAYER_STATE_32BIT`, and
 /// `layer_on(224)` is UB that typically wraps to bit 0.)
 ///
+/// §9 Validity additionally requires that every `[[rule]]` set at least one of
+/// `layer`/`enable`/`disable` (in addition to the required `match`): since
+/// `layer` is now `Option<u8>` (defaults to `None`), a match-only rule no longer
+/// fails deserialization — it must fail HERE instead (same parse boundary that
+/// `--validate-rules` and the runtime path rely on).
+///
 /// Enforced at the parse boundary (the single source of truth) rather than only
-/// in `--validate-rules`, so the runtime path also rejects the sentinel —
+/// in `--validate-rules`, so the runtime path also rejects both —
 /// `host_context_for_window` then gracefully falls back to string-only mode and
 /// `--validate-rules` exits non-zero with this message. Pure (no IO).
-fn validate_layers(rules: &RuleSet) -> Result<(), Box<dyn Error>> {
-    for rule in &rules.layer_rules {
-        if rule.layer == 0xFF {
+fn validate_rules(rules: &RuleSet) -> Result<(), Box<dyn Error>> {
+    for rule in &rules.rules {
+        // C11: 0xFF is the wire "clear host layer" sentinel — the firmware would
+        // silently CLEAR the host layer instead of activating one. Reject it.
+        if rule.layer == Some(0xFF) {
             return Err(
-                "invalid layer 255: 0xFF is the wire \"clear host layer\" sentinel — the \
+                "invalid [[rule]] layer 255: 0xFF is the wire \"clear host layer\" sentinel — the \
                  firmware would silently clear the host layer instead of activating one. \
                  Use a real QMK layer index (0..=254). See spec/HOST_RULES.md §3 C11"
+                    .into(),
+            );
+        }
+        // §9 Validity: a rule must set at least one of layer/enable/disable in
+        // addition to the required match. (Since `layer` is now Option, a
+        // match-only rule no longer fails deserialization — it must fail HERE.)
+        if rule.layer.is_none() && rule.enable.is_empty() && rule.disable.is_empty() {
+            return Err(
+                "invalid rule: must set at least one of layer/enable/disable (in \
+                 addition to match). See spec/HOST_RULES.md §9 Validity"
                     .into(),
             );
         }
@@ -294,7 +295,7 @@ pub fn get_rules_paths() -> Vec<PathBuf> {
 
 /// Callback names that a SINGLE rule both `enable`s and `disable`s.
 ///
-/// Such a name is a contradictory no-op: the two-pass evaluator resolves it to
+/// Such a name is a contradictory no-op: the one-pass evaluator resolves it to
 /// DISABLED (the explicit-exclusion override wins), so the `enable` entry is
 /// dead. Surfaced as a warning by `--validate-rules` (#8). Pure + deterministic
 /// (deduped + sorted via `BTreeSet`).
@@ -304,7 +305,7 @@ pub fn get_rules_paths() -> Vec<PathBuf> {
 /// ```rust,ignore
 /// use qmkonnect::core::rules::contradictory_callback_names;
 /// let rules: RuleSet = toml::from_str(r#"
-/// [[callback_rules]]
+/// [[rule]]
 /// match = "a"
 /// enable = ["foo"]
 /// disable = ["foo", "bar"]
@@ -313,7 +314,7 @@ pub fn get_rules_paths() -> Vec<PathBuf> {
 /// ```
 pub fn contradictory_callback_names(rules: &RuleSet) -> Vec<String> {
     let mut seen: BTreeSet<String> = BTreeSet::new();
-    for rule in &rules.callback_rules {
+    for rule in &rules.rules {
         let dis: BTreeSet<&str> = rule.disable.iter().map(|s| s.as_str()).collect();
         for name in &rule.enable {
             if dis.contains(name.as_str()) {
@@ -350,17 +351,16 @@ pub fn pattern_is_empty_core(pattern: &Pattern) -> bool {
 /// packet the `notify_qmk` send logic (P4.M3.T1.S1) consumes.
 ///
 /// Fields (HOST_RULES.md §8(3) / §4):
-/// - `layer`: the first matching `layer_rule`'s layer number (`L_h`, a raw QMK
-///   layer index),
-///   or `None` when no layer rule matched (firmware maps `None` to `0xFF`).
+/// - `layer`: the first matching rule's `layer` (`L_h`, a raw QMK layer index),
+///   or `None` when no layer-setting rule matched (firmware maps `None` to `0xFF`).
 /// - `callback_ids`: the **desired enabled** callback id set — the union of every
-///   matching callback rule's `enable` names (resolved through the handshake
+///   matching rule's `enable` names (resolved through the handshake
 ///   `name_to_id` map) MINUS each rule's `disable` names (explicit exclusion).
 ///   Sorted (built from a `BTreeSet`); empty when no callback matched.
 /// - `clear_board`: the stack-vs-replace bit. `true` (replace) iff every matched
 ///   rule's effective `disable_firmware_config` is `true` **or** the board has no
 ///   rules of its own; `false` (stack) otherwise. Always `false` on no-match.
-/// - `any_match`: `true` iff at least one rule (layer or callback) matched.
+/// - `any_match`: `true` iff at least one rule matched.
 ///
 /// Downstream: `send_string = board_has_rules && any_match && !clear_board`;
 /// the wire payload is `ApplyHostContext { layer, callbacks: callback_ids, clear_board }`.
@@ -374,24 +374,33 @@ pub struct HostContext {
 
 /// Evaluate host `rules.toml` against one window and produce a [`HostContext`].
 ///
-/// Three-stage evaluation (HOST_RULES.md §8(3)):
+/// One pass over `[[rule]]` in file order (HOST_RULES.md §8(3)):
 ///
-/// 1. **Layer — first match wins.** Scan `layer_rules` in order; the first whose
-///    [`match_pattern`] succeeds sets `layer = Some(rule.layer)`. Subsequent layer
-///    rules are not consulted.
-/// 2. **Callbacks — all match.** Scan every `callback_rule`; accumulate its
-///    `enable` names (resolved via `name_to_id`) into an enable set and its
-///    `disable` names into a disable set, then difference them ONCE so `disable`
-///    is an **order-independent explicit-exclusion override** (HOST_RULES.md
-///    §4/§9, §13 Q2): it always wins, regardless of rule order. Unknown names
-///    are skipped silently — validation/warning is the handshake's job (P4.M2).
-/// 3. **Stack-vs-replace.** `clear_board = true` iff every matched rule's
-///    effective `disable_firmware_config` is `true` **or** `board_has_rules` is
-///    `false` (HOST_RULES.md §4: "replace = all-disabling OR board-has-no-rules").
+/// For each matching rule (there is no `break` — all matches must accumulate):
+/// - if it sets `layer` and none is chosen yet, that layer wins
+///   (first-match-wins, **exclusive** — one host layer). Callback-only rules
+///   (`layer == None`) are skipped for the layer decision but still contribute
+///   their `enable`/`disable` names.
+/// - `enable` names (resolved via `name_to_id`) accumulate into an enable set and
+///   `disable` names into a disable set. After the loop they are differenced
+///   ONCE so `disable` is an **order-independent explicit-exclusion override**
+///   (HOST_RULES.md §4/§9, §13 Q2): it always wins, regardless of rule order.
+///   Unknown names are skipped silently — validation/warning is the handshake's
+///   job (P4.M2).
+/// - one effective flag is pushed per matched RULE (so a single `[[rule]]` setting
+///   both `layer` and `enable` pushes one flag, exactly as its old-schema
+///   equivalent — a layer rule + a callback rule with the same effective flag —
+///   pushed two identical flags; `all()` yields the same result either way).
 ///
-/// **No match** (no layer rule and no callback rule matched) short-circuits to
-/// `{ layer: None, callback_ids: vec![], clear_board: <[host].disable_firmware_config>, any_match: false }`
-/// — the `clear_board` bit carries the global default (HOST_RULES.md §8(4) "&lt;per flag&gt;").
+/// Stack-vs-replace: `clear_board = true` iff every matched rule's effective
+/// `disable_firmware_config` is `true` **or** `board_has_rules` is `false`
+/// (HOST_RULES.md §4: "replace = all-disabling OR board-has-no-rules").
+///
+/// **No match** (no rule matched) short-circuits to
+/// `{ layer: None, callback_ids: vec![], clear_board: false, any_match: false }`
+/// — `clear_board` is literally `false` (C13: a host no-match NEVER suppresses
+/// the board; the host clears only its own layer/callbacks). The global
+/// `[host].disable_firmware_config` default affects matched windows only.
 ///
 /// This function is **pure** — no IO, no logging, no global state.
 ///
@@ -416,41 +425,29 @@ pub fn evaluate(
 ) -> HostContext {
     let host_default = rules.host.disable_firmware_config;
 
-    // Stage 1: Layer — first match wins.
-    let mut layer: Option<u8> = None;
-    // One effective flag per matched rule (layer + callback), for the AND decision.
-    let mut matched_effective: Vec<bool> = Vec::new();
-    for rule in &rules.layer_rules {
-        if match_pattern(&rule.pattern, app_class, title, rule.case_sensitive) {
-            layer = Some(rule.layer);
-            matched_effective.push(effective_disable_firmware_config(
-                rule.disable_firmware_config,
-                host_default,
-            ));
-            break; // first match wins
-        }
-    }
-
-    // Stage 2: Callbacks — all matches fire. desired set = enable-union MINUS
-    // disable-union, accumulated in two separate sets and differenced ONCE at
-    // the end so `disable` is an **order-independent explicit-exclusion
-    // override** (HOST_RULES.md §4/§9, §13 Q2: "removed from the desired enabled
-    // set"). The earlier single-pass insert-then-remove made the exclusion
-    // last-writer-wins: a `disable` only cancelled names an EARLIER matching
-    // rule enabled, so a global "disable X" guard placed before an app
-    // `enable=["X"]` silently lost to it. Two passes make `disable` always win.
+    let mut layer: Option<u8> = None; // first layer-setting match wins (exclusive)
+    let mut matched_effective: Vec<bool> = Vec::new(); // one flag PER MATCHED RULE
     let mut enabled: BTreeSet<u8> = BTreeSet::new();
     let mut disabled: BTreeSet<u8> = BTreeSet::new();
-    for rule in &rules.callback_rules {
+
+    // ONE pass over [[rule]] (file order). For each matching rule: push its
+    // effective flag (once); set layer if this rule sets one and none chosen
+    // yet (first-match-wins, exclusive — one host layer); accumulate enable
+    // names → enabled set, disable names → disabled set (all-match). A rule may
+    // set layer only, callbacks only, or both (spec §8(3)).
+    for rule in &rules.rules {
         if match_pattern(&rule.pattern, app_class, title, rule.case_sensitive) {
             matched_effective.push(effective_disable_firmware_config(
                 rule.disable_firmware_config,
                 host_default,
             ));
+            if rule.layer.is_some() && layer.is_none() {
+                layer = rule.layer; // first-match-wins, exclusive
+            }
             for name in &rule.enable {
                 if let Some(&id) = name_to_id.get(name) {
                     enabled.insert(id);
-                } // else: unknown name -> skip silently (G4)
+                } // else: unknown name -> skip silently (handshake warns, P4.M2)
             }
             for name in &rule.disable {
                 if let Some(&id) = name_to_id.get(name) {
@@ -459,17 +456,16 @@ pub fn evaluate(
             }
         }
     }
+
     // Disable wins regardless of rule order: difference removes any id present
-    // in ANY matching rule's `disable` from the union of all `enable`s.
+    // in ANY matching rule's `disable` from the union of all `enable`s (two-set
+    // difference = order-independent explicit-exclusion override, §4/§9).
     let desired: BTreeSet<u8> = enabled.difference(&disabled).copied().collect();
 
-    // No match -> short-circuit BEFORE the formula (G2: all() is vacuously true
-    // on an empty Vec, which would wrongly yield clear_board=true). Per C13
-    // (independent silos) a host no-match NEVER suppresses the board: the host
-    // clears only its own layer/callbacks (`clear_board: false`), and the board
-    // silo still runs (the dispatcher sends the window string). The global
-    // `[host].disable_firmware_config` default no longer affects no-match
-    // windows — it applies only to matched windows.
+    // No match -> short-circuit BEFORE the formula (all() is vacuously true on
+    // an empty Vec, which would wrongly yield clear_board=true). C13: a host
+    // no-match NEVER suppresses the board — the host clears only its own
+    // layer/callbacks; the board silo still runs.
     if matched_effective.is_empty() {
         return HostContext {
             layer: None,
@@ -479,7 +475,7 @@ pub fn evaluate(
         };
     }
 
-    // Stage 3: stack-vs-replace. replace = all matched rules disabling OR no board rules.
+    // Stack-vs-replace: replace iff every matched rule is disabling OR no board rules.
     let all_disabling = matched_effective.iter().all(|&f| f);
     let clear_board = all_disabling || !board_has_rules;
 
