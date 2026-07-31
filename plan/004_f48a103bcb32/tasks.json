@@ -86,14 +86,14 @@
               "type": "Task",
               "id": "P1.M1.T2",
               "title": "Sync the user-facing docs to the unified [[rule]] schema",
-              "status": "Planned",
+              "status": "Researching",
               "description": "Mechanical rewrite of every docs/*.md that shows or describes the split [[layer_rules]]/[[callback_rules]] tables to mirror spec/HOST_RULES.md §9 (the unified [[rule]] schema), then regenerate the llms_full.txt concatenation. These are Mode-A doc updates that ride with the schema change.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M1.T2.S1",
                   "title": "Rewrite the schema in docs/{configuration,examples,qmk-integration,troubleshooting}.md",
-                  "status": "Researching",
+                  "status": "Ready",
                   "story_points": 2,
                   "dependencies": [
                     "P1.M1.T1.S1"
@@ -111,7 +111,7 @@
                   "type": "Subtask",
                   "id": "P1.M1.T2.S2",
                   "title": "Regenerate docs/llms_full.txt and verify the full tree",
-                  "status": "Planned",
+                  "status": "Researching",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M1.T2.S1"
