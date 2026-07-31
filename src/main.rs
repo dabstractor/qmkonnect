@@ -386,8 +386,8 @@ fn validate_rules(rules_path: Option<PathBuf>, verbose: bool) -> Result<(), Box<
     println!("Validating {}", path.display());
 
     // Schema check via the single source of truth (G3: parse_rules' strictness
-    // — missing match/layer, malformed TOML, and now out-of-range `layer`
-    // (#2/#3, host layers must be in [224, 254]) — IS the validation).
+    // — missing match/layer, malformed TOML, and the 0xFF "clear" sentinel
+    // layer — IS the validation; see spec/HOST_RULES.md §3 C11).
     let rs = match crate::core::rules::parse_rules(&path) {
         Ok(rs) => rs,
         Err(e) => {

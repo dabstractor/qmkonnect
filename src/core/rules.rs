@@ -41,7 +41,8 @@ use serde::Deserialize;
 /// disable_firmware_config = false   # global default: false = stack (board runs), true = replace
 /// # On no match the host layer is always cleared and all host callbacks disabled.
 ///
-/// # Layer rules: FIRST match wins. One host layer active at a time (>= 224).
+/// # Layer rules: FIRST match wins. One host layer active at a time.
+/// # `layer` is a raw QMK layer index (no reserved range; != 255) — see §3 C11.
 /// [[layer_rules]]
 /// match = "alacritty"                       # class-only pattern
 /// layer = 224
@@ -70,7 +71,8 @@ pub struct RuleSet {
     #[serde(default)]
     pub host: HostDefaults,
     /// Ordered layer rules. Evaluation is **first-match-wins**
-    /// (P3.M1.T2.S1); one host layer is active at a time and must be `>= 224`.
+    /// (P3.M1.T2.S1); one host layer is active at a time (`layer` is a raw QMK
+    /// layer index, `!= 255` — see spec/HOST_RULES.md §3 C11).
     #[serde(default, rename = "layer_rules")]
     pub layer_rules: Vec<LayerRule>,
     /// Ordered callback rules. Evaluation fires **all matches**
@@ -102,8 +104,10 @@ pub struct HostDefaults {
 
 /// A `[[layer_rules]]` entry — maps a window [`Pattern`] to a host layer number.
 ///
-/// Layer rules are evaluated **first-match-wins**; the active host layer must be
-/// `>= 224` (see `spec/HOST_RULES.md` §3 C8). `pattern` (TOML key `match`) and
+/// Layer rules are evaluated **first-match-wins**; `layer` is a **raw QMK layer
+/// index** with no reserved range (only `255`/`0xFF` is rejected as the wire
+/// "clear" sentinel — see `spec/HOST_RULES.md` §3 C11). `pattern` (TOML key
+/// `match`) and
 /// `layer` are **required** — a `[[layer_rules]]` missing either is a
 /// deserialization error (strictness for the future `--validate-rules`).
 ///
@@ -124,7 +128,9 @@ pub struct LayerRule {
     /// (class-only); a 2-element array → [`Pattern::Parts`] (class + title, == firmware `WT()`).
     #[serde(rename = "match")]
     pub pattern: Pattern,
-    /// The host layer number to activate on match. Must be `>= 224` (host layer range).
+    /// The host layer number to activate on match — a **raw QMK layer index**
+    /// (any `0..=254`; `255`/`0xFF` is rejected as the wire "clear" sentinel).
+    /// See spec/HOST_RULES.md §3 C11.
     pub layer: u8,
     /// Whether the [`Pattern`] matches case-sensitively. Defaults to `false`
     /// (firmware default is case-insensitive).
@@ -226,32 +232,33 @@ pub fn parse_rules(path: &Path) -> Result<RuleSet, Box<dyn Error>> {
     Ok(rules)
 }
 
-/// Validate that every `[[layer_rules]].layer` is a legal host layer.
+/// Validate that no `[[layer_rules]].layer` is the wire "clear" sentinel.
 ///
-/// Spec C11 reserves host layers `>= 224`, and the wire byte `0xFF` (255) is the
-/// "**clear host layer**" sentinel (HOST_RULES.md §5: `APPLY_HOST_CONTEXT.layer`
-/// is "`>= 224`, or `0xFF` (clear)"). So a user-facing layer must be in
-/// `[224, 254]`:
-/// - **Below 224** collides with the board's own layer space (C11 violation):
-///   `evaluate()` returns `Some(n)` and the crate maps `Some(n)` → wire `n`, so
-///   the firmware activates a board layer instead of a host layer.
-/// - **Exactly 255** silently CLEARS the host layer — the exact opposite of the
-///   user's intent (`Some(255)` → wire `0xFF` → firmware clears `host_layer`).
+/// A host layer is a **raw QMK layer index** applied verbatim by the firmware
+/// (`layer_on`/`layer_off`, no range check — see spec/HOST_RULES.md §3 C11).
+/// The only universally-invalid value is `0xFF` (255): the firmware treats it as
+/// `LAYER_UNSET` and silently *clears* the host layer instead of activating one
+/// — the exact opposite of the user's intent. Any other byte (`0..=254`) is
+/// passed straight through; whether it is a real, addressable layer (within the
+/// firmware's `layer_state_t` width and above its board layers) is the user's
+/// responsibility — the host cannot know the keymap layout, so it does **not**
+/// gate on a fixed floor. (The earlier `[224, 254]` reservation is withdrawn:
+/// `layer_state` cannot hold bit 224 even with `LAYER_STATE_32BIT`, and
+/// `layer_on(224)` is UB that typically wraps to bit 0.)
 ///
 /// Enforced at the parse boundary (the single source of truth) rather than only
-/// in `--validate-rules`, so the runtime path also rejects malformed files —
+/// in `--validate-rules`, so the runtime path also rejects the sentinel —
 /// `host_context_for_window` then gracefully falls back to string-only mode and
 /// `--validate-rules` exits non-zero with this message. Pure (no IO).
 fn validate_layers(rules: &RuleSet) -> Result<(), Box<dyn Error>> {
     for rule in &rules.layer_rules {
-        if !(224..=254).contains(&rule.layer) {
-            return Err(format!(
-                "invalid layer {}: host layers must be in [224, 254] (>= 224 are reserved for \
-                 the host by C11; 255 / 0xFF is the wire \"clear host layer\" sentinel that \
-                 silently clears the layer — see spec/HOST_RULES.md §5/§8)",
-                rule.layer
-            )
-            .into());
+        if rule.layer == 0xFF {
+            return Err(
+                "invalid layer 255: 0xFF is the wire \"clear host layer\" sentinel — the \
+                 firmware would silently clear the host layer instead of activating one. \
+                 Use a real QMK layer index (0..=254). See spec/HOST_RULES.md §3 C11"
+                    .into(),
+            );
         }
     }
     Ok(())
@@ -343,7 +350,8 @@ pub fn pattern_is_empty_core(pattern: &Pattern) -> bool {
 /// packet the `notify_qmk` send logic (P4.M3.T1.S1) consumes.
 ///
 /// Fields (HOST_RULES.md §8(3) / §4):
-/// - `layer`: the first matching `layer_rule`'s layer number (`L_h`, `>= 224`),
+/// - `layer`: the first matching `layer_rule`'s layer number (`L_h`, a raw QMK
+///   layer index),
 ///   or `None` when no layer rule matched (firmware maps `None` to `0xFF`).
 /// - `callback_ids`: the **desired enabled** callback id set — the union of every
 ///   matching callback rule's `enable` names (resolved through the handshake
@@ -1243,14 +1251,14 @@ enable = ["x", "y", "z"]
     }
 
     // ========================================================================
-    // Layer range validation (#2/#3): host layers must be in [224, 254].
-    // 255 silently clears the layer (opposite of intent); < 224 collides with
-    // board layer space (C11). Enforced at the parse boundary.
+    // Layer validation: only the 0xFF "clear" sentinel is rejected. Any other
+    // byte (0..=254) is a valid raw QMK layer index — there is no fixed floor
+    // (the old [224, 254] reservation is withdrawn; see spec/HOST_RULES.md C11).
     // ========================================================================
 
     #[test]
     fn test_parse_rules_rejects_layer_255_clear_sentinel() {
-        // #2: layer = 255 maps to wire 0xFF (clear) — reject so the user is
+        // 255 maps to wire 0xFF (LAYER_UNSET/clear) — reject so the user is
         // told instead of having the host layer silently cleared.
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().join("rules.toml");
@@ -1260,24 +1268,17 @@ enable = ["x", "y", "z"]
         let msg = res.unwrap_err().to_string();
         assert!(msg.contains("255"), "error must name the bad layer: {msg}");
         assert!(
-            msg.contains("224") && msg.contains("254"),
-            "error must state the valid range: {msg}"
+            msg.contains("clear"),
+            "error must explain 255 is the clear sentinel: {msg}"
         );
     }
 
     #[test]
-    fn test_parse_rules_rejects_layer_below_224() {
-        // #3: layer < 224 collides with board layer space (C11 violation).
-        let dir = tempfile::TempDir::new().unwrap();
-        let path = dir.path().join("rules.toml");
-        std::fs::write(&path, "[[layer_rules]]\nmatch = \"a\"\nlayer = 100\n").unwrap();
-        assert!(parse_rules(&path).is_err());
-    }
-
-    #[test]
-    fn test_parse_rules_accepts_layer_boundaries_224_and_254() {
-        // The inclusive bounds 224 and 254 are both valid.
-        for &layer in &[224u8, 254] {
+    fn test_parse_rules_accepts_low_layer_indices() {
+        // There is no fixed floor: 0, a real board-style index (28), 100, the
+        // former floor (224), and the former ceiling (254) are all valid raw
+        // QMK layer indices.
+        for &layer in &[0u8, 28, 100, 224, 254] {
             let dir = tempfile::TempDir::new().unwrap();
             let path = dir.path().join("rules.toml");
             std::fs::write(&path, format!("[[layer_rules]]\nmatch = \"a\"\nlayer = {layer}\n")).unwrap();
@@ -1288,8 +1289,8 @@ enable = ["x", "y", "z"]
 
     #[test]
     fn test_parse_rules_reports_first_bad_layer() {
-        // Multiple bad layers: the first encountered is reported (helpful grep
-        // target), not a silent accept.
+        // The only bad value is 255. A valid low layer followed by 255 must
+        // report the 255 (the first — and only — bad rule), not a silent accept.
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().join("rules.toml");
         std::fs::write(
@@ -1299,7 +1300,7 @@ enable = ["x", "y", "z"]
         .unwrap();
         let res = parse_rules(&path);
         assert!(res.is_err());
-        assert!(res.unwrap_err().to_string().contains("5"));
+        assert!(res.unwrap_err().to_string().contains("255"));
     }
 
     // ========================================================================

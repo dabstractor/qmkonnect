@@ -205,18 +205,21 @@ pub fn render_rules_body() -> String {
 # [host]
 # disable_firmware_config = false
 
-# Layer rules: FIRST match wins. One host layer active at a time (>= 224).
+# Layer rules: FIRST match wins. One host layer active at a time.
+# `layer` is a RAW QMK layer index (no reserved range): must be != 255 (the
+# wire "clear" sentinel) and fit your layer_state width (<=15 default, <=31
+# with LAYER_STATE_32BIT); pick one above your highest board layer so it wins.
 # Patterns use shell-style globs: `*` is a wildcard, `^`/`$` anchor. A
 # catch-all is `match = "*"` — an empty `match = ""` matches ONLY windows
 # whose class is empty, not every window.
 # [[layer_rules]]
 # match = "alacritty"                       # class-only pattern
-# layer = 224
+# layer = 10
 # disable_firmware_config = true           # optional override (inherits [host])
 
 # [[layer_rules]]
 # match = ["*chrome*", "*youtube*"]         # [class_pattern, title_pattern]
-# layer = 225
+# layer = 11
 # case_sensitive = false                    # optional, default false
 
 # Callback rules: ALL matches fire. Names come from `--list-callbacks`.
