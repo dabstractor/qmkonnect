@@ -280,6 +280,18 @@ Firmware requirements:
   + `host_cb_enabled[]`. `set_host_layer(layer)`: `layer_on/off` the host tracker
   only; `0xFF` ⇒ clear. `apply_host_callbacks(ids, count)`: disable-before-enable
   diff (fire `on_disable` for ids leaving the set, `on_enable` for ids entering).
+- **Callback layering (design principle)** — the board owns *transitions*, the
+  host owns *set-membership*. `on_enable`/`on_disable` are a firmware-semantic
+  pair (the inverse of a keyboard mode is a property of the keyboard, not the
+  window); the host addresses whole named modes, never the functions
+  individually, and cannot re-pair them. The host's `enable`/`disable` are
+  desired-set algebra over names (`union(enable) − union(disable)`), and this
+  diff translates membership changes into `on_enable`/`on_disable` calls — so
+  focus-out undo is automatic, never wired by the host, and "every mode has an
+  inverse" is a structural guarantee. Mirrors layers: the board defines the
+  vocabulary (layer indices / named modes); the host composes policy by
+  reference. Adding a *new* mode is the one callback change that still requires a
+  reflash; recombining existing named modes never does.
 - **Typed dispatch** at the top of `hid_notify()`: `data[2]==0xF0` ⇒
   `handle_typed_command()` (return; **no** `process_full_message` side effect);
   else legacy string (unchanged). Handlers:

@@ -187,6 +187,19 @@ These are the **same C functions** you already pass to `DEFINE_SERIAL_COMMANDS`
 entirely and the firmware provides empty defaults (`callback_count == 0`), the
 feature stays off, and your keymap behaves byte-for-byte as it does today.
 
+**Why the pair lives on the board.** The `on_enable`/`on_disable` pairing is
+firmware semantics — the inverse of a keyboard mode is a property of the
+keyboard, not of the window you're focused on — so the board owns it. The host
+references the whole named mode (never the functions individually) and only
+decides *which modes should be on* for the current window: its `enable`/`disable`
+lists are desired-set algebra over names, and the firmware's diff translates
+membership changes into `on_enable`/`on_disable` calls. That makes focus-out undo
+automatic (you never wire it) and "every mode has an inverse" a structural
+guarantee rather than something you must remember. This mirrors layers exactly:
+the board defines the vocabulary (layer indices, named modes); the host composes
+policy by reference. See [How callbacks work]({{ site.baseurl }}/configuration#how-callbacks-work)
+in the Configuration Guide for the full table of the three concepts.
+
 ### Migration: from `DEFINE_*` to `rules.toml`
 
 Migration is **incremental and optional** — move one rule at a time, or none at

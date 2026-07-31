@@ -334,6 +334,50 @@ disable_firmware_config = true           # for this window, skip the string -> b
 For ready-made `rules.toml` recipes, see the
 [Examples]({{ site.baseurl }}/examples).
 
+### How callbacks work
+
+The word "disable" shows up in **two layers** — firmware and host — and
+understanding the split is the one thing that makes callback rules click.
+
+**The board owns transitions** (the `DEFINE_HOST_CALLBACKS` registry in your
+firmware). Each named callback is a pair of C functions: `on_enable` (activate
+the mode) and `on_disable` (its inverse — deactivate it; `NULL` for a one-shot).
+This pairing is firmware semantics: *how* to turn a keyboard mode on and *how* to
+undo it is a property of your keyboard, not of which window is focused. The host
+references the whole named mode — never the individual functions — and cannot
+re-pair them from `rules.toml`.
+
+**The host owns set-membership** (the `enable`/`disable` lists here in
+`rules.toml`). Per window it computes the *desired enabled set* of callback names:
+`union(all matching rules' enable) − union(all matching rules' disable)`, then
+hands just that final set to the board.
+
+| Concept | Lives in | Meaning |
+| --- | --- | --- |
+| `on_enable` | firmware, per callback | function that **activates** the mode (runs when the name *enters* the desired set) |
+| `on_disable` | firmware, per callback | function that **deactivates** it — its inverse (runs when the name *leaves* the set); `NULL` for one-shots |
+| `enable` | `rules.toml`, per rule | names to **add** to the desired set for this window |
+| `disable` | `rules.toml`, per rule | names to **exclude** from the desired set (order-independent: beats any `enable`, in any matching rule) |
+
+The practical consequences:
+
+- **Focus-out is automatic.** When you focus away from a window, its callbacks
+  leave the desired set and the board fires each one's `on_disable`. You never
+  wire focus-out — the `enable`/`disable` lists only describe which modes
+  *should be on*; the firmware handles the enter/exit transitions.
+- **`disable` ≠ "run the off-function."** A rule's `disable = ["vim_lazy"]`
+  means "keep `vim_lazy` out of the desired set for this window" (so it never
+  turns on, or turns back off if a sibling rule enabled it). The paired
+  `disable_vim` off-function fires only as a side effect of `vim_lazy` actually
+  leaving the set.
+- **Callbacks mirror layers.** The board defines the *vocabulary* — layer
+  indices in your keymap, named modes in `DEFINE_HOST_CALLBACKS` — and the host
+  composes *policy* by reference (`layer = N`, `enable = ["name"]`). Just as you
+  can't invent a brand-new layer from `rules.toml`, you can't invent a new
+  callback mode without a firmware change; you recombine existing named modes per
+  window. Adding a *new* mode is the one callback edit that still needs a reflash;
+  recombining existing ones never does.
+
 ### Stack vs. replace (`disable_firmware_config`)
 
 `disable_firmware_config` decides, **per window**, whether your board runs its
