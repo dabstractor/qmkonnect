@@ -258,6 +258,59 @@ fn collect_callback_names(
     names
 }
 
+/// Build the `--validate-rules` warning lines for empty `match` patterns (#9).
+///
+/// A `match = ""` (or a `Parts` with an empty class/title half) hits the
+/// firmware-parity empty-core short-circuit: it matches ONLY windows whose
+/// class/title is empty — not "all windows". The fix is the `*` wildcard.
+/// These never fail validation (the behaviour is spec-compliant); they only
+/// flag the footgun. Pure (no IO) over [`rules::pattern_is_empty_core`], so it
+/// is unit-testable; [`validate_rules`] prints each returned line to stderr.
+fn empty_pattern_warnings(rules: &crate::core::rules::RuleSet) -> Vec<String> {
+    let mut out = Vec::new();
+    for (i, rule) in rules.layer_rules.iter().enumerate() {
+        if crate::core::rules::pattern_is_empty_core(&rule.pattern) {
+            out.push(format!(
+                "⚠  layer rule #{} has an empty `match` pattern (an empty string): it matches only \
+                 windows whose class/title is empty, not all windows. Use the `*` wildcard for a \
+                 catch-all.",
+                i + 1
+            ));
+        }
+    }
+    for (i, rule) in rules.callback_rules.iter().enumerate() {
+        if crate::core::rules::pattern_is_empty_core(&rule.pattern) {
+            out.push(format!(
+                "⚠  callback rule #{} has an empty `match` pattern (an empty string): it matches \
+                 only windows whose class/title is empty, not all windows. Use the `*` wildcard \
+                 for a catch-all.",
+                i + 1
+            ));
+        }
+    }
+    out
+}
+
+/// Build the `--validate-rules` warning lines for callback names a SINGLE rule
+/// both enables and disables (#8).
+///
+/// The two-pass evaluator resolves such a name to DISABLED (the
+/// explicit-exclusion override wins), so the `enable` entry is dead. Never
+/// fails validation; just flags the contradiction. Pure (no IO) over
+/// [`rules::contradictory_callback_names`]; [`validate_rules`] prints each line.
+fn contradictory_callback_warnings(rules: &crate::core::rules::RuleSet) -> Vec<String> {
+    crate::core::rules::contradictory_callback_names(rules)
+        .into_iter()
+        .map(|name| {
+            format!(
+                "⚠  callback `{}` is both enabled and disabled in one rule: disable wins, so the \
+                 enable is ignored. Remove it from one of the lists.",
+                name
+            )
+        })
+        .collect()
+}
+
 /// `--list-callbacks`: handshake the connected keyboard and print its callback
 /// name→id table (sorted by id). With legacy firmware prints "Legacy firmware
 /// (no callback support)…"; with no board prints a clear no-device message.
@@ -301,10 +354,12 @@ fn list_callbacks(verbose: bool) -> Result<(), Box<dyn Error>> {
 /// (D4); unknown callback names are warnings (exit 0 — G6: `evaluate` skips
 /// them silently and a device may be disconnected).
 ///
-/// NOTE (D5b): when a device is connected, `perform_handshake` ALSO runs its
-/// own rules-mismatch check against the DEFAULT rules.toml during the sweep,
-/// emitting its own `⚠` warnings always (regardless of `verbose`). Those are
-/// benign supplementary noise; this function's own `⚠` lines are the
+/// NOTE (D5b/#7): the handshake below runs in **read-only mode**
+/// ([`HandshakeOptions::validation`]) — it skips `SET_OS` (so the lint never
+/// mutates firmware state, #6) AND skips the handshake's own default-rules
+/// callback-name check (so mismatch warnings about
+/// `~/.config/qmkonnect/rules.toml` do NOT intermix with the output for the
+/// file under validation, #7). This function's own `⚠` lines are therefore the
 /// authoritative result for the file under validation.
 fn validate_rules(rules_path: Option<PathBuf>, verbose: bool) -> Result<(), Box<dyn Error>> {
     // Resolve the path: explicit --rules-path (missing => Err, G5) else first
@@ -331,7 +386,8 @@ fn validate_rules(rules_path: Option<PathBuf>, verbose: bool) -> Result<(), Box<
     println!("Validating {}", path.display());
 
     // Schema check via the single source of truth (G3: parse_rules' strictness
-    // — missing match/layer, malformed TOML — IS the validation).
+    // — missing match/layer, malformed TOML, and now out-of-range `layer`
+    // (#2/#3, host layers must be in [224, 254]) — IS the validation).
     let rs = match crate::core::rules::parse_rules(&path) {
         Ok(rs) => rs,
         Err(e) => {
@@ -339,12 +395,28 @@ fn validate_rules(rules_path: Option<PathBuf>, verbose: bool) -> Result<(), Box<
         }
     };
 
+    // Pure config warnings (no device needed): empty `match` patterns (#9) and
+    // contradictory enable+disable within one rule (#8). These never fail
+    // validation — the behaviour is spec-compliant — they only flag likely
+    // mistakes. Reported against the file under validation regardless of whether
+    // a keyboard is connected.
+    for w in empty_pattern_warnings(&rs) {
+        eprintln!("{w}");
+    }
+    for w in contradictory_callback_warnings(&rs) {
+        eprintln!("{w}");
+    }
+
     // Optional callback-name validation (D5): only if a device is connected +
     // capable. Unknown names are WARNINGS (exit 0) — not fatal (G6).
     if crate::core::notifier::is_device_connected() {
-        // Populates the name→id map. D5b: this may ALSO print the handshake's
-        // own ⚠ warnings on the default rules.toml — benign supplementary noise.
-        crate::core::notifier::perform_handshake(verbose);
+        // Read-only handshake (#6/#7): populates the name→id map without sending
+        // SET_OS and without re-validating the default rules.toml, so only this
+        // file's callback warnings appear below.
+        crate::core::notifier::perform_handshake_with(
+            verbose,
+            crate::core::notifier::HandshakeOptions::validation(),
+        );
         if crate::core::notifier::host_capable() {
             let known = crate::core::notifier::callback_names();
             let unknown = collect_callback_names(&rs)
@@ -521,5 +593,73 @@ disable = ["beta", "disable_vim"]
         let rules = crate::core::rules::RuleSet::default();
         let names = collect_callback_names(&rules);
         assert!(names.is_empty());
+    }
+
+    // ---- empty_pattern_warnings (#9) + contradictory_callback_warnings (#8) ----
+
+    #[test]
+    fn test_empty_pattern_warnings_flags_empty_single_and_parts() {
+        // match = "" (Single) and a Parts with an empty half are both the empty-
+        // core footgun; a real pattern stays silent.
+        use crate::core::pattern::Pattern;
+        let mut rules = crate::core::rules::RuleSet::default();
+        rules.layer_rules.push(crate::core::rules::LayerRule {
+            pattern: Pattern::Single("".into()),
+            layer: 224,
+            case_sensitive: false,
+            disable_firmware_config: None,
+        });
+        rules.callback_rules.push(crate::core::rules::CallbackRule {
+            pattern: Pattern::Parts("*".into(), "".into()),
+            enable: vec![],
+            disable: vec![],
+            case_sensitive: false,
+            disable_firmware_config: None,
+        });
+        let ws = empty_pattern_warnings(&rules);
+        assert_eq!(ws.len(), 2, "one warning per empty-pattern rule");
+        assert!(ws[0].contains("layer rule #1"));
+        assert!(ws[1].contains("callback rule #1"));
+        assert!(ws.iter().all(|w| w.contains("*")), "each must suggest the * wildcard");
+    }
+
+    #[test]
+    fn test_empty_pattern_warnings_silent_for_real_patterns() {
+        // A normal ruleset produces no empty-pattern warnings.
+        let toml = r#"
+[[layer_rules]]
+match = "alacritty"
+layer = 224
+[[callback_rules]]
+match = "*"
+enable = ["x"]
+"#;
+        let rules: crate::core::rules::RuleSet = toml::from_str(toml).unwrap();
+        assert!(empty_pattern_warnings(&rules).is_empty());
+    }
+
+    #[test]
+    fn test_contradictory_callback_warnings_flags_same_rule_overlap() {
+        // A rule that both enables and disables "foo" -> one warning mentioning
+        // foo and that disable wins. A cross-rule enable/disable is NOT flagged.
+        let toml = r#"
+[[callback_rules]]
+match = "a"
+enable = ["foo", "bar"]
+disable = ["foo"]
+
+[[callback_rules]]
+match = "a"
+enable = ["baz"]
+
+[[callback_rules]]
+match = "a"
+disable = ["baz"]
+"#;
+        let rules: crate::core::rules::RuleSet = toml::from_str(toml).unwrap();
+        let ws = contradictory_callback_warnings(&rules);
+        assert_eq!(ws.len(), 1, "only the same-rule overlap (foo) is contradictory");
+        assert!(ws[0].contains("foo"));
+        assert!(ws[0].contains("disable wins"));
     }
 }

@@ -206,6 +206,9 @@ pub fn render_rules_body() -> String {
 # disable_firmware_config = false
 
 # Layer rules: FIRST match wins. One host layer active at a time (>= 224).
+# Patterns use shell-style globs: `*` is a wildcard, `^`/`$` anchor. A
+# catch-all is `match = "*"` — an empty `match = ""` matches ONLY windows
+# whose class is empty, not every window.
 # [[layer_rules]]
 # match = "alacritty"                       # class-only pattern
 # layer = 224

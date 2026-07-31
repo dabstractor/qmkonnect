@@ -520,7 +520,10 @@ qmkonnect --validate-rules --rules-path ~/rules.draft.toml   # validate a draft 
 **Fix**: every `[[layer_rules]]` entry **requires** `match` and `layer` (an entry
 missing either is an error); `match` is either a bare string (`"steam_app*"`,
 class-only) or a **2-element** array (`["*chrome*", "*youtube*"]` — class and
-title; 1- or 3-element arrays are errors); `layer` must be **≥ 224**. See the
+title; 1- or 3-element arrays are errors); `layer` must be in **[224, 254]**
+(host layers are reserved `>= 224`, and `255` is the wire "clear layer" sentinel
+— writing it explicitly would silently *clear* the host layer, so it is
+rejected). See the
 [Configuration Guide]({{ site.baseurl }}/configuration) for the full field table.
 
 ### Device shows connected but rules not applying
@@ -548,8 +551,9 @@ title; 1- or 3-element arrays are errors); `layer` must be **≥ 224**. See the
    re-read on every focus change.
 5. **Callback name correct?** `qmkonnect --list-callbacks` (see *Callback name
    not found* above).
-6. **Layer ≥ 224?** Host layers must be ≥ 224 (`255` clears); a low number won't
-   resolve above your board layers.
+6. **Layer in [224, 254]?** Host layers must be `>= 224`, and `255` is rejected
+   (it is the wire "clear layer" sentinel). A low number won't resolve above
+   your board layers.
 
 See the [Configuration Guide]({{ site.baseurl }}/configuration) for the schema and
 CLI flags, and the [Examples]({{ site.baseurl }}/examples) for a complete recipe.

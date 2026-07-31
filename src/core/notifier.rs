@@ -262,6 +262,79 @@ fn host_os() -> qmk_notifier::HostOs {
 /// }
 /// ```
 pub fn perform_handshake(verbose: bool) {
+    perform_handshake_with(verbose, HandshakeOptions::full());
+}
+
+/// Knobs that distinguish the live connect/reconnect handshake from the
+/// read-only `--validate-rules` lint.
+///
+/// The default [`Self::full`] option runs the whole capable arm (`SET_OS` +
+/// callback sweep + default-rules validation); [`Self::validation`] is for
+/// `--validate-rules`, which must NOT mutate firmware state (#6) and owns its
+/// own callback-name check against the (possibly `--rules-path`-overridden)
+/// file under validation (#7).
+#[derive(Clone, Copy, Debug)]
+pub struct HandshakeOptions {
+    /// Send `SET_OS` once the board is confirmed capable (HOST_RULES.md §5 C12:
+    /// host is OS-authoritative at connect). The live path sets this `true`;
+    /// `--validate-rules` sets it `false` so the lint never writes `current_os`
+    /// to the firmware.
+    pub set_os: bool,
+    /// Run the built-in `rules.toml` callback-name validation (against the
+    /// DEFAULT rules path) after the sweep. The live path sets this `true`;
+    /// `--validate-rules` sets it `false` because the lint does its own
+    /// callback-name check against the file under validation — otherwise
+    /// mismatch warnings about `~/.config/qmkonnect/rules.toml` intermix with
+    /// the output for the file being linted.
+    pub validate_default_rules: bool,
+}
+
+impl HandshakeOptions {
+    /// Full live-connect handshake: send `SET_OS` + validate the default rules.
+    /// This is what [`perform_handshake`] (the runner, tray reconnect, and
+    /// `--list-callbacks`) uses.
+    pub fn full() -> Self {
+        Self {
+            set_os: true,
+            validate_default_rules: true,
+        }
+    }
+
+    /// Read-only `--validate-rules` handshake: skip `SET_OS` (no firmware
+    /// mutation) and skip the default-rules callback-name check (the lint owns
+    /// that against the file under validation).
+    pub fn validation() -> Self {
+        Self {
+            set_os: false,
+            validate_default_rules: false,
+        }
+    }
+}
+
+/// Defensive ceiling on the `QUERY_CALLBACK` sweep (#4). The firmware's
+/// `HOST_CALLBACK_MAX` bounds its static array; a `callback_count` above this is
+/// almost certainly a misbehaving/buggy firmware, so we stop sweeping and warn
+/// rather than risk a long stall. Generous well above any realistic keyboard's
+/// registry.
+const MAX_HOST_CALLBACKS: u8 = 64;
+
+/// Worst-case wall-clock budget for the `QUERY_CALLBACK` sweep (#4). Each
+/// timed-out query blocks up to ~`REPLY_READ_TIMEOUT_MS` (1 s) in the crate;
+/// the sweep holds the global notifier mutex, so without a budget a buggy board
+/// that reports `callback_count = 255` then stops replying could wedge EVERY
+/// window notification for ~255 s. Five seconds is generous for a real keyboard
+/// (handful of callbacks, each replying in well under a second) but bounds the
+/// stall hard.
+const CALLBACK_SWEEP_DEADLINE: Duration = Duration::from_secs(5);
+
+/// Run the host-rules capability handshake with explicit [`HandshakeOptions`].
+///
+/// This is the full implementation; [`perform_handshake`] is a thin wrapper
+/// that passes [`HandshakeOptions::full`]. See [`perform_handshake`] for the
+/// behaviour and the dedup/state semantics; `opts` only gates the two
+/// side-effecting steps that a read-only lint wants to skip (`SET_OS` and the
+/// default-rules callback-name validation).
+pub fn perform_handshake_with(verbose: bool, opts: HandshakeOptions) {
     // Dedup: at most once per board boot (firmware has_been_queried). S2 resets.
     if HAS_HANDSHAKED.swap(true, Ordering::SeqCst) {
         if verbose {
@@ -291,12 +364,36 @@ pub fn perform_handshake(verbose: bool) {
                 );
             }
             // SET_OS once (host is OS-authoritative at connect). Best-effort.
-            if let Err(e) = n.send_command(qmk_notifier::RunCommand::SetOs(host_os()), &filter) {
-                eprintln!("Warning: SET_OS failed during handshake: {}", e);
+            // Skipped in the read-only `--validate-rules` mode (#6) so the lint
+            // never mutates firmware `current_os`.
+            if opts.set_os {
+                if let Err(e) = n.send_command(qmk_notifier::RunCommand::SetOs(host_os()), &filter) {
+                    eprintln!("Warning: SET_OS failed during handshake: {}", e);
+                }
             }
             // Callback sweep → local map (publish after dropping the notifier lock: D2).
+            // #4: bound both the count (`MAX_HOST_CALLBACKS`) and the wall clock
+            // (`CALLBACK_SWEEP_DEADLINE`) so a misbehaving firmware cannot wedge
+            // the global notifier mutex (and every notification behind it).
+            let sweep_start = Instant::now();
+            let sweep_cap = callback_count.min(MAX_HOST_CALLBACKS);
+            if callback_count > MAX_HOST_CALLBACKS {
+                eprintln!(
+                    "Warning: firmware reported {} callbacks; sweeping only the first {} \
+                     (a real keyboard stays well under HOST_CALLBACK_MAX)",
+                    callback_count, MAX_HOST_CALLBACKS
+                );
+            }
             let mut local: HashMap<String, u8> = HashMap::new();
-            for i in 0..callback_count {
+            for i in 0..sweep_cap {
+                if sweep_start.elapsed() > CALLBACK_SWEEP_DEADLINE {
+                    eprintln!(
+                        "Warning: callback sweep exceeded {}s budget at index {} \
+                         ({} of {} done) — stopping early to avoid wedging notifications",
+                        CALLBACK_SWEEP_DEADLINE.as_secs(), i, local.len(), sweep_cap
+                    );
+                    break;
+                }
                 match n.send_command(qmk_notifier::RunCommand::QueryCallback(i), &filter) {
                     Ok(qmk_notifier::CommandResponse::CallbackName {
                         index,
@@ -334,9 +431,20 @@ pub fn perform_handshake(verbose: bool) {
                 names.clear();
                 names.extend(local);
             }
-            validate_rules_callback_names(verbose);
-            HOST_CAPABLE.store(true, Ordering::SeqCst);
+            // #7: skip the default-rules callback-name check in `--validate-rules`
+            // mode — the lint owns that against the (possibly overridden) file
+            // under validation, so default-file warnings don't intermix.
+            if opts.validate_default_rules {
+                validate_rules_callback_names(verbose);
+            }
+            // #5: set BOARD_HAS_RULES BEFORE HOST_CAPABLE so there is no window
+            // in which host_capable()==true but board_has_rules() still reads the
+            // stale `false` left by reset_handshake_state (which would force a
+            // spurious replace for one window even when the user configured
+            // stack). When host_capable() flips true, board_has_rules() is
+            // already correct.
             BOARD_HAS_RULES.store(board_rules_present, Ordering::SeqCst);
+            HOST_CAPABLE.store(true, Ordering::SeqCst);
             if verbose {
                 eprintln!(
                     "[{}ms] perform_handshake: complete — capable ({} callbacks mapped)",
@@ -2006,5 +2114,154 @@ disable = ["known_b", "phantom"]
             Some("TestApp\x1DTest Title")
         );
         assert!(MockNotifier::get_send_command_calls().is_empty());
+    }
+
+    // ========================================================================
+    // HandshakeOptions (#6/#7), callback-sweep cap (#4), board_has_rules (#5)
+    // ========================================================================
+
+    /// #6: `--validate-rules` runs the handshake in read-only mode — it must NOT
+    /// send `SET_OS`, so a lint never mutates the firmware's `current_os`. Only
+    /// `QUERY_INFO` (and any callback queries) go out.
+    #[test]
+    fn test_handshake_validation_mode_skips_set_os() {
+        reset_test_state();
+        reset_handshake_state();
+        set_notifier(Box::new(MockNotifier::new()));
+        MockNotifier::set_mock_responses(vec![qmk_notifier::CommandResponse::Info {
+            proto_ver: 2,
+            feature_flags: 0x01,
+            callback_count: 0,
+            board_rules_present: true,
+        }]);
+        perform_handshake_with(false, HandshakeOptions::validation());
+        assert!(host_capable());
+        let calls = MockNotifier::get_send_command_calls();
+        assert_eq!(calls.len(), 1, "validation mode must send only QUERY_INFO");
+        assert_eq!(calls[0], qmk_notifier::RunCommand::QueryInfo);
+        assert!(
+            !calls
+                .iter()
+                .any(|c| matches!(c, qmk_notifier::RunCommand::SetOs(_))),
+            "validation mode must NOT send SET_OS (#6)"
+        );
+    }
+
+    /// Contrast: the full live handshake (perform_handshake wrapper) DOES send
+    /// `SET_OS`. (Pins the #6 regression: a change that accidentally gated
+    /// `SET_OS` off in the full path would be caught here.)
+    #[test]
+    fn test_handshake_full_mode_sends_set_os() {
+        reset_test_state();
+        reset_handshake_state();
+        set_notifier(Box::new(MockNotifier::new()));
+        MockNotifier::set_mock_responses(vec![
+            qmk_notifier::CommandResponse::Info {
+                proto_ver: 2,
+                feature_flags: 0x01,
+                callback_count: 0,
+                board_rules_present: true,
+            },
+            qmk_notifier::CommandResponse::Ack { ok: true }, // SET_OS
+        ]);
+        perform_handshake_with(false, HandshakeOptions::full());
+        assert!(host_capable());
+        let calls = MockNotifier::get_send_command_calls();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0], qmk_notifier::RunCommand::QueryInfo);
+        assert!(matches!(calls[1], qmk_notifier::RunCommand::SetOs(_)));
+    }
+
+    /// #4: a `callback_count` above `MAX_HOST_CALLBACKS` is clamped — only
+    /// `MAX_HOST_CALLBACKS` `QUERY_CALLBACK` round-trips go out, so a buggy
+    /// firmware reporting 255 cannot wedge the global notifier mutex for ~255s.
+    /// (The mock returns its default `Ack` for the unsupplied replies, which the
+    /// sweep logs-and-skips — the count of `QueryCallback` calls is what matters.)
+    #[test]
+    fn test_handshake_sweep_caps_at_max() {
+        reset_test_state();
+        reset_handshake_state();
+        set_notifier(Box::new(MockNotifier::new()));
+        MockNotifier::set_mock_responses(vec![
+            qmk_notifier::CommandResponse::Info {
+                proto_ver: 2,
+                feature_flags: 0x01,
+                callback_count: 70, // > MAX_HOST_CALLBACKS (64)
+                board_rules_present: true,
+            },
+            qmk_notifier::CommandResponse::Ack { ok: true }, // SET_OS
+        ]);
+        perform_handshake(false);
+        assert!(host_capable());
+        let calls = MockNotifier::get_send_command_calls();
+        let query_callbacks = calls
+            .iter()
+            .filter(|c| matches!(c, qmk_notifier::RunCommand::QueryCallback(_)))
+            .count();
+        assert_eq!(
+            query_callbacks, MAX_HOST_CALLBACKS as usize,
+            "sweep must clamp to MAX_HOST_CALLBACKS, not trust callback_count"
+        );
+    }
+
+    /// #4: a realistic (small) `callback_count` sweeps that exact count — the
+    /// cap only bites on absurd values, never a real keyboard.
+    #[test]
+    fn test_handshake_sweep_small_count_uncapped() {
+        reset_test_state();
+        reset_handshake_state();
+        set_notifier(Box::new(MockNotifier::new()));
+        MockNotifier::set_mock_responses(vec![
+            qmk_notifier::CommandResponse::Info {
+                proto_ver: 2,
+                feature_flags: 0x01,
+                callback_count: 3,
+                board_rules_present: true,
+            },
+            qmk_notifier::CommandResponse::Ack { ok: true },
+            qmk_notifier::CommandResponse::CallbackName {
+                index: 0,
+                name: Some("a".into()),
+            },
+            qmk_notifier::CommandResponse::CallbackName {
+                index: 1,
+                name: Some("b".into()),
+            },
+            qmk_notifier::CommandResponse::CallbackName {
+                index: 2,
+                name: Some("c".into()),
+            },
+        ]);
+        perform_handshake(false);
+        let calls = MockNotifier::get_send_command_calls();
+        let query_callbacks = calls
+            .iter()
+            .filter(|c| matches!(c, qmk_notifier::RunCommand::QueryCallback(_)))
+            .count();
+        assert_eq!(query_callbacks, 3);
+    }
+
+    /// #5: after a capable handshake, `board_has_rules()` reflects the firmware's
+    /// reported bit. `BOARD_HAS_RULES` is now set BEFORE `HOST_CAPABLE` so there
+    /// is no window where `host_capable()` is true but `board_has_rules()` is
+    /// stale — this test exercises that both are consistent immediately after.
+    #[test]
+    fn test_handshake_sets_board_has_rules_from_reported_bit() {
+        reset_test_state();
+        reset_handshake_state();
+        set_notifier(Box::new(MockNotifier::new()));
+        MockNotifier::set_mock_responses(vec![
+            qmk_notifier::CommandResponse::Info {
+                proto_ver: 2,
+                feature_flags: 0x01,
+                callback_count: 0,
+                board_rules_present: true,
+            },
+            qmk_notifier::CommandResponse::Ack { ok: true },
+        ]);
+        assert!(!board_has_rules()); // sanity: reset cleared it
+        perform_handshake(false);
+        assert!(host_capable());
+        assert!(board_has_rules());
     }
 }

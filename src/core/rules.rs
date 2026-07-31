@@ -222,7 +222,39 @@ fn effective_disable_firmware_config(rule_override: Option<bool>, host_default: 
 pub fn parse_rules(path: &Path) -> Result<RuleSet, Box<dyn Error>> {
     let text = fs::read_to_string(path)?;
     let rules: RuleSet = toml::from_str(&text)?;
+    validate_layers(&rules)?;
     Ok(rules)
+}
+
+/// Validate that every `[[layer_rules]].layer` is a legal host layer.
+///
+/// Spec C11 reserves host layers `>= 224`, and the wire byte `0xFF` (255) is the
+/// "**clear host layer**" sentinel (HOST_RULES.md §5: `APPLY_HOST_CONTEXT.layer`
+/// is "`>= 224`, or `0xFF` (clear)"). So a user-facing layer must be in
+/// `[224, 254]`:
+/// - **Below 224** collides with the board's own layer space (C11 violation):
+///   `evaluate()` returns `Some(n)` and the crate maps `Some(n)` → wire `n`, so
+///   the firmware activates a board layer instead of a host layer.
+/// - **Exactly 255** silently CLEARS the host layer — the exact opposite of the
+///   user's intent (`Some(255)` → wire `0xFF` → firmware clears `host_layer`).
+///
+/// Enforced at the parse boundary (the single source of truth) rather than only
+/// in `--validate-rules`, so the runtime path also rejects malformed files —
+/// `host_context_for_window` then gracefully falls back to string-only mode and
+/// `--validate-rules` exits non-zero with this message. Pure (no IO).
+fn validate_layers(rules: &RuleSet) -> Result<(), Box<dyn Error>> {
+    for rule in &rules.layer_rules {
+        if !(224..=254).contains(&rule.layer) {
+            return Err(format!(
+                "invalid layer {}: host layers must be in [224, 254] (>= 224 are reserved for \
+                 the host by C11; 255 / 0xFF is the wire \"clear host layer\" sentinel that \
+                 silently clears the layer — see spec/HOST_RULES.md §5/§8)",
+                rule.layer
+            )
+            .into());
+        }
+    }
+    Ok(())
 }
 
 /// Return the candidate `rules.toml` paths, in platform preference order.
@@ -245,7 +277,60 @@ pub fn get_rules_paths() -> Vec<PathBuf> {
 }
 
 // ============================================================================
-// Evaluation engine: HostContext + evaluate() (P3.M1.T2.S1)
+// Validation helpers surfaced by `--validate-rules` (P5.M1)
+// ============================================================================
+// Pure functions over a parsed `RuleSet` that flag *configurable* mistakes the
+// strict parse cannot catch (a well-formed but semantically surprising rule).
+// `--validate-rules` turns these into warnings; they never fail the parse (the
+// behaviour they describe is intentional and spec-compliant) — they only help
+// the user spot footguns.
+
+/// Callback names that a SINGLE rule both `enable`s and `disable`s.
+///
+/// Such a name is a contradictory no-op: the two-pass evaluator resolves it to
+/// DISABLED (the explicit-exclusion override wins), so the `enable` entry is
+/// dead. Surfaced as a warning by `--validate-rules` (#8). Pure + deterministic
+/// (deduped + sorted via `BTreeSet`).
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use qmkonnect::core::rules::contradictory_callback_names;
+/// let rules: RuleSet = toml::from_str(r#"
+/// [[callback_rules]]
+/// match = "a"
+/// enable = ["foo"]
+/// disable = ["foo", "bar"]
+/// "#).unwrap();
+/// assert_eq!(contradictory_callback_names(&rules), vec!["foo".to_string()]);
+/// ```
+pub fn contradictory_callback_names(rules: &RuleSet) -> Vec<String> {
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    for rule in &rules.callback_rules {
+        let dis: BTreeSet<&str> = rule.disable.iter().map(|s| s.as_str()).collect();
+        for name in &rule.enable {
+            if dis.contains(name.as_str()) {
+                seen.insert(name.clone());
+            }
+        }
+    }
+    seen.into_iter().collect()
+}
+
+/// Does this pattern's match core reduce to empty?
+///
+/// `match = ""` (a `Single("")`) — or a `Parts` with an empty class/title half
+/// — hits the firmware-parity empty-core short-circuit, which matches ONLY
+/// windows whose class/title string is empty, NOT "all windows" (verified
+/// firmware parity, `pattern.rs`). Users wanting a catch-all must write
+/// `match = "*"`. Surfaced as a warning by `--validate-rules` (#9). Pure.
+pub fn pattern_is_empty_core(pattern: &Pattern) -> bool {
+    match pattern {
+        Pattern::Single(s) => s.is_empty(),
+        Pattern::Parts(c, t) => c.is_empty() || t.is_empty(),
+    }
+}
+
 // ============================================================================
 // The pure per-window evaluator: given a parsed `RuleSet` + the window
 // (app_class, title) + the handshake name→id map + whether the board has its
@@ -286,10 +371,12 @@ pub struct HostContext {
 /// 1. **Layer — first match wins.** Scan `layer_rules` in order; the first whose
 ///    [`match_pattern`] succeeds sets `layer = Some(rule.layer)`. Subsequent layer
 ///    rules are not consulted.
-/// 2. **Callbacks — all match.** Scan every `callback_rule`; for each match, add
-///    its `enable` names (resolved via `name_to_id`) to the desired set and remove
-///    its `disable` names (explicit exclusion). Unknown names are skipped
-///    silently — validation/warning is the handshake's job (P4.M2).
+/// 2. **Callbacks — all match.** Scan every `callback_rule`; accumulate its
+///    `enable` names (resolved via `name_to_id`) into an enable set and its
+///    `disable` names into a disable set, then difference them ONCE so `disable`
+///    is an **order-independent explicit-exclusion override** (HOST_RULES.md
+///    §4/§9, §13 Q2): it always wins, regardless of rule order. Unknown names
+///    are skipped silently — validation/warning is the handshake's job (P4.M2).
 /// 3. **Stack-vs-replace.** `clear_board = true` iff every matched rule's
 ///    effective `disable_firmware_config` is `true` **or** `board_has_rules` is
 ///    `false` (HOST_RULES.md §4: "replace = all-disabling OR board-has-no-rules").
@@ -336,8 +423,16 @@ pub fn evaluate(
         }
     }
 
-    // Stage 2: Callbacks — all matches fire. desired set = enable-union minus disable.
-    let mut desired: BTreeSet<u8> = BTreeSet::new();
+    // Stage 2: Callbacks — all matches fire. desired set = enable-union MINUS
+    // disable-union, accumulated in two separate sets and differenced ONCE at
+    // the end so `disable` is an **order-independent explicit-exclusion
+    // override** (HOST_RULES.md §4/§9, §13 Q2: "removed from the desired enabled
+    // set"). The earlier single-pass insert-then-remove made the exclusion
+    // last-writer-wins: a `disable` only cancelled names an EARLIER matching
+    // rule enabled, so a global "disable X" guard placed before an app
+    // `enable=["X"]` silently lost to it. Two passes make `disable` always win.
+    let mut enabled: BTreeSet<u8> = BTreeSet::new();
+    let mut disabled: BTreeSet<u8> = BTreeSet::new();
     for rule in &rules.callback_rules {
         if match_pattern(&rule.pattern, app_class, title, rule.case_sensitive) {
             matched_effective.push(effective_disable_firmware_config(
@@ -346,16 +441,19 @@ pub fn evaluate(
             ));
             for name in &rule.enable {
                 if let Some(&id) = name_to_id.get(name) {
-                    desired.insert(id);
+                    enabled.insert(id);
                 } // else: unknown name -> skip silently (G4)
             }
             for name in &rule.disable {
                 if let Some(&id) = name_to_id.get(name) {
-                    desired.remove(&id);
+                    disabled.insert(id);
                 }
             }
         }
     }
+    // Disable wins regardless of rule order: difference removes any id present
+    // in ANY matching rule's `disable` from the union of all `enable`s.
+    let desired: BTreeSet<u8> = enabled.difference(&disabled).copied().collect();
 
     // No match -> short-circuit BEFORE the formula (G2: all() is vacuously true
     // on an empty Vec, which would wrongly yield clear_board=true). The
@@ -1072,5 +1170,204 @@ enable = ["x"]
         assert_eq!(ctx.layer, None);
         assert_eq!(ctx.callback_ids, vec![1]);
         assert!(ctx.any_match);
+    }
+
+    // ========================================================================
+    // disable order-independence (#1): disable is an explicit-exclusion
+    // override that wins regardless of whether its rule precedes or follows a
+    // matching enable. The earlier single-pass insert-then-remove made the
+    // exclusion last-writer-wins.
+    // ========================================================================
+
+    #[test]
+    fn test_evaluate_disable_after_enable_excludes() {
+        // The order the spec example implies: enable first, disable second.
+        // x is absent (explicit-exclusion override). [baseline — already worked]
+        let toml = r#"
+[[callback_rules]]
+match = "a"
+enable = ["x"]
+
+[[callback_rules]]
+match = "a"
+disable = ["x"]
+"#;
+        let rules: RuleSet = toml::from_str(toml).unwrap();
+        let n2i = name_map(&[("x", 1)]);
+        let ctx = evaluate(&rules, "a", "t", &n2i, true);
+        assert_eq!(ctx.callback_ids, vec![] as Vec<u8>);
+        assert!(ctx.any_match);
+    }
+
+    #[test]
+    fn test_evaluate_disable_before_enable_still_excludes() {
+        // #1 regression: disable listed BEFORE a later matching enable. The
+        // previous implementation re-enabled x (last-writer-wins); the two-pass
+        // difference makes disable win, so x stays excluded.
+        let toml = r#"
+[[callback_rules]]
+match = "a"
+disable = ["x"]
+
+[[callback_rules]]
+match = "a"
+enable = ["x"]
+"#;
+        let rules: RuleSet = toml::from_str(toml).unwrap();
+        let n2i = name_map(&[("x", 1)]);
+        let ctx = evaluate(&rules, "a", "t", &n2i, true);
+        assert_eq!(
+            ctx.callback_ids, vec![] as Vec<u8>,
+            "disable must win regardless of rule order (order-independent exclusion)"
+        );
+        assert!(ctx.any_match);
+    }
+
+    #[test]
+    fn test_evaluate_disable_excludes_only_named_others_survive() {
+        // A global "disable x" guard does not suppress unrelated enables: y/z
+        // survive while only x is excluded, no matter where the guard sits.
+        let toml = r#"
+[[callback_rules]]
+match = "a"
+disable = ["x"]
+
+[[callback_rules]]
+match = "a"
+enable = ["x", "y", "z"]
+"#;
+        let rules: RuleSet = toml::from_str(toml).unwrap();
+        let n2i = name_map(&[("x", 1), ("y", 2), ("z", 3)]);
+        let ctx = evaluate(&rules, "a", "t", &n2i, true);
+        assert_eq!(ctx.callback_ids, vec![2, 3]);
+    }
+
+    // ========================================================================
+    // Layer range validation (#2/#3): host layers must be in [224, 254].
+    // 255 silently clears the layer (opposite of intent); < 224 collides with
+    // board layer space (C11). Enforced at the parse boundary.
+    // ========================================================================
+
+    #[test]
+    fn test_parse_rules_rejects_layer_255_clear_sentinel() {
+        // #2: layer = 255 maps to wire 0xFF (clear) — reject so the user is
+        // told instead of having the host layer silently cleared.
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("rules.toml");
+        std::fs::write(&path, "[[layer_rules]]\nmatch = \"a\"\nlayer = 255\n").unwrap();
+        let res = parse_rules(&path);
+        assert!(res.is_err());
+        let msg = res.unwrap_err().to_string();
+        assert!(msg.contains("255"), "error must name the bad layer: {msg}");
+        assert!(
+            msg.contains("224") && msg.contains("254"),
+            "error must state the valid range: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_parse_rules_rejects_layer_below_224() {
+        // #3: layer < 224 collides with board layer space (C11 violation).
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("rules.toml");
+        std::fs::write(&path, "[[layer_rules]]\nmatch = \"a\"\nlayer = 100\n").unwrap();
+        assert!(parse_rules(&path).is_err());
+    }
+
+    #[test]
+    fn test_parse_rules_accepts_layer_boundaries_224_and_254() {
+        // The inclusive bounds 224 and 254 are both valid.
+        for &layer in &[224u8, 254] {
+            let dir = tempfile::TempDir::new().unwrap();
+            let path = dir.path().join("rules.toml");
+            std::fs::write(&path, format!("[[layer_rules]]\nmatch = \"a\"\nlayer = {layer}\n")).unwrap();
+            let res = parse_rules(&path);
+            assert!(res.is_ok(), "layer {layer} should be valid");
+        }
+    }
+
+    #[test]
+    fn test_parse_rules_reports_first_bad_layer() {
+        // Multiple bad layers: the first encountered is reported (helpful grep
+        // target), not a silent accept.
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("rules.toml");
+        std::fs::write(
+            &path,
+            "[[layer_rules]]\nmatch = \"a\"\nlayer = 5\n\n[[layer_rules]]\nmatch = \"b\"\nlayer = 255\n",
+        )
+        .unwrap();
+        let res = parse_rules(&path);
+        assert!(res.is_err());
+        assert!(res.unwrap_err().to_string().contains("5"));
+    }
+
+    // ========================================================================
+    // --validate-rules warning helpers (#8 contradictory, #9 empty pattern)
+    // ========================================================================
+
+    #[test]
+    fn test_contradictory_callback_names_flags_same_rule_overlap() {
+        // A rule that both enables and disables "foo" -> "foo" is flagged (#8).
+        // The disable-list-only "bar" is NOT contradictory (no matching enable).
+        let toml = r#"
+[[callback_rules]]
+match = "a"
+enable = ["foo", "bar"]
+disable = ["foo"]
+"#;
+        let rules: RuleSet = toml::from_str(toml).unwrap();
+        assert_eq!(contradictory_callback_names(&rules), vec!["foo".to_string()]);
+    }
+
+    #[test]
+    fn test_contradictory_callback_names_cross_rule_is_not_contradictory() {
+        // enable in rule A + disable in rule B (different rules) is NOT a
+        // contradiction — it is the legitimate explicit-exclusion override.
+        let toml = r#"
+[[callback_rules]]
+match = "a"
+enable = ["x"]
+
+[[callback_rules]]
+match = "a"
+disable = ["x"]
+"#;
+        let rules: RuleSet = toml::from_str(toml).unwrap();
+        assert!(contradictory_callback_names(&rules).is_empty());
+    }
+
+    #[test]
+    fn test_contradictory_callback_names_deduped_sorted() {
+        // The same name contradicted in two rules is reported once; output is
+        // sorted (BTreeSet).
+        let toml = r#"
+[[callback_rules]]
+match = "a"
+enable = ["z", "m"]
+disable = ["z", "m"]
+"#;
+        let rules: RuleSet = toml::from_str(toml).unwrap();
+        assert_eq!(
+            contradictory_callback_names(&rules),
+            vec!["m".to_string(), "z".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_pattern_is_empty_core_single() {
+        // #9: match = "" -> empty core -> matches only empty-class windows.
+        assert!(pattern_is_empty_core(&Pattern::Single("".into())));
+        assert!(!pattern_is_empty_core(&Pattern::Single("*".into())));
+        assert!(!pattern_is_empty_core(&Pattern::Single("alacritty".into())));
+    }
+
+    #[test]
+    fn test_pattern_is_empty_core_parts() {
+        // Either empty half of a Parts is the same footgun (that half matches
+        // only the empty string).
+        assert!(pattern_is_empty_core(&Pattern::Parts("".into(), "*".into())));
+        assert!(pattern_is_empty_core(&Pattern::Parts("*".into(), "".into())));
+        assert!(!pattern_is_empty_core(&Pattern::Parts("*".into(), "*".into())));
     }
 }

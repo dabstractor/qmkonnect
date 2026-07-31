@@ -270,13 +270,13 @@ active window.
 | `[host] disable_firmware_config` | no | `false` | Global stack/replace default. `false` = the board runs its own rules too (**stack**); `true` = the host takes over (**replace**). Per-rule `disable_firmware_config` overrides this. See [Stack vs. replace](#stack-vs-replace-disable_firmware_config). |
 | `[[layer_rules]]` table-array | no | `[]` | Layer rules. **First match wins**; one host layer is active at a time. |
 | `[[layer_rules]] match` | **yes** | — | Window pattern. A bare string (`"alacritty"`) matches the **window class only**; a two-element array (`["*chrome*", "*youtube*"]`) matches **class and title** (equivalent to the firmware `WT(class, title)`). Supports `*`, `^`, `$`, `+`, character classes (`\d \w \s …`), and `.` — full parity with the firmware matcher. |
-| `[[layer_rules]] layer` | **yes** | — | The host layer number to activate. Must be **≥ 224** (the host layer range; `255` clears the layer). |
+| `[[layer_rules]] layer` | **yes** | — | The host layer number to activate. Must be in **[224, 254]**: host layers are reserved `>= 224`, and `255` / `0xFF` is the wire "clear layer" sentinel (writing it explicitly would silently *clear* the host layer — the opposite of intent), so `parse_rules`/`--validate-rules` reject it. |
 | `[[layer_rules]] case_sensitive` | no | `false` | Whether `match` is case-sensitive. |
 | `[[layer_rules]] disable_firmware_config` | no | inherits `[host]` | Per-rule stack/replace override. Absent ⇒ uses the `[host]` default. |
 | `[[callback_rules]]` table-array | no | `[]` | Callback rules. **All matches fire.** Names come from your keyboard's callback registry (run `qmkonnect --list-callbacks` to see them). |
 | `[[callback_rules]] match` | **yes** | — | Window pattern (same form as `[[layer_rules]] match`). |
 | `[[callback_rules]] enable` | no | `[]` | Callback names to enable on focus-in. |
-| `[[callback_rules]] disable` | no | `[]` | Callback names to force off (explicit exclusion). Focus-out `on_disable` also fires automatically when a callback leaves the active set. |
+| `[[callback_rules]] disable` | no | `[]` | Callback names to force off (**explicit exclusion**, order-independent: a `disable` in any matching rule always wins over an `enable` in any other matching rule). Focus-out `on_disable` also fires automatically when a callback leaves the active set. |
 | `[[callback_rules]] case_sensitive` | no | `false` | Whether `match` is case-sensitive. |
 | `[[callback_rules]] disable_firmware_config` | no | inherits `[host]` | Per-rule stack/replace override. |
 
