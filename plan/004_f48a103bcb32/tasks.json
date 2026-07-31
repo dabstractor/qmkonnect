@@ -4,14 +4,14 @@
       "type": "Phase",
       "id": "P1",
       "title": "Unify the host rules.toml schema (C8)",
-      "status": "Ready",
+      "status": "Complete",
       "description": "One focused refactor: collapse the split [[layer_rules]]/[[callback_rules]] model into a single [[rule]] array, port evaluate() to one-pass semantics, enforce the new parse-time validity, update all callers, and sync the user-facing docs. The wire contract (ApplyHostContext), handshake, qmk-notifier crate, and qmk_notifier firmware are UNTOUCHED — C8 is host-side file format only. D2 (C11 0xFF rejection), D3 (C13 no-match clear_board:false), and D4 ('Edit rules' tray) are ALREADY in code and generate no tasks. See plan/004_f48a103bcb32/architecture/system_context.md for validated findings.",
       "milestones": [
         {
           "type": "Milestone",
           "id": "P1.M1",
           "title": "Unify the [[rule]] schema in code and docs",
-          "status": "Ready",
+          "status": "Complete",
           "description": "Merge LayerRule+CallbackRule into one Rule, change RuleSet to rules:Vec<Rule>, rewrite evaluate() as a single pass, enforce parse-time validity (>=1 of layer/enable/disable; layer!=255), update every caller (notifier.rs, main.rs, mod.rs render_rules_body, pattern.rs), fix the test suite, and sync the user-facing docs + regenerate llms_full.txt.",
           "tasks": [
             {
@@ -129,14 +129,14 @@
               "type": "Task",
               "id": "P1.M1.T3",
               "title": "Sync changeset-level documentation (Mode B final sweep)",
-              "status": "Ready",
+              "status": "Complete",
               "description": "Final catch-all sweep for cross-cutting/overview documentation that spans the whole C8 changeset. Per the SOW, this task runs LAST (depends on all implementing subtasks) and determines whether README.md or any top-level capability/architecture overview needs a touch to reflect the unified [[rule]] schema. The delta PRD concluded README needs no change (it mentions rules.toml only as a version-agnostic one-liner), but this task verifies that claim and makes the call.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M1.T3.S1",
                   "title": "Audit and update README.md + top-level docs for the unified [[rule]] schema",
-                  "status": "Ready",
+                  "status": "Complete",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M1.T1.S3",
