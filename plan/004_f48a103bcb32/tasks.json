@@ -18,7 +18,7 @@
               "type": "Task",
               "id": "P1.M1.T1",
               "title": "Port the rules model + evaluator to the unified [[rule]] array and update all code callers",
-              "status": "Researching",
+              "status": "Ready",
               "description": "Merge LayerRule+CallbackRule into one Rule, change RuleSet to rules:Vec<Rule>, rewrite evaluate() as one pass over the unified array, enforce parse-time validity, then fix every caller site that referenced the split arrays so the crate compiles and cargo test passes. The observable output of evaluate() (HostContext) is UNCHANGED for any input expressible in the old schema.",
               "subtasks": [
                 {
@@ -45,7 +45,7 @@
                   "type": "Subtask",
                   "id": "P1.M1.T1.S2",
                   "title": "Rewrite the src/core/rules.rs test suite to the unified [[rule]] schema",
-                  "status": "Ready",
+                  "status": "Complete",
                   "story_points": 2,
                   "dependencies": [
                     "P1.M1.T1.S1"
@@ -65,7 +65,7 @@
                   "type": "Subtask",
                   "id": "P1.M1.T1.S3",
                   "title": "Update all external code callers (notifier.rs, main.rs, mod.rs render_rules_body, pattern.rs) and their tests",
-                  "status": "Researching",
+                  "status": "Ready",
                   "story_points": 2,
                   "dependencies": [
                     "P1.M1.T1.S1"

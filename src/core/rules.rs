@@ -491,26 +491,25 @@ pub fn evaluate(
 mod tests {
     use super::*;
 
-    /// The verbatim `spec/HOST_RULES.md` §9 example (see research/notes.md §2).
-    const SECTION_9_TOML: &str = r#"[host]
-disable_firmware_config = false
-
-[[layer_rules]]
+    /// The verbatim `spec/HOST_RULES.md` §9 example (unified `[[rule]]` schema;
+    /// see research/notes.md §2). No `[host]` table — `host` is `#[serde(default)]`
+    /// so `rs.host.disable_firmware_config` defaults to `false`.
+    const SECTION_9_TOML: &str = r#"[[rule]]
 match = "alacritty"
-layer = 224
+layer = 10
 disable_firmware_config = true
 
-[[layer_rules]]
+[[rule]]
 match = ["*chrome*", "*youtube*"]
-layer = 225
+layer = 11
 case_sensitive = false
 
-[[callback_rules]]
+[[rule]]
 match = "neovide"
 enable = ["vim_lazy", "disable_vim"]
 disable = ["vim_lazy"]
 
-[[callback_rules]]
+[[rule]]
 match = ["*chrome*", "*claude*"]
 enable = ["vim_lazy", "disable_vim"]
 disable_firmware_config = true
@@ -520,57 +519,48 @@ disable_firmware_config = true
     fn test_rules_full_section9_example_parses() {
         let rs: RuleSet = toml::from_str(SECTION_9_TOML).unwrap();
 
-        // [host] defaults
+        // [host] defaults (no [host] table -> #[serde(default)] -> false).
         assert!(!(rs.host.disable_firmware_config));
 
-        // layer_rules: first-match-wins ordering preserved.
-        assert_eq!(rs.layer_rules.len(), 2);
+        // ONE unified [[rule]] array (4 entries, file order).
+        assert_eq!(rs.rules.len(), 4);
 
-        // layer_rules[0]: class-only Single + explicit override.
-        assert_eq!(
-            rs.layer_rules[0].pattern,
-            Pattern::Single("alacritty".into())
-        );
-        assert_eq!(rs.layer_rules[0].layer, 224);
-        assert!(!(rs.layer_rules[0].case_sensitive));
-        assert_eq!(rs.layer_rules[0].disable_firmware_config, Some(true));
+        // rules[0]: class-only Single + explicit layer 10 + dfc override.
+        assert_eq!(rs.rules[0].pattern, Pattern::Single("alacritty".into()));
+        assert_eq!(rs.rules[0].layer, Some(10));
+        assert!(!(rs.rules[0].case_sensitive));
+        assert_eq!(rs.rules[0].disable_firmware_config, Some(true));
 
-        // layer_rules[1]: class+title Parts + no override (inherits [host]).
+        // rules[1]: class+title Parts + layer 11 + no dfc override (inherits [host]).
         assert_eq!(
-            rs.layer_rules[1].pattern,
+            rs.rules[1].pattern,
             Pattern::Parts("*chrome*".into(), "*youtube*".into())
         );
-        assert_eq!(rs.layer_rules[1].layer, 225);
-        assert!(!(rs.layer_rules[1].case_sensitive));
-        assert_eq!(rs.layer_rules[1].disable_firmware_config, None);
+        assert_eq!(rs.rules[1].layer, Some(11));
+        assert!(!(rs.rules[1].case_sensitive));
+        assert_eq!(rs.rules[1].disable_firmware_config, None);
 
-        // callback_rules: all-match ordering preserved.
-        assert_eq!(rs.callback_rules.len(), 2);
-
-        // callback_rules[0]: enable + disable lists, no override.
+        // rules[2]: callbacks only (Single), enable + disable lists, no dfc override.
+        assert_eq!(rs.rules[2].pattern, Pattern::Single("neovide".into()));
         assert_eq!(
-            rs.callback_rules[0].pattern,
-            Pattern::Single("neovide".into())
-        );
-        assert_eq!(
-            rs.callback_rules[0].enable,
+            rs.rules[2].enable,
             vec!["vim_lazy".to_string(), "disable_vim".to_string()]
         );
-        assert_eq!(rs.callback_rules[0].disable, vec!["vim_lazy".to_string()]);
-        assert!(!(rs.callback_rules[0].case_sensitive));
-        assert_eq!(rs.callback_rules[0].disable_firmware_config, None);
+        assert_eq!(rs.rules[2].disable, vec!["vim_lazy".to_string()]);
+        assert!(!(rs.rules[2].case_sensitive));
+        assert_eq!(rs.rules[2].disable_firmware_config, None);
 
-        // callback_rules[1]: Parts + override.
+        // rules[3]: callbacks only (Parts) + dfc override.
         assert_eq!(
-            rs.callback_rules[1].pattern,
+            rs.rules[3].pattern,
             Pattern::Parts("*chrome*".into(), "*claude*".into())
         );
         assert_eq!(
-            rs.callback_rules[1].enable,
+            rs.rules[3].enable,
             vec!["vim_lazy".to_string(), "disable_vim".to_string()]
         );
-        assert_eq!(rs.callback_rules[1].disable, Vec::<String>::new());
-        assert_eq!(rs.callback_rules[1].disable_firmware_config, Some(true));
+        assert_eq!(rs.rules[3].disable, Vec::<String>::new());
+        assert_eq!(rs.rules[3].disable_firmware_config, Some(true));
     }
 
     #[test]
@@ -578,21 +568,20 @@ disable_firmware_config = true
         // A rules.toml with rules but no [host] table: #[serde(default)] +
         // manual HostDefaults::default() => disable_firmware_config == false.
         let toml = r#"
-[[layer_rules]]
+[[rule]]
 match = "firefox"
 layer = 224
 "#;
         let rs: RuleSet = toml::from_str(toml).unwrap();
         assert!(!(rs.host.disable_firmware_config));
-        assert_eq!(rs.layer_rules.len(), 1);
+        assert_eq!(rs.rules.len(), 1);
     }
 
     #[test]
     fn test_rules_empty_toml_is_all_default() {
         let rs: RuleSet = toml::from_str("").unwrap();
         assert!(!(rs.host.disable_firmware_config));
-        assert!(rs.layer_rules.is_empty());
-        assert!(rs.callback_rules.is_empty());
+        assert!(rs.rules.is_empty());
         // Equivalent to RuleSet::default().
         assert_eq!(
             rs.host.disable_firmware_config,
@@ -602,80 +591,94 @@ layer = 224
 
     #[test]
     fn test_rules_layer_override_absent_is_none() {
-        // A [[layer_rules]] without disable_firmware_config => None (inherit host, G5).
+        // A [[rule]] without disable_firmware_config => None (inherit host, G5).
         let toml = r#"
-[[layer_rules]]
+[[rule]]
 match = "kitty"
 layer = 230
 "#;
         let rs: RuleSet = toml::from_str(toml).unwrap();
-        assert_eq!(rs.layer_rules[0].disable_firmware_config, None);
+        assert_eq!(rs.rules[0].disable_firmware_config, None);
     }
 
     #[test]
     fn test_rules_callback_enable_disable_default_empty() {
-        // A [[callback_rules]] with only match + enable => disable == vec![].
+        // A [[rule]] with only match + enable => disable == vec![].
+        // (Under the unified schema a callback-only rule is VALID — layer is
+        // Option<u8> and defaults to None; no layer is required.)
         let toml = r#"
-[[callback_rules]]
+[[rule]]
 match = "wezterm"
 enable = ["vim_lazy"]
 "#;
         let rs: RuleSet = toml::from_str(toml).unwrap();
-        assert_eq!(rs.callback_rules.len(), 1);
-        assert_eq!(rs.callback_rules[0].enable, vec!["vim_lazy".to_string()]);
-        assert!(rs.callback_rules[0].disable.is_empty());
+        assert_eq!(rs.rules.len(), 1);
+        assert_eq!(rs.rules[0].enable, vec!["vim_lazy".to_string()]);
+        assert!(rs.rules[0].disable.is_empty());
 
         // And vice versa: only disable => enable == vec![].
         let toml2 = r#"
-[[callback_rules]]
+[[rule]]
 match = "wezterm"
 disable = ["vim_lazy"]
 "#;
         let rs2: RuleSet = toml::from_str(toml2).unwrap();
-        assert!(rs2.callback_rules[0].enable.is_empty());
-        assert_eq!(rs2.callback_rules[0].disable, vec!["vim_lazy".to_string()]);
+        assert!(rs2.rules[0].enable.is_empty());
+        assert_eq!(rs2.rules[0].disable, vec!["vim_lazy".to_string()]);
     }
 
     #[test]
     fn test_rules_match_string_to_single_and_array_to_parts() {
         // match = "x" => Pattern::Single (delegates to Pattern's untagged serde).
         let single = r#"
-[[layer_rules]]
+[[rule]]
 match = "x"
 layer = 224
 "#;
         let rs: RuleSet = toml::from_str(single).unwrap();
-        assert_eq!(rs.layer_rules[0].pattern, Pattern::Single("x".into()));
+        assert_eq!(rs.rules[0].pattern, Pattern::Single("x".into()));
 
         // match = ["a","b"] => Pattern::Parts (delegates to Pattern's untagged serde).
         let parts = r#"
-[[layer_rules]]
+[[rule]]
 match = ["a", "b"]
 layer = 224
 "#;
         let rs: RuleSet = toml::from_str(parts).unwrap();
         assert_eq!(
-            rs.layer_rules[0].pattern,
+            rs.rules[0].pattern,
             Pattern::Parts("a".into(), "b".into())
         );
     }
 
     #[test]
-    fn test_rules_missing_layer_errors() {
-        // A [[layer_rules]] with match but no layer is a deserialization error (G6).
-        let toml = r#"
-[[layer_rules]]
-match = "x"
-"#;
-        let res = toml::from_str::<RuleSet>(toml);
-        assert!(res.is_err(), "expected error when `layer` is missing");
+    fn test_parse_rules_rejects_rule_with_only_match() {
+        // Under the unified schema `layer` is Option<u8>, so a [[rule]] with ONLY
+        // `match` (no layer/enable/disable) deserializes fine but fails the new
+        // `validate_rules` validity check ("a rule must set at least one of
+        // layer/enable/disable"). `match` alone is no longer a serde error — it
+        // must go through `parse_rules` (temp file) to hit `validate_rules`, the
+        // same parse boundary that `--validate-rules` (P5.M1) and the runtime
+        // path rely on. The `parse_rules() -> is_err()` boundary is preserved.
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("rules.toml");
+        std::fs::write(&path, "[[rule]]\nmatch = \"x\"\n").unwrap();
+        let res = parse_rules(&path);
+        assert!(res.is_err(), "expected error when a rule sets only `match`");
+        let msg = res.unwrap_err().to_string();
+        assert!(
+            msg.contains("at least one of layer/enable/disable"),
+            "error must name the validity rule: {msg}"
+        );
     }
 
     #[test]
     fn test_rules_missing_match_errors() {
-        // A [[layer_rules]] with layer but no match is a deserialization error (G6).
+        // A [[rule]] with layer but no match is a deserialization error (G6):
+        // `match` (rename="match") is the ONLY required field — it has NO serde
+        // default, so its absence still fails serde under the unified schema.
         let toml = r#"
-[[layer_rules]]
+[[rule]]
 layer = 224
 "#;
         let res = toml::from_str::<RuleSet>(toml);
@@ -685,11 +688,10 @@ layer = 224
     #[test]
     fn test_rules_default_propagates() {
         // RuleSet::default() proves Default propagation: manual HostDefaults::default()
-        // (=> false) + empty Vecs (G4).
+        // (=> false) + empty rules Vec (G4).
         let rs = RuleSet::default();
         assert!(!(rs.host.disable_firmware_config));
-        assert!(rs.layer_rules.is_empty());
-        assert!(rs.callback_rules.is_empty());
+        assert!(rs.rules.is_empty());
     }
 
     // ========================================================================
@@ -727,23 +729,23 @@ layer = 224
     #[test]
     fn test_rules_parse_valid_section9() {
         // The verbatim HOST_RULES.md §9 example round-trips through a real file:
-        // fs::read_to_string -> toml::from_str -> RuleSet (G3 single path, G4 err type).
+        // fs::read_to_string -> toml::from_str -> validate_rules -> RuleSet
+        // (G3 single path, G4 err type).
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().join("rules.toml");
         std::fs::write(&path, SECTION_9_TOML).unwrap();
 
         let rs = parse_rules(&path).unwrap();
 
-        // [host] default
+        // [host] default (no [host] table -> #[serde(default)] -> false).
         assert!(!(rs.host.disable_firmware_config));
 
-        // layer_rules[0]: class-only Single + explicit override.
-        assert_eq!(rs.layer_rules.len(), 2);
-        assert_eq!(rs.layer_rules[0].layer, 224);
-        assert_eq!(rs.layer_rules[0].disable_firmware_config, Some(true));
+        // ONE unified [[rule]] array (4 entries, file order).
+        assert_eq!(rs.rules.len(), 4);
 
-        // callback_rules: all-match ordering preserved.
-        assert_eq!(rs.callback_rules.len(), 2);
+        // rules[0]: class-only Single + layer 10 + explicit dfc override.
+        assert_eq!(rs.rules[0].layer, Some(10));
+        assert_eq!(rs.rules[0].disable_firmware_config, Some(true));
     }
 
     #[test]
@@ -765,15 +767,18 @@ layer = 224
 
     #[test]
     fn test_rules_parse_missing_required_field_errors() {
-        // A [[layer_rules]] with `match` but no required `layer` surfaces S1's
-        // required-field strictness through the file path — the contract that
-        // `--validate-rules` (P5.M1) will report.
+        // A [[rule]] with `match` but none of layer/enable/disable surfaces the
+        // §9 Validity check through the file path — the contract that
+        // `--validate-rules` (P5.M1) will report. (Under the unified schema
+        // `layer` is Option<u8>, so this no longer fails serde deserialization;
+        // it fails `validate_rules` instead — the `parse_rules -> is_err()`
+        // boundary is identical to the old serde-rejection behavior.)
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().join("rules.toml");
         std::fs::write(
             &path,
             r#"
-[[layer_rules]]
+[[rule]]
 match = "x"
 "#,
         )
@@ -854,11 +859,11 @@ match = "x"
     fn test_evaluate_no_layer_no_callback_match() {
         // Rules present but no pattern matches the window -> no-match early-return.
         let toml = r#"
-[[layer_rules]]
+[[rule]]
 match = "firefox"
 layer = 224
 
-[[callback_rules]]
+[[rule]]
 match = "neovide"
 enable = ["vim_lazy"]
 "#;
@@ -887,7 +892,7 @@ enable = ["vim_lazy"]
 [host]
 disable_firmware_config = true
 
-[[layer_rules]]
+[[rule]]
 match = "firefox"
 layer = 224
 "#;
@@ -910,11 +915,11 @@ layer = 224
         // Two layer rules both match (Single "a"); the first's layer wins and
         // the second is never consulted. Give them DIFFERENT layers to prove it.
         let toml = r#"
-[[layer_rules]]
+[[rule]]
 match = "a"
 layer = 224
 
-[[layer_rules]]
+[[rule]]
 match = "a"
 layer = 225
 "#;
@@ -929,11 +934,11 @@ layer = 225
     fn test_evaluate_layer_second_when_first_misses() {
         // First pattern misses ("zzz"), second ("a") matches -> second.layer wins.
         let toml = r#"
-[[layer_rules]]
+[[rule]]
 match = "zzz"
 layer = 224
 
-[[layer_rules]]
+[[rule]]
 match = "a"
 layer = 230
 "#;
@@ -949,7 +954,7 @@ layer = 230
         // Pattern::Parts(["a","b"]) with app_class "a" but title "x" -> the
         // title half fails, so NO match (layer stays None, any_match false).
         let toml = r#"
-[[layer_rules]]
+[[rule]]
 match = ["a", "b"]
 layer = 224
 "#;
@@ -967,11 +972,11 @@ layer = 224
         // Two callback rules both match, each enabling a disjoint name -> the
         // desired set is the UNION of both.
         let toml = r#"
-[[callback_rules]]
+[[rule]]
 match = "a"
 enable = ["x"]
 
-[[callback_rules]]
+[[rule]]
 match = "a"
 enable = ["y"]
 "#;
@@ -987,11 +992,11 @@ enable = ["y"]
         // Rule A enables "x", rule B (also matches) disables "x" -> x is absent
         // from callback_ids (explicit-exclusion override).
         let toml = r#"
-[[callback_rules]]
+[[rule]]
 match = "a"
 enable = ["x"]
 
-[[callback_rules]]
+[[rule]]
 match = "a"
 disable = ["x"]
 "#;
@@ -1007,7 +1012,7 @@ disable = ["x"]
         // A rule enables a name NOT in name_to_id ("ghost") alongside a known
         // one ("x"). No panic; "ghost" contributes nothing, "x" still resolves.
         let toml = r#"
-[[callback_rules]]
+[[rule]]
 match = "a"
 enable = ["x", "ghost"]
 "#;
@@ -1023,15 +1028,15 @@ enable = ["x", "ghost"]
         // Insert ids {3,1,2} across rules in a deliberately non-sorted order ->
         // callback_ids == vec![1,2,3] (BTreeSet determinism, G3).
         let toml = r#"
-[[callback_rules]]
+[[rule]]
 match = "a"
 enable = ["c"]
 
-[[callback_rules]]
+[[rule]]
 match = "a"
 enable = ["a"]
 
-[[callback_rules]]
+[[rule]]
 match = "a"
 enable = ["b"]
 "#;
@@ -1048,7 +1053,7 @@ enable = ["b"]
         // Sole matched rule effective=true (override Some(true)) -> clear_board=true
         // even with board_has_rules=true (replace: all-disabling).
         let toml = r#"
-[[layer_rules]]
+[[rule]]
 match = "a"
 layer = 224
 disable_firmware_config = true
@@ -1069,7 +1074,7 @@ disable_firmware_config = true
 [host]
 disable_firmware_config = true
 
-[[layer_rules]]
+[[rule]]
 match = "a"
 layer = 224
 disable_firmware_config = false
@@ -1086,7 +1091,7 @@ disable_firmware_config = false
         // board_has_rules=false -> clear_board=true even if the matched rule is
         // non-disabling (effective=false): replace because nothing to stack onto.
         let toml = r#"
-[[layer_rules]]
+[[rule]]
 match = "a"
 layer = 224
 disable_firmware_config = false
@@ -1108,7 +1113,7 @@ disable_firmware_config = false
 [host]
 disable_firmware_config = false
 
-[[layer_rules]]
+[[rule]]
 match = "a"
 layer = 224
 "#;
@@ -1116,7 +1121,7 @@ layer = 224
 [host]
 disable_firmware_config = true
 
-[[layer_rules]]
+[[rule]]
 match = "a"
 layer = 224
 "#;
@@ -1136,16 +1141,39 @@ layer = 224
     // ---- E. Cross-stage ----
 
     #[test]
+    fn test_evaluate_single_rule_layer_plus_callbacks() {
+        // The unified model's key capability: ONE [[rule]] sets BOTH a layer and
+        // callbacks (impossible under the old split schema). layer contributes to
+        // first-match; callbacks accumulate; clear_board follows the single
+        // effective flag for the matched rule.
+        let toml = r#"
+[[rule]]
+match = "kitty"
+layer = 9
+enable = ["vim_lazy", "disable_vim"]
+disable = ["vim_lazy"]
+disable_firmware_config = true
+"#;
+        let rules: RuleSet = toml::from_str(toml).unwrap();
+        let n2i = name_map(&[("vim_lazy", 1), ("disable_vim", 2)]);
+        let ctx = evaluate(&rules, "kitty", "anything", &n2i, true);
+        assert_eq!(ctx.layer, Some(9));        // layer from the same rule
+        assert_eq!(ctx.callback_ids, vec![2]); // vim_lazy disabled, disable_vim survives
+        assert!(ctx.any_match);
+        assert!(ctx.clear_board);              // single matched rule, effective true -> replace
+    }
+
+    #[test]
     fn test_evaluate_layer_match_callback_miss() {
         // Layer matches, no callback matches -> layer set, callback_ids empty,
         // any_match=true (and, board_has_rules=true + non-disabling default,
         // clear_board=false).
         let toml = r#"
-[[layer_rules]]
+[[rule]]
 match = "a"
 layer = 224
 
-[[callback_rules]]
+[[rule]]
 match = "zzz"
 enable = ["x"]
 "#;
@@ -1163,11 +1191,11 @@ enable = ["x"]
         // Mirror of the above: callback matches, layer misses -> layer None,
         // callback_ids populated, any_match=true.
         let toml = r#"
-[[layer_rules]]
+[[rule]]
 match = "zzz"
 layer = 224
 
-[[callback_rules]]
+[[rule]]
 match = "a"
 enable = ["x"]
 "#;
@@ -1191,11 +1219,11 @@ enable = ["x"]
         // The order the spec example implies: enable first, disable second.
         // x is absent (explicit-exclusion override). [baseline — already worked]
         let toml = r#"
-[[callback_rules]]
+[[rule]]
 match = "a"
 enable = ["x"]
 
-[[callback_rules]]
+[[rule]]
 match = "a"
 disable = ["x"]
 "#;
@@ -1212,11 +1240,11 @@ disable = ["x"]
         // previous implementation re-enabled x (last-writer-wins); the two-pass
         // difference makes disable win, so x stays excluded.
         let toml = r#"
-[[callback_rules]]
+[[rule]]
 match = "a"
 disable = ["x"]
 
-[[callback_rules]]
+[[rule]]
 match = "a"
 enable = ["x"]
 "#;
@@ -1235,11 +1263,11 @@ enable = ["x"]
         // A global "disable x" guard does not suppress unrelated enables: y/z
         // survive while only x is excluded, no matter where the guard sits.
         let toml = r#"
-[[callback_rules]]
+[[rule]]
 match = "a"
 disable = ["x"]
 
-[[callback_rules]]
+[[rule]]
 match = "a"
 enable = ["x", "y", "z"]
 "#;
@@ -1261,7 +1289,7 @@ enable = ["x", "y", "z"]
         // told instead of having the host layer silently cleared.
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().join("rules.toml");
-        std::fs::write(&path, "[[layer_rules]]\nmatch = \"a\"\nlayer = 255\n").unwrap();
+        std::fs::write(&path, "[[rule]]\nmatch = \"a\"\nlayer = 255\n").unwrap();
         let res = parse_rules(&path);
         assert!(res.is_err());
         let msg = res.unwrap_err().to_string();
@@ -1280,7 +1308,7 @@ enable = ["x", "y", "z"]
         for &layer in &[0u8, 28, 100, 224, 254] {
             let dir = tempfile::TempDir::new().unwrap();
             let path = dir.path().join("rules.toml");
-            std::fs::write(&path, format!("[[layer_rules]]\nmatch = \"a\"\nlayer = {layer}\n")).unwrap();
+            std::fs::write(&path, format!("[[rule]]\nmatch = \"a\"\nlayer = {layer}\n")).unwrap();
             let res = parse_rules(&path);
             assert!(res.is_ok(), "layer {layer} should be valid");
         }
@@ -1294,7 +1322,7 @@ enable = ["x", "y", "z"]
         let path = dir.path().join("rules.toml");
         std::fs::write(
             &path,
-            "[[layer_rules]]\nmatch = \"a\"\nlayer = 5\n\n[[layer_rules]]\nmatch = \"b\"\nlayer = 255\n",
+            "[[rule]]\nmatch = \"a\"\nlayer = 5\n\n[[rule]]\nmatch = \"b\"\nlayer = 255\n",
         )
         .unwrap();
         let res = parse_rules(&path);
@@ -1311,7 +1339,7 @@ enable = ["x", "y", "z"]
         // A rule that both enables and disables "foo" -> "foo" is flagged (#8).
         // The disable-list-only "bar" is NOT contradictory (no matching enable).
         let toml = r#"
-[[callback_rules]]
+[[rule]]
 match = "a"
 enable = ["foo", "bar"]
 disable = ["foo"]
@@ -1325,11 +1353,11 @@ disable = ["foo"]
         // enable in rule A + disable in rule B (different rules) is NOT a
         // contradiction — it is the legitimate explicit-exclusion override.
         let toml = r#"
-[[callback_rules]]
+[[rule]]
 match = "a"
 enable = ["x"]
 
-[[callback_rules]]
+[[rule]]
 match = "a"
 disable = ["x"]
 "#;
@@ -1342,7 +1370,7 @@ disable = ["x"]
         // The same name contradicted in two rules is reported once; output is
         // sorted (BTreeSet).
         let toml = r#"
-[[callback_rules]]
+[[rule]]
 match = "a"
 enable = ["z", "m"]
 disable = ["z", "m"]
