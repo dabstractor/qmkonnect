@@ -228,9 +228,11 @@ documented in the [Configuration Guide]({{ site.baseurl }}/configuration).
 
 The firmware keeps **two independent state planes**: your **board** layer and
 callbacks (driven by the legacy string + `DEFINE_*`, exactly as today) and a
-separate **host** layer and callback set (driven by `rules.toml`). Host layers
-are reserved **≥ 224** so they always resolve above your board layers; `255`
-clears the host layer. The two planes touch only at two seams, and QMKonnect
+separate **host** layer and callback set (driven by `rules.toml`). A host layer
+is a **raw QMK layer index** (no reserved range): pick one above your highest
+board layer so it wins in stack mode, within your `layer_state` width (≤15 by
+default, ≤31 with `LAYER_STATE_32BIT`); `255` clears the host layer. The two
+planes touch only at two seams, and QMKonnect
 picks which one per window:
 
 - **Stack** (the default): QMKonnect sends the window **string first** — so your

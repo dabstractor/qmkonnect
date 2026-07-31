@@ -270,7 +270,7 @@ active window.
 | `[host] disable_firmware_config` | no | `false` | Global stack/replace default. `false` = the board runs its own rules too (**stack**); `true` = the host takes over (**replace**). Per-rule `disable_firmware_config` overrides this. See [Stack vs. replace](#stack-vs-replace-disable_firmware_config). |
 | `[[layer_rules]]` table-array | no | `[]` | Layer rules. **First match wins**; one host layer is active at a time. |
 | `[[layer_rules]] match` | **yes** | — | Window pattern. A bare string (`"alacritty"`) matches the **window class only**; a two-element array (`["*chrome*", "*youtube*"]`) matches **class and title** (equivalent to the firmware `WT(class, title)`). Supports `*`, `^`, `$`, `+`, character classes (`\d \w \s …`), and `.` — full parity with the firmware matcher. |
-| `[[layer_rules]] layer` | **yes** | — | The host layer number to activate. Must be in **[224, 254]**: host layers are reserved `>= 224`, and `255` / `0xFF` is the wire "clear layer" sentinel (writing it explicitly would silently *clear* the host layer — the opposite of intent), so `parse_rules`/`--validate-rules` reject it. |
+| `[[layer_rules]] layer` | **yes** | — | The host layer number to activate — a **raw QMK layer index**, not a reserved range. Must be `<` your firmware's `layer_state_t` width (≤15 by default, ≤31 with `LAYER_STATE_32BIT`; larger indices are undefined behavior in `layer_on`), and `!= 255` (`0xFF` is the wire "clear layer" sentinel — writing it would silently *clear* the host layer, so `parse_rules`/`--validate-rules` reject it). To make the host layer win in **stack** mode, pick an index above your highest board layer; in **replace** mode any valid index wins. |
 | `[[layer_rules]] case_sensitive` | no | `false` | Whether `match` is case-sensitive. |
 | `[[layer_rules]] disable_firmware_config` | no | inherits `[host]` | Per-rule stack/replace override. Absent ⇒ uses the `[host]` default. |
 | `[[callback_rules]]` table-array | no | `[]` | Callback rules. **All matches fire.** Names come from your keyboard's callback registry (run `qmkonnect --list-callbacks` to see them). |
@@ -294,22 +294,25 @@ Here is the complete annotated example (from `spec/HOST_RULES.md` §9) — what 
 # rules.toml — host-side window rules.
 # disable_firmware_config chooses, per window, whether the board runs its own
 # rules (stack) or is cleared and driven solely by the host (replace). Global
-# default under [host]; per-rule override below. Host layers are >= 224.
+# default under [host]; per-rule override below.
 # Run `qmkonnect --validate-rules` after editing.
 
 [host]
 disable_firmware_config = false   # global default: false = stack (board runs), true = replace
 # On no match the host layer is always cleared and all host callbacks disabled.
 
-# Layer rules: FIRST match wins. One host layer active at a time (>= 224).
+# Layer rules: FIRST match wins. One host layer active at a time.
+# `layer` is a raw QMK layer index (no reserved range): pick one defined in your
+# keymap, < your layer_state width (<=15 default, <=31 with LAYER_STATE_32BIT),
+# above your highest board layer (so it wins in stack mode), and != 255.
 [[layer_rules]]
 match = "alacritty"                       # class-only pattern
-layer = 224
+layer = 10
 disable_firmware_config = true           # optional override (default inherits [host])
 
 [[layer_rules]]
 match = ["*chrome*", "*youtube*"]         # [class_pattern, title_pattern] (== WT())
-layer = 225
+layer = 11
 case_sensitive = false                    # optional, default false
 
 # Callback rules: ALL matches fire. Names come from the keyboard's registry

@@ -315,8 +315,12 @@ stays in string-only mode.
 - `os_byte`: `0 UNSURE · 1 LINUX · 2 WINDOWS · 3 MACOS · 4 IOS` (mirrors QMK
   `os_variant_t`). The host sends `SET_OS` once at connect; while connected the
   host's OS is **authoritative** for `current_os`.
-- `layer`: desired host-layer number, or `0xFF` (clear). **Host layers reserved ≥
-  224** so they resolve above board layers.
+- `layer`: desired host-layer number — a **raw QMK layer index** (`0..=254`;
+  no fixed floor, bounded by the firmware's `layer_state_t` width) — or `0xFF`
+  (clear). The firmware applies it verbatim via `layer_on()`/`layer_off()` and
+  does no range validation (only `255` is special). To win in **stack** mode the
+  index must exceed the highest board layer (QMK highest-set-bit rule); in
+  **replace** mode the board is cleared first so any valid index wins.
 - `flags` bit 0 = **`clear_board`**: firmware clears its board `activated_layer` +
   current command before applying the host context — the per-window "replace"
   semantics (`disable_firmware_config` in `rules.toml`).

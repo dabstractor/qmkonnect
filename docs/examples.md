@@ -279,27 +279,32 @@ id is just the array index. The pattern (`"steam_app*"`, `WT("cs2","*")`, …) i
 
 ### After: the same rules as `rules.toml`
 
-Move those rules into `rules.toml` (alongside `config.toml`). Host layers are
-reserved **≥ 224** (so they resolve above your board layers), so the firmware
-`_GAMING = 1` becomes host `layer = 224`:
+Move those rules into `rules.toml` (alongside `config.toml`). The `layer` value
+is a **raw QMK layer index** — the same `#define` your keymap already uses
+(`_GAMING`, `_NUMPAD`, …), **not** a reserved range and **not** remapped. Pick
+host-driven layers that sit **above** your board layers (so they win under QMK's
+highest-set-bit rule in stack mode) and that your `layer_state` can represent
+(≤15 by default, ≤31 with `LAYER_STATE_32BIT`); `255` is the wire "clear"
+sentinel. (The earlier guidance to remap `_GAMING = 1` → `layer = 224` is
+withdrawn — `layer_state` cannot hold bit 224.)
 
 ```toml
 [host]
 disable_firmware_config = false   # global default: STACK (board rules still run)
 
-# Layer rules — FIRST match wins. Host layers are >= 224.
+# Layer rules — FIRST match wins. `layer` = a real QMK layer index from your keymap.
 [[layer_rules]]
 match = "steam_app*"                       # class-only pattern (board rules also run)
-layer = 224
+layer = 10
 
 [[layer_rules]]
 match = ["cs2", "Counter-Strike 2"]        # [class, title]  == WT(class, title)
-layer = 224
+layer = 10
 
 # Replace: for this window the host takes over and the board is skipped.
 [[layer_rules]]
 match = ["*chrome*", "*youtube*"]
-layer = 225
+layer = 11
 disable_firmware_config = true
 
 # Callback rules — ALL matches fire. Names come from DEFINE_HOST_CALLBACKS.
@@ -326,11 +331,11 @@ rule makes the whole window *stack* (the board's rules run, then the host layer
 applies on top).
 
 - **A Steam game** (`steam_app_*`) → **stack**. The board runs its own
-  `DEFINE_SERIAL_*` rules for that window, the host layer `224` applies **on top**,
+  `DEFINE_SERIAL_*` rules for that window, the host layer `10` applies **on top**,
   and the host `enable_gaming` callback fires after the board callbacks.
 - **YouTube in Chrome** (`*chrome*` + `*youtube*`) → **replace** (`disable_firmware_config = true`).
   No window string is sent, so the board can't match; the firmware clears its own
-  board layer/command and applies only the host layer `225`.
+  board layer/command and applies only the host layer `11`.
 - **MS Word** (`*word*`) → only a callback rule matches (no layer rule), so the
   host layer is unchanged and the board runs normally; the host `disable_gaming`
   callback fires. If **no** rule matches a window, the host layer is cleared and

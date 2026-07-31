@@ -114,8 +114,18 @@ Because the wire protocol is shared, this feature touches **all three repos**:
   `disable_firmware_config` per-rule** (default `false`, global default under
   `[host]`, per-rule override on `[[layer_rules]]`/`[[callback_rules]]`): a
   matched rule with it `true` contributes to a **replace** decision for that
-  window. **C11 — host layers reserved ≥ 224** so they resolve above board layers
-  under QMK's highest-layer-wins rule (`255 = LAYER_UNSET`/clear). **C12 — host is
+  window. **C11 — host layer is a raw QMK layer index** (no fixed reserved range): the
+  firmware applies it verbatim via `layer_on()`/`layer_off()` and performs **no**
+  range validation, so the only reserved value is `255` (`LAYER_UNSET`/clear),
+  which the host rejects as a rule target. The index must fit the firmware's
+  `layer_state_t` (a bitmask: default 16-bit ⇒ layers 0–15, `LAYER_STATE_32BIT`
+  ⇒ 0–31; `layer_on(n)` with `n ≥` the width is UB), and to win in **stack**
+  mode it must exceed the highest board layer active for that window (QMK's
+  highest-set-bit rule); in **replace** mode the board is cleared first, so any
+  valid index wins. *(The earlier "≥ 224" reservation is withdrawn:
+  `layer_state` cannot hold bit 224 even at 32-bit, and `layer_on(224)` is UB
+  that on typical compilers wraps to bit `224 mod 32 = 0`, silently activating
+  the base layer.)* **C12 — host is
   the OS source of truth** while connected: `SET_OS` once at connect
   (host-authoritative; firmware `OS_DETECTION` is the offline fallback).
 
@@ -160,9 +170,12 @@ update host state for next diff/logging
   The string is shared by both board lanes, so it is sent at most once.
 - Firmware maintains **two independent layer trackers**: `activated_layer`
   (board, selected per-OS via round-A multi-OS) and `host_layer` (driven by
-  `APPLY_HOST_CONTEXT`). They are orthogonal; host layers sit ≥ 224 so they
-  resolve above board layers. In **replace** mode the board tracker is cleared
-  for that window (the host's `clear_board` flag) and re-engages on the next
+  `APPLY_HOST_CONTEXT`). They are orthogonal but share one QMK `layer_state`
+  bitmask (each calls `layer_on`/`layer_off` on it). There is no fixed reserved
+  host range (C11): in **stack** mode the host layer wins only if its index
+  exceeds the board layer QMK would otherwise resolve to (highest-set-bit); in
+  **replace** mode the board tracker is cleared for that window first (the host's
+  `clear_board` flag) so any valid index wins, and it re-engages on the next
   string send.
 - Callbacks: in stack mode board callbacks fire during string processing, then
   host callbacks during `APPLY_HOST_CONTEXT`. In replace mode only host callbacks
@@ -206,8 +219,10 @@ update host state for next diff/logging
 - `os_byte`: `0 UNSURE · 1 LINUX · 2 WINDOWS · 3 MACOS · 4 IOS`. The host sends
   `SET_OS` once at connect; while connected the host OS is **authoritative** for
   `current_os` (firmware `OS_DETECTION` is the offline fallback).
-- `APPLY_HOST_CONTEXT.layer`: desired host-layer number (`≥ 224`), or `0xFF`
-  (clear). `flags` bit 0 = **`clear_board`** ⇒ firmware clears its board
+- `APPLY_HOST_CONTEXT.layer`: desired host-layer number — a **raw QMK layer
+  index** (`0..=254`; no fixed floor, bounded by the firmware's `layer_state_t`
+  width — see C11) — or `0xFF` (clear). `flags` bit 0 = **`clear_board`** ⇒
+  firmware clears its board
   `activated_layer` + current command before applying the host context (the
   per-window "replace"). `id…` = the full desired enabled set; firmware diffs
   (disable-before-enable).
@@ -378,22 +393,25 @@ arrive.
 # rules.toml — host-side window rules.
 # disable_firmware_config chooses, per window, whether the board runs its own
 # rules (stack) or is cleared and driven solely by the host (replace). Global
-# default under [host]; per-rule override below. Host layers are >= 224.
+# default under [host]; per-rule override below.
 # Run `qmkonnect --validate-rules` after editing.
 
 [host]
 disable_firmware_config = false   # global default: false = stack (board runs), true = replace
 # On no match the host layer is always cleared and all host callbacks disabled.
 
-# Layer rules: FIRST match wins. One host layer active at a time (>= 224).
+# Layer rules: FIRST match wins. One host layer active at a time.
+# `layer` is a RAW QMK layer index (no fixed floor): must be < your layer_state
+# width (<=15 default, <=31 with LAYER_STATE_32BIT), > your highest board layer
+# to win in stack mode, and != 255 (the wire "clear" sentinel, rejected).
 [[layer_rules]]
 match = "alacritty"                       # class-only pattern
-layer = 224
+layer = 10
 disable_firmware_config = true           # optional override (default inherits [host])
 
 [[layer_rules]]
 match = ["*chrome*", "*youtube*"]         # [class_pattern, title_pattern] (== WT())
-layer = 225
+layer = 11
 case_sensitive = false                    # optional, default false
 
 # Callback rules: ALL matches fire. Names come from the keyboard's registry
