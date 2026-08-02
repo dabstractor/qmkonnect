@@ -196,6 +196,43 @@ pub fn render_config_body(config: &Config) -> String {
     )
 }
 
+/// Atomically write `content` to `path` via a temp file in `path`'s parent directory
+/// followed by `fs::rename`, so a concurrent reader (e.g. `parse_config` / `parse_rules`
+/// on the notifier thread) can never observe a truncated or partial file.
+///
+/// Uses ONLY `std::fs` (no `tempfile` crate): the temp (`.{file_name}.tmp`) lives in the
+/// SAME directory as `path`, so `rename` is atomic (same filesystem). Config/rules files
+/// are in a per-user dir the process already owns, so there are no permission concerns
+/// (unlike `write_rule_atomic`, which targets `/etc/udev/rules.d` and needs `tempfile`).
+///
+/// On any error after the temp file is created, the temp is removed best-effort. If
+/// `fs::write` itself fails, no temp exists and the cleanup is a harmless no-op.
+///
+/// Signature is a drop-in for `fs::write(path, content)?`.
+pub fn atomic_write(path: &Path, content: &str) -> Result<(), Box<dyn Error>> {
+    let parent = path.parent().unwrap_or(Path::new("."));
+    let file_name = path
+        .file_name()
+        .ok_or_else(|| format!("atomic_write: path has no file name: {}", path.display()))?;
+    // Same parent dir as target => same filesystem => rename is atomic. Leading dot hides
+    // the temp on Unix; the name is unique per target within its directory.
+    let tmp = parent.join(format!(".{}.tmp", file_name.to_string_lossy()));
+
+    // Stage the body in the temp, then atomically rename it over the target.
+    let result = (|| -> Result<(), Box<dyn Error>> {
+        fs::write(&tmp, content)?;
+        fs::rename(&tmp, path)?;
+        Ok(())
+    })();
+
+    // If anything failed after the temp was created, remove it (best-effort). A bare `?`
+    // would short-circuit past this cleanup, hence the captured-result guard.
+    if result.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    result
+}
+
 /// Create a default (zero-config) config file. Every device-identifying field
 /// is written commented out, so out-of-the-box QMKonnect auto-discovers any QMK
 /// keyboard by usage page/usage — no VID/PID, no `--reload`, no sudo needed
@@ -548,6 +585,74 @@ mod tests {
             std::fs::read_to_string(&path).unwrap(),
             sentinel,
             "second create_default_rules must not overwrite"
+        );
+    }
+
+    #[test]
+    fn test_atomic_write_creates_correct_content() {
+        // Happy path: atomic_write stages the body in a sibling .tmp and renames it
+        // over the target, so the final file content is exactly `content`.
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config.toml");
+
+        atomic_write(&path, "vendor_id = 0xfeed\n").unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "vendor_id = 0xfeed\n",
+            "final file content must equal the content passed to atomic_write"
+        );
+
+        // No temp file must linger in the target directory after a successful write.
+        let lingering_tmp = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .any(|e| e.file_name().to_string_lossy().ends_with(".tmp"));
+        assert!(
+            !lingering_tmp,
+            "no .tmp file should remain after a successful atomic_write"
+        );
+    }
+
+    #[test]
+    fn test_atomic_write_replaces_existing() {
+        // Overwrite an existing (stale) file: atomic replace must fully replace the
+        // content, never concatenate or append.
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "# STALE content\n").unwrap();
+
+        atomic_write(&path, "poll_interval_ms = 250\n").unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "poll_interval_ms = 250\n",
+            "atomic_write must fully replace pre-existing content"
+        );
+    }
+
+    #[test]
+    fn test_atomic_write_cleans_up_temp_on_error() {
+        // rename of a temp file over a DIRECTORY target fails (EISDIR), exercising the
+        // cleanup branch: the staged .tmp must be removed rather than left behind.
+        let dir = tempfile::TempDir::new().unwrap();
+        let target = dir.path().join("config.toml");
+        std::fs::create_dir(&target).unwrap();
+
+        let result = atomic_write(&target, "body");
+        assert!(
+            result.is_err(),
+            "rename of a temp file over a directory must fail (EISDIR)"
+        );
+
+        // Enumerate the directory: no .tmp file should remain after the error path.
+        let lingering_tmp = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .any(|e| e.file_name().to_string_lossy().ends_with(".tmp"));
+        assert!(
+            !lingering_tmp,
+            "no .tmp file should linger after atomic_write fails mid-write"
         );
     }
 }
