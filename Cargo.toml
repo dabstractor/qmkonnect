@@ -90,6 +90,11 @@ windows = { version = "0.52.0", features = [
     "Win32_UI_Shell",
     "UI_Notifications",
     "Data_Xml_Dom",
+    # WinRT toast COM init (P1.M4.T1.S2): CoInitializeEx/CoUninitialize — WinRT
+    # toast calls require the calling thread to hold a COM apartment (unlike
+    # set_aumid above, which is pure Win32 and needs none). Sibling to the three
+    # features directly above.
+    "Win32_System_Com",
 ] }
 log = "0.4"
 env_logger = "0.11"

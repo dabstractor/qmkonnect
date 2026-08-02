@@ -176,7 +176,7 @@
               "type": "Task",
               "id": "P1.M4.T1",
               "title": "WinRT toast notification infrastructure",
-              "status": "Researching",
+              "status": "Complete",
               "description": "Add the AUMID registration and WinRT toast API access needed to send real Windows toast notifications. Two viable approaches: (A) add windows crate features (Win32_UI_Shell for SetCurrentProcessExplicitAppUserModelID + WinRT toast features) — no new crate, more unsafe code; (B) add the tauri-winrt-notification crate — one new dep, handles AUMID/shortcut/toast XML in ~20 lines. Pick the approach that best fits the project's dependency philosophy.",
               "subtasks": [
                 {
@@ -198,7 +198,7 @@
                   "type": "Subtask",
                   "id": "P1.M4.T1.S2",
                   "title": "Implement WinRT toast replacing MessageBoxW in platforms::notify",
-                  "status": "Researching",
+                  "status": "Complete",
                   "story_points": 2,
                   "dependencies": [
                     "P1.M4.T1.S1"

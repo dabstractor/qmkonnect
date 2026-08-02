@@ -186,29 +186,98 @@ pub fn notify(title: &str, body: &str) {
     }
     #[cfg(target_os = "windows")]
     {
-        // Dep-free stand-in for a WinRT toast (a true toast needs an
-        // AppUserModelID + Start Menu shortcut to render). Non-blocking via a
-        // spawned thread; mirrors tray.rs's MessageBoxW idiom.
-        let body_w: Vec<u16> = body.encode_utf16().chain(std::iter::once(0)).collect();
-        let title_w: Vec<u16> = title.encode_utf16().chain(std::iter::once(0)).collect();
-        std::thread::spawn(move || {
-            use windows::core::PCWSTR;
-            use windows::Win32::Foundation::HWND;
-            use windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
-            unsafe {
-                let _ = MessageBoxW(
-                    HWND(0),
-                    PCWSTR(body_w.as_ptr()),
-                    PCWSTR(title_w.as_ptr()),
-                    MB_OK | MB_ICONERROR,
-                );
-            }
-        });
+        // WinRT toast (P1.M4.T1.S2). Fire-and-forget; the caller dedupes and
+        // show_toast swallows all failures. Replaces the former focus-stealing
+        // MessageBoxW modal (bug-hunt Finding #3 / spec UI.md §2.3).
+        show_toast(title, body);
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
     {
         let _ = (title, body); // unsupported platform — no-op
     }
+}
+
+/// Send a WinRT toast for the "rules.toml invalid" notification (P1.M4.T1.S2).
+///
+/// Fire-and-forget: swallows all errors (same posture as the former
+/// `MessageBoxW`, but logs a `warn!` on the rare failure — matches `set_aumid`).
+/// Runs on a SHORT-LIVED worker thread because every WinRT call needs the
+/// calling thread COM-initialized (`CoInitializeEx`), and the window-event
+/// thread that reaches `notify()` may already hold an incompatible (MTA)
+/// apartment — a fresh STA worker avoids `RPC_E_CHANGED_MODE`. The worker exits
+/// in <1 ms (`Show` is non-blocking), so this is NOT the former "leaks until
+/// click" defect (bug-hunt Finding #3). The toast actually renders only once a
+/// Start Menu shortcut advertises `APP_AUMID` (P1.M4.T2.S1); until then `Show`
+/// returns `Ok(())` and nothing is visible — by design (research §Q7).
+#[cfg(target_os = "windows")]
+fn show_toast(title: &str, body: &str) {
+    // Own the strings for the moved closure (notify's &str don't outlive it).
+    let title = title.to_string();
+    let body = body.to_string();
+    std::thread::spawn(move || {
+        use windows::core::HSTRING;
+        use windows::Data::Xml::Dom::XmlDocument;
+        use windows::UI::Notifications::{ToastNotification, ToastNotificationManager};
+        use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED};
+
+        // 1. COM apartment on THIS thread (STA). Required for every WinRT call
+        //    below; `let _ =` because S_FALSE (already-init) is benign and
+        //    RPC_E_CHANGED_MODE is impossible on a fresh thread. Same thread
+        //    does all WinRT work + Show (apartments don't transfer).
+        unsafe {
+            let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        }
+
+        // 2. Fire-and-forget: build XML → load → wrap → notifier → show. Log a
+        //    warn on failure (matches set_aumid's posture; init_logging ran first).
+        let res = (|| -> windows::core::Result<()> {
+            let xml = build_toast_xml(&title, &body);
+            let doc = XmlDocument::new()?;
+            doc.LoadXml(&HSTRING::from(xml.as_str()))?;
+            let toast = ToastNotification::CreateToastNotification(&doc)?;
+            let notifier =
+                ToastNotificationManager::CreateToastNotifierWithId(&HSTRING::from(APP_AUMID))?;
+            notifier.Show(&toast)?;
+            Ok(())
+        })();
+        if let Err(e) = res {
+            log::warn!("show_toast: toast failed: {e}");
+        }
+
+        // 3. Release COM objects (RAII: they dropped when the closure above
+        //    returned) then uninitialize. Optional (thread exit cleans up
+        //    anyway) but tidy and matches the init.
+        unsafe {
+            CoUninitialize();
+        }
+    });
+}
+
+/// Build the `ToastText02` toast XML (bold title + wrapped body) for `show_toast`.
+/// Factored out so the cfg(windows) unit test can verify escaping + parseability
+/// without calling `Show` (no shortcut needed).
+#[cfg(target_os = "windows")]
+fn build_toast_xml(title: &str, body: &str) -> String {
+    format!(
+        "<toast><visual><binding template=\"ToastText02\">\
+         <text id=\"1\">{}</text>\
+         <text id=\"2\">{}</text>\
+         </binding></visual></toast>",
+        xml_escape(title),
+        xml_escape(body),
+    )
+}
+
+/// Escape a string for XML element content. The toast body is a TOML parse
+/// error that may contain `& " < > '` — unescaped, `LoadXml` rejects it and the
+/// toast silently never fires. Escape `&` first to avoid double-escaping.
+#[cfg(target_os = "windows")]
+fn xml_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
 }
 
 /// Quote a Rust string as an AppleScript (`osascript`) string literal.
@@ -306,5 +375,43 @@ mod tests {
         let result = monitor.stop();
         assert!(result.is_ok());
         assert!(monitor.was_stop_called());
+    }
+}
+
+#[cfg(all(test, target_os = "windows"))]
+mod toast_tests {
+    use super::*;
+
+    /// The toast XML must be well-formed AND correctly escaped for the body's
+    /// special characters (the body is an arbitrary TOML parse-error string).
+    /// We verify by loading it into a real XmlDocument — the same parse
+    /// `show_toast` performs — WITHOUT calling `Show` (no shortcut needed, no
+    /// toast pops during `cargo test`).
+    ///
+    /// NOTE: runs only on Windows (the implementing agent is on Linux, so this
+    /// is a DEFERRED gate — see PRP Validation Level 5 / AGENTS.md Windows dev
+    /// loop).
+    #[test]
+    fn toast_xml_is_well_formed_and_escapes_special_chars() {
+        use windows::core::HSTRING;
+        use windows::Data::Xml::Dom::XmlDocument;
+        use windows::Win32::System::Com::{CoInitializeEx, COINIT_APARTMENTTHREADED};
+
+        // XmlDocument::new() is a WinRT activation → needs COM on this test
+        // thread (cargo test may run the test on a worker thread with no
+        // apartment).
+        unsafe {
+            let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        }
+
+        // A realistic TOML-error body with the chars that break XML if unescaped.
+        let xml = build_toast_xml(
+            "QMKonnect: rules.toml invalid",
+            "expected `=` at line 5 & column 3, found \"<weird>\"",
+        );
+        let doc = XmlDocument::new().expect("XmlDocument::new");
+        doc.LoadXml(&HSTRING::from(xml.as_str()))
+            .expect("toast XML must parse after xml_escape");
+        // If LoadXml returned Ok, the XML is well-formed and escaping is correct.
     }
 }
