@@ -252,7 +252,7 @@ pub fn create_default_config(config_path: &Path) -> Result<(), Box<dyn Error>> {
     let default_config = render_default_config_template();
 
     // Write the config file
-    fs::write(config_path, default_config)?;
+    atomic_write(config_path, &default_config)?;
 
     println!(
         "Configuration created successfully at: {}",
@@ -368,7 +368,7 @@ pub fn create_default_rules(rules_path: &Path) -> Result<(), Box<dyn Error>> {
         fs::create_dir_all(parent)?;
     }
 
-    fs::write(rules_path, render_rules_body())?;
+    atomic_write(rules_path, &render_rules_body())?;
 
     println!("rules.toml template created at: {}", rules_path.display());
     println!(

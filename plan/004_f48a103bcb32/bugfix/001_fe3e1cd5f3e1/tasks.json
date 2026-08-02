@@ -43,7 +43,7 @@
           "type": "Milestone",
           "id": "P1.M2",
           "title": "Atomic Config & Rules File Persistence",
-          "status": "Planned",
+          "status": "Researching",
           "description": "Finding h2.1 #1: All config.toml and rules.toml save paths use std::fs::write (truncate-then-write) with no temp-file+rename. A concurrent reader (configured_filter, host_context_for_window, parse_rules — all run per-window-change on the notifier thread) can observe a truncated or empty file mid-save, producing a spurious 'rules.toml invalid' notification or a brief device-filter mismatch. Impact is low (transient, self-healing) but the fix is a simple std-only atomic_write helper (temp file + fs::rename, atomic same-directory). See architecture/config_writes_research.md.",
           "tasks": [
             {
@@ -73,14 +73,14 @@
               "type": "Task",
               "id": "P1.M2.T2",
               "title": "Migrate all config/rules write call sites to atomic_write",
-              "status": "Planned",
+              "status": "Researching",
               "description": "Replace all five fs::write call sites for config.toml and rules.toml with the new atomic_write helper. Each is a trivial one-line replacement (fs::write(path, content)? → atomic_write(path, &content)?).",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M2.T2.S1",
                   "title": "Update create_default_config + create_default_rules in src/core/mod.rs",
-                  "status": "Ready",
+                  "status": "Complete",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M2.T1.S1"
@@ -95,7 +95,7 @@
                   "type": "Subtask",
                   "id": "P1.M2.T2.S2",
                   "title": "Update tray.rs (Windows + macOS) and linux_tray.rs settings-dialog saves",
-                  "status": "Planned",
+                  "status": "Researching",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M2.T1.S1"
