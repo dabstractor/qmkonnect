@@ -3,18 +3,18 @@ pub mod pattern;
 pub mod rules;
 pub mod types;
 
+use once_cell::sync::Lazy;
 use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
+#[cfg(test)]
+use std::sync::atomic::AtomicU64;
+#[cfg(test)]
+use std::sync::atomic::Ordering;
 use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::time::Instant;
 use std::time::SystemTime;
-use once_cell::sync::Lazy;
-#[cfg(test)]
-use std::sync::atomic::Ordering;
-#[cfg(test)]
-use std::sync::atomic::AtomicU64;
 
 // Define the Config struct. VID/PID (and usage page/usage) are OPTIONAL: a
 // missing field deserializes to `None`, which means "match any" (auto-discovery
@@ -137,9 +137,7 @@ pub fn cached_config_at(path: &Path) -> Result<Config, Box<dyn Error>> {
     let mtime = meta.modified()?;
     let size = meta.len();
     {
-        let cache = CONFIG_CACHE
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let cache = CONFIG_CACHE.lock().unwrap_or_else(|e| e.into_inner());
         if let Some((cp, cm, cs, cfg)) = cache.as_ref() {
             if cp == path && *cm == mtime && *cs == size {
                 return Ok(cfg.clone());
@@ -149,9 +147,8 @@ pub fn cached_config_at(path: &Path) -> Result<Config, Box<dyn Error>> {
     #[cfg(test)]
     CONFIG_CACHE_MISSES.fetch_add(1, Ordering::SeqCst);
     let cfg = parse_config(path)?; // errors NOT cached (re-read on next call)
-    *CONFIG_CACHE
-        .lock()
-        .unwrap_or_else(|e| e.into_inner()) = Some((path.to_path_buf(), mtime, size, cfg.clone()));
+    *CONFIG_CACHE.lock().unwrap_or_else(|e| e.into_inner()) =
+        Some((path.to_path_buf(), mtime, size, cfg.clone()));
     Ok(cfg)
 }
 
@@ -162,9 +159,7 @@ pub fn cached_rules_at(path: &Path) -> Result<crate::core::rules::RuleSet, Box<d
     let mtime = meta.modified()?;
     let size = meta.len();
     {
-        let cache = RULES_CACHE
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let cache = RULES_CACHE.lock().unwrap_or_else(|e| e.into_inner());
         if let Some((cp, cm, cs, rs)) = cache.as_ref() {
             if cp == path && *cm == mtime && *cs == size {
                 return Ok(rs.clone());
@@ -174,9 +169,7 @@ pub fn cached_rules_at(path: &Path) -> Result<crate::core::rules::RuleSet, Box<d
     #[cfg(test)]
     RULES_CACHE_MISSES.fetch_add(1, Ordering::SeqCst);
     let rs = crate::core::rules::parse_rules(path)?; // errors NOT cached
-    *RULES_CACHE
-        .lock()
-        .unwrap_or_else(|e| e.into_inner()) =
+    *RULES_CACHE.lock().unwrap_or_else(|e| e.into_inner()) =
         Some((path.to_path_buf(), mtime, size, rs.clone()));
     Ok(rs)
 }
@@ -827,7 +820,10 @@ mod tests {
         f.set_times(times).unwrap();
         drop(f);
         let c = cached_config_at(&path).unwrap();
-        assert_eq!(c.debounce_ms, 999, "mtime change (same size) must invalidate");
+        assert_eq!(
+            c.debounce_ms, 999,
+            "mtime change (same size) must invalidate"
+        );
         let after_mtime = CONFIG_CACHE_MISSES.load(Ordering::SeqCst);
         assert_eq!(
             after_mtime - after_size,
@@ -851,21 +847,30 @@ mod tests {
         let _ = cached_rules_at(&path).unwrap();
         let _ = cached_rules_at(&path).unwrap();
         let after_two = RULES_CACHE_MISSES.load(Ordering::SeqCst);
-        assert_eq!(after_two - before, 1, "first=MISS, second=HIT -> exactly one parse");
+        assert_eq!(
+            after_two - before,
+            1,
+            "first=MISS, second=HIT -> exactly one parse"
+        );
 
         // INVALIDATE: different size -> re-parse, and the new value is picked up.
         std::fs::write(&path, "[[rule]]\nmatch = \"y\"\nlayer = 22\n").unwrap();
         let rs = cached_rules_at(&path).unwrap();
         let after_three = RULES_CACHE_MISSES.load(Ordering::SeqCst);
         assert_eq!(after_three - after_two, 1, "size change -> MISS");
-        assert_eq!(rs.rules[0].layer, Some(22), "invalidation picked up the new value");
+        assert_eq!(
+            rs.rules[0].layer,
+            Some(22),
+            "invalidation picked up the new value"
+        );
 
         // NO ERROR CACHING: a malformed file returns Err and is NOT stored, so
         // fixing it re-reads.
         std::fs::write(&path, "this is = = not valid toml\n").unwrap();
         assert!(cached_rules_at(&path).is_err(), "malformed -> Err");
         std::fs::write(&path, "[[rule]]\nmatch = \"z\"\nlayer = 3\n").unwrap();
-        let rs = cached_rules_at(&path).expect("error was NOT cached -> fixed file re-reads cleanly");
+        let rs =
+            cached_rules_at(&path).expect("error was NOT cached -> fixed file re-reads cleanly");
         assert_eq!(rs.rules[0].layer, Some(3));
     }
 }

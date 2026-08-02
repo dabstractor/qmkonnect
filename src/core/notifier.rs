@@ -529,12 +529,12 @@ pub fn perform_handshake_with(verbose: bool, opts: HandshakeOptions) {
                     }
                 }
                 drop(n); // release NOTIFIER before the next iteration (per-iteration release)
-                // #4: yield so a window-notification waiter (`notify_qmk`'s immediate send or
-                // `debounce_worker`'s flush — both BLOCKING on NOTIFIER) actually gets to acquire
-                // the lock before we re-lock for the next iteration. Without this, std::sync::Mutex's
-                // unfair barging re-acquires in ~ns and starves the woken waiter for the whole sweep,
-                // defeating the per-iteration release. sched_yield is ~1µs and a no-op when nothing
-                // else is runnable (N<=64 iterations => <=~64µs/handshake, negligible).
+                         // #4: yield so a window-notification waiter (`notify_qmk`'s immediate send or
+                         // `debounce_worker`'s flush — both BLOCKING on NOTIFIER) actually gets to acquire
+                         // the lock before we re-lock for the next iteration. Without this, std::sync::Mutex's
+                         // unfair barging re-acquires in ~ns and starves the woken waiter for the whole sweep,
+                         // defeating the per-iteration release. sched_yield is ~1µs and a no-op when nothing
+                         // else is runnable (N<=64 iterations => <=~64µs/handshake, negligible).
                 thread::yield_now();
             }
             {
@@ -929,7 +929,10 @@ fn debounce_worker() {
                     state.last_sent_time = Some(Instant::now());
                     to_send = Some((pm, verbose));
                 } else {
-                    state = COND.wait_timeout(state, target - now).unwrap_or_else(|e| e.into_inner()).0;
+                    state = COND
+                        .wait_timeout(state, target - now)
+                        .unwrap_or_else(|e| e.into_inner())
+                        .0;
                 }
             }
             to_send
@@ -1782,8 +1785,8 @@ mod tests {
         // `vendor_id` — the kind of typo a user makes (e.g. editing by hand).
         std::fs::write(&path, "vendor_id = 0x1234\nvendor_id = 0x5678\n").unwrap();
 
-        let (err_path, msg) = config_parse_error_at(&path)
-            .expect("a malformed config must surface a parse error");
+        let (err_path, msg) =
+            config_parse_error_at(&path).expect("a malformed config must surface a parse error");
         assert_eq!(err_path, path);
         assert!(!msg.is_empty(), "error message must be non-empty");
     }
@@ -1806,8 +1809,8 @@ mod tests {
         let path = dir.path().join("config.toml");
         std::fs::write(&path, b"debounce_ms = \"fifty\"\n").unwrap();
 
-        let (err_path, _msg) = config_parse_error_at(&path)
-            .expect("a wrong-type value must surface a parse error");
+        let (err_path, _msg) =
+            config_parse_error_at(&path).expect("a wrong-type value must surface a parse error");
         assert_eq!(err_path, path);
     }
 
@@ -2779,8 +2782,14 @@ disable = ["known_b", "phantom"]
             let _guard = local.lock().unwrap();
             panic!("intentional: poison the mutex");
         }));
-        assert!(panic_res.is_err(), "helper must panic to set the poison flag");
-        assert!(local.lock().is_err(), "mutex must be poisoned after the panic");
+        assert!(
+            panic_res.is_err(),
+            "helper must panic to set the poison flag"
+        );
+        assert!(
+            local.lock().is_err(),
+            "mutex must be poisoned after the panic"
+        );
 
         // Recovery — the EXACT idiom the four hardened production sites use:
         // PoisonError::into_inner() returns the inner guard, usable despite poison.

@@ -153,13 +153,8 @@ pub fn set_aumid() {
     use ::windows::core::PCWSTR;
     use ::windows::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID;
     // PCWSTR wants a NUL-terminated UTF-16 buffer; keep the Vec alive across the call.
-    let wide: Vec<u16> = APP_AUMID
-        .encode_utf16()
-        .chain(std::iter::once(0))
-        .collect();
-    let hr = unsafe {
-        SetCurrentProcessExplicitAppUserModelID(PCWSTR(wide.as_ptr()))
-    };
+    let wide: Vec<u16> = APP_AUMID.encode_utf16().chain(std::iter::once(0)).collect();
+    let hr = unsafe { SetCurrentProcessExplicitAppUserModelID(PCWSTR(wide.as_ptr())) };
     if let Err(e) = hr {
         log::warn!("set_aumid: SetCurrentProcessExplicitAppUserModelID failed: {e}");
     }
@@ -221,8 +216,10 @@ fn show_toast(title: &str, body: &str) {
         // `::windows` = the windows-rs crate (bare `windows` here is the submodule).
         use ::windows::core::HSTRING;
         use ::windows::Data::Xml::Dom::XmlDocument;
+        use ::windows::Win32::System::Com::{
+            CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED,
+        };
         use ::windows::UI::Notifications::{ToastNotification, ToastNotificationManager};
-        use ::windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED};
 
         // 1. COM apartment on THIS thread (STA). Required for every WinRT call
         //    below; `let _ =` because S_FALSE (already-init) is benign and
