@@ -838,11 +838,11 @@ fn get_notifier() -> Arc<Mutex<Box<dyn Notifier>>> {
 fn debounce_worker() {
     loop {
         let to_send = {
-            let mut state = STATE.lock().unwrap();
+            let mut state = STATE.lock().unwrap_or_else(|e| e.into_inner());
 
             // Wait until something is actually queued.
             while state.pending.is_none() {
-                state = COND.wait(state).unwrap();
+                state = COND.wait(state).unwrap_or_else(|e| e.into_inner());
             }
 
             // Wait out the debounce window relative to the last send.
@@ -868,7 +868,7 @@ fn debounce_worker() {
                     state.last_sent_time = Some(Instant::now());
                     to_send = Some((pm, verbose));
                 } else {
-                    state = COND.wait_timeout(state, target - now).unwrap().0;
+                    state = COND.wait_timeout(state, target - now).unwrap_or_else(|e| e.into_inner()).0;
                 }
             }
             to_send
@@ -924,7 +924,7 @@ pub fn notify_qmk(
     ensure_worker();
 
     let send_immediately = {
-        let mut state = STATE.lock().unwrap();
+        let mut state = STATE.lock().unwrap_or_else(|e| e.into_inner());
         state.verbose = verbose;
 
         let now = Instant::now();
@@ -2447,6 +2447,63 @@ disable = ["known_b", "phantom"]
         assert!(
             wait_for_count(2, Duration::from_millis(500)),
             "worker must keep processing after the survived race"
+        );
+    }
+
+    /// Defense-in-depth: debounce_worker / notify_qmk recover from a poisoned STATE
+    /// mutex (debug/test builds only). Release uses `panic = "abort"`, so a panic
+    /// kills the process before any re-lock and poisoning is impossible there.
+    ///
+    /// We verify the recovery idiom on a LOCAL `Mutex<DebounceState>` rather than
+    /// the global `STATE`: std `Mutex` poison cannot be cleared on stable Rust, so
+    /// poisoning the global `STATE` would permanently contaminate it and break
+    /// `reset_test_state()` (STATE.lock().unwrap()) plus the `STATE.lock().is_ok()`
+    /// assertion in `test_debounce_worker_survives_pending_cleared_mid_wait` for
+    /// every test run afterward. The idiom `unwrap_or_else(|e| e.into_inner())` is
+    /// generic over Mutex<T>, so a local mutex is a faithful proof that the four
+    /// hardened production sites (STATE.lock @ worker+notify_qmk, COND.wait,
+    /// COND.wait_timeout) recover identically. We additionally call notify_qmk on
+    /// the (unpoisoned) global STATE to confirm the hardening didn't regress the
+    /// normal path.
+    #[test]
+    fn test_debounce_worker_survives_poisoned_state() {
+        // --- Part A: the recovery idiom survives a poisoned Mutex<DebounceState>. ---
+        let local: Mutex<DebounceState> = Mutex::new(DebounceState {
+            last_sent_time: None,
+            pending: None,
+            verbose: false,
+            interval_override: Some(Duration::from_millis(50)),
+        });
+
+        // Poison it: lock, then panic under catch_unwind. The guard is dropped during
+        // unwinding, which sets the mutex's poison flag (permanent on stable Rust).
+        let panic_res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = local.lock().unwrap();
+            panic!("intentional: poison the mutex");
+        }));
+        assert!(panic_res.is_err(), "helper must panic to set the poison flag");
+        assert!(local.lock().is_err(), "mutex must be poisoned after the panic");
+
+        // Recovery — the EXACT idiom the four hardened production sites use:
+        // PoisonError::into_inner() returns the inner guard, usable despite poison.
+        {
+            let mut guard = local.lock().unwrap_or_else(|e| e.into_inner());
+            guard.interval_override = Some(Duration::from_millis(10)); // prove it's usable
+            assert_eq!(guard.interval_override, Some(Duration::from_millis(10)));
+        }
+        // (COND.wait / COND.wait_timeout share the same PoisonError::into_inner shape:
+        //  wait         -> PoisonError<MutexGuard>.into_inner()              -> MutexGuard
+        //  wait_timeout -> PoisonError<(MutexGuard, WaitTimeoutResult)>.into_inner().0 -> MutexGuard)
+
+        // --- Part B: notify_qmk still works on the (unpoisoned) global STATE ---
+        // (confirms the 4-site hardening didn't regress the normal/unpoisoned path).
+        reset_test_state();
+        set_notifier(Box::new(MockNotifier::new()));
+        let res = notify_qmk(&WindowInfo::new("PoisonChk".into(), "t".into()), false);
+        assert!(res.is_ok());
+        assert!(
+            wait_for_count(1, Duration::from_millis(500)),
+            "notify_qmk must still flush on an unpoisoned STATE after hardening"
         );
     }
 }
