@@ -456,10 +456,21 @@ pub fn perform_handshake_with(verbose: bool, opts: HandshakeOptions) {
                     eprintln!("Warning: SET_OS failed during handshake: {}", e);
                 }
             }
-            // Callback sweep → local map (publish after dropping the notifier lock: D2).
-            // #4: bound both the count (`MAX_HOST_CALLBACKS`) and the wall clock
-            // (`CALLBACK_SWEEP_DEADLINE`) so a misbehaving firmware cannot wedge
-            // the global notifier mutex (and every notification behind it).
+            // Release the QueryInfo+SetOs lock BEFORE the sweep. The sweep now re-acquires
+            // NOTIFIER per iteration (#4) so a window-notification send (`notify_qmk`'s
+            // immediate arm or `debounce_worker`'s flush) can acquire it between any two
+            // `QueryCallback` iterations instead of blocking for the whole sweep. Each
+            // `send_command` opens the HID device independently (`qmk_notifier::run`), so
+            // releasing and re-acquiring between iterations is safe — no shared device-handle
+            // state. `CALLBACK_NAMES` is published atomically AFTER the sweep, and
+            // `BOARD_HAS_RULES`/`HOST_CAPABLE` are set after it too, so a concurrent
+            // notification during the sweep only sees the pre-handshake (stale/empty) callback
+            // map — identical to the pre-handshake state.
+            drop(n);
+            // Callback sweep → local map (publish after the sweep: D2).
+            // #4 (secondary bound): `MAX_HOST_CALLBACKS` + `CALLBACK_SWEEP_DEADLINE` still cap a
+            // misbehaving firmware per iteration as defense-in-depth (the primary mitigation is
+            // the per-iteration lock release above).
             let sweep_start = Instant::now();
             let sweep_cap = callback_count.min(MAX_HOST_CALLBACKS);
             if callback_count > MAX_HOST_CALLBACKS {
@@ -471,6 +482,8 @@ pub fn perform_handshake_with(verbose: bool, opts: HandshakeOptions) {
             }
             let mut local: HashMap<String, u8> = HashMap::new();
             for i in 0..sweep_cap {
+                // #4: deadline check at the TOP of each iteration, BEFORE re-locking NOTIFIER,
+                // so a per-iteration release actually hands the lock to a waiter before we stop.
                 if sweep_start.elapsed() > CALLBACK_SWEEP_DEADLINE {
                     eprintln!(
                         "Warning: callback sweep exceeded {}s budget at index {} \
@@ -482,6 +495,9 @@ pub fn perform_handshake_with(verbose: bool, opts: HandshakeOptions) {
                     );
                     break;
                 }
+                // Re-acquire NOTIFIER for THIS iteration only — a window notification can now
+                // interleave between any two iterations.
+                let n = notifier.lock().unwrap();
                 match n.send_command(qmk_notifier::RunCommand::QueryCallback(i), &filter) {
                     Ok(qmk_notifier::CommandResponse::CallbackName {
                         index,
@@ -512,8 +528,8 @@ pub fn perform_handshake_with(verbose: bool, opts: HandshakeOptions) {
                         eprintln!("Warning: QUERY_CALLBACK({}) failed: {}", i, e);
                     }
                 }
+                drop(n); // release NOTIFIER before the next iteration (per-iteration release)
             }
-            drop(n); // release the notifier before the read-only rules validation
             {
                 let mut names = CALLBACK_NAMES.lock().unwrap();
                 names.clear();
@@ -1255,6 +1271,11 @@ mod tests {
     // (instead of consulting MOCK_RESPONSES).
     static MOCK_SEND_COMMAND_ERRORS: Lazy<StdMutex<VecDeque<String>>> =
         Lazy::new(|| StdMutex::new(VecDeque::new()));
+    // P1.M3.T2.S1 (#4): optional per-`send_command` artificial delay so the callback sweep
+    // has a measurable, controllable duration. Used by
+    // test_handshake_sweep_releases_lock_between_iterations to prove NOTIFIER is released
+    // between sweep iterations. `None` in production and by default.
+    static MOCK_SEND_DELAY: Lazy<StdMutex<Option<Duration>>> = Lazy::new(|| StdMutex::new(None));
 
     fn reset_global_mock() {
         MOCK_CALL_COUNT.store(0, Ordering::SeqCst);
@@ -1262,6 +1283,7 @@ mod tests {
         MOCK_SEND_COMMAND_CALLS.lock().unwrap().clear();
         MOCK_RESPONSES.lock().unwrap().clear();
         MOCK_SEND_COMMAND_ERRORS.lock().unwrap().clear();
+        *MOCK_SEND_DELAY.lock().unwrap() = None;
     }
 
     struct MockNotifier;
@@ -1291,6 +1313,13 @@ mod tests {
         fn set_mock_send_errors(errors: Vec<String>) {
             MOCK_SEND_COMMAND_ERRORS.lock().unwrap().extend(errors);
         }
+
+        /// P1.M3.T2.S1 (#4): inject a per-`send_command` wall-clock delay so the sweep is wide
+        /// enough for a contending thread to acquire NOTIFIER between iterations. Pass `None`
+        /// to disable (the default; production code never sets this).
+        fn set_send_delay(delay: Option<Duration>) {
+            *MOCK_SEND_DELAY.lock().unwrap() = delay;
+        }
     }
 
     impl Notifier for MockNotifier {
@@ -1311,6 +1340,11 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push(command.clone());
+            // P1.M3.T2.S1 (#4): optional artificial delay to widen the sweep window for the
+            // per-iteration lock-release test (wall-clock sleep, so CI CPU slowdown can't shrink it).
+            if let Some(d) = *MOCK_SEND_DELAY.lock().unwrap() {
+                thread::sleep(d);
+            }
             // LOW-1: if an error is queued, return it (drains one per call).
             if let Some(msg) = MOCK_SEND_COMMAND_ERRORS.lock().unwrap().pop_front() {
                 return Err(msg.into());
@@ -1806,6 +1840,133 @@ mod tests {
         assert!(matches!(calls[1], qmk_notifier::RunCommand::SetOs(_)));
         assert_eq!(calls[2], qmk_notifier::RunCommand::QueryCallback(0));
         assert_eq!(calls[3], qmk_notifier::RunCommand::QueryCallback(1));
+    }
+
+    /// #4 / P1.M3.T2.S1: the callback sweep must release NOTIFIER between iterations so a
+    /// window-notification send (`notify_qmk` immediate / `debounce_worker` flush) can acquire
+    /// it between any two `QueryCallback` sends instead of blocking for the whole (up to ~5 s)
+    /// sweep. We configure a capable board with N callbacks and an artificial per-`send_command`
+    /// delay that widens the sweep window, then prove a contending thread can grab NOTIFIER WHILE
+    /// the sweep is still in progress (fewer than 2+N `send_command` calls outstanding) and far
+    /// sooner than the full sweep would take if the lock were held throughout.
+    #[test]
+    fn test_handshake_sweep_releases_lock_between_iterations() {
+        reset_test_state();
+        reset_handshake_state();
+        set_notifier(Box::new(MockNotifier::new()));
+
+        let n_callbacks: u8 = 10;
+        // Per-call delay widens the sweep so a contending thread can land mid-sweep. Total sweep
+        // ≈ 10*100ms = 1s (plus ~200ms pre-sweep QueryInfo+SetOs).
+        let per_call_delay = Duration::from_millis(100);
+        MockNotifier::set_send_delay(Some(per_call_delay));
+
+        let mut responses = vec![qmk_notifier::CommandResponse::Info {
+            proto_ver: 2,
+            feature_flags: 0x01,
+            callback_count: n_callbacks,
+            board_rules_present: false,
+        }];
+        // SetOs consumes one response (its reply is ignored, but the mock still pops FIFO — see
+        // test_handshake_capable_populates_state). Queue an Ack for it.
+        responses.push(qmk_notifier::CommandResponse::Ack { ok: true });
+        for i in 0..n_callbacks {
+            responses.push(qmk_notifier::CommandResponse::CallbackName {
+                index: i,
+                name: Some(format!("cb_{}", i)),
+            });
+        }
+        MockNotifier::set_mock_responses(responses);
+
+        // Run the handshake on a worker thread so the main thread can contend for NOTIFIER while
+        // the sweep is in progress.
+        let h = thread::spawn(move || {
+            perform_handshake(false);
+        });
+
+        // Wait until the handshake is INSIDE the sweep (QueryInfo + SetOs + at least one
+        // QueryCallback have been sent), so the contender provably contends DURING the sweep
+        // rather than before it starts. 2s is ample (the first 3 calls take ~300ms wall).
+        let deadline = Instant::now() + Duration::from_millis(2000);
+        loop {
+            if MockNotifier::get_send_command_calls().len() >= 3 {
+                break;
+            }
+            if Instant::now() >= deadline {
+                panic!("handshake never entered the sweep (call count < 3)");
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+
+        // Contend for NOTIFIER via a tight `try_lock` poll. With per-iteration release the
+        // worker drops NOTIFIER between iterations; a fast poll observes one of those free
+        // windows and grabs the lock WHILE the sweep is still in progress. Under a full-sweep
+        // hold `try_lock` could only ever succeed once the whole sweep finished (all 2+N calls
+        // done), so the count assertion below stays a true deterministic gate.
+        let notifier = get_notifier();
+        let contend_start = Instant::now();
+        let calls_when_acquired: usize;
+        let waited: Duration;
+        loop {
+            if let Ok(_guard) = notifier.try_lock() {
+                calls_when_acquired = MockNotifier::get_send_command_calls().len();
+                waited = contend_start.elapsed();
+                drop(_guard);
+                break;
+            }
+            // Sweep already finished without us ever winning (shouldn't happen under
+            // per-iteration release, but guard against an infinite loop on a loaded box).
+            if MockNotifier::get_send_command_calls().len() >= 2 + n_callbacks as usize {
+                calls_when_acquired = MockNotifier::get_send_command_calls().len();
+                waited = contend_start.elapsed();
+                break;
+            }
+            std::thread::yield_now();
+        }
+        h.join().unwrap();
+
+        // DETERMINISTIC PROOF: the contender grabbed the lock WHILE the sweep was still in
+        // progress — fewer than 2 (QueryInfo+SetOs) + N callbacks outstanding. If the lock were
+        // held for the whole sweep, the contender could only acquire after all 2+N calls.
+        assert!(
+            calls_when_acquired < 2 + n_callbacks as usize,
+            "contender acquired NOTIFIER only after {} send_command calls (>= the full sweep \
+             2+{}); the sweep did NOT release the lock between iterations",
+            calls_when_acquired,
+            n_callbacks
+        );
+        // Corroborating timing bound: well under the ~800ms a full-sweep hold would still need
+        // from the contention point. Generous to tolerate CI scheduling jitter (per-iter ≈
+        // 100–250ms; full-sweep ≈ 800ms).
+        assert!(
+            waited < Duration::from_millis(500),
+            "contender blocked {:?} for NOTIFIER; expected to slip in between sweep iterations \
+             (per-iteration release)",
+            waited
+        );
+
+        // CALLBACK_NAMES is published atomically AFTER the sweep: all N callbacks present once
+        // perform_handshake returns, and the board is host-capable.
+        assert!(host_capable());
+        let names = callback_names();
+        assert_eq!(
+            names.len(),
+            n_callbacks as usize,
+            "all {} callbacks must be mapped after the sweep completes",
+            n_callbacks
+        );
+        for i in 0..n_callbacks {
+            let key = format!("cb_{}", i);
+            assert_eq!(
+                names.get(&key),
+                Some(&i),
+                "callback {} missing/wrong in CALLBACK_NAMES",
+                key
+            );
+        }
+
+        // Clean up the delay so it can't bleed into later single-threaded tests.
+        MockNotifier::set_send_delay(None);
     }
 
     #[test]
