@@ -1,7 +1,9 @@
 # PRP — P1.M4.T1.S2: Implement WinRT toast replacing MessageBoxW in `platforms::notify`
 
 > **Repo:** QMKonnect (`/home/dustin/projects/qmkonnect`) — Rust menu-bar/tray daemon.
-> **Files edited (3):** `Cargo.toml`, `src/platforms/mod.rs`, `docs/troubleshooting.md`.
+> **Files (3, all already committed at HEAD `17e4f6f`):** `Cargo.toml` (`Win32_System_Com`),
+> `src/platforms/mod.rs` (`show_toast` / `build_toast_xml` / `xml_escape` + cfg(windows) test),
+> `docs/troubleshooting.md` (toast note). See **STATUS** below.
 > **Approach:** A (raw `windows = "0.52.0"` crate) — **inherited from P1.M4.T1.S1**
 > (which rejected `tauri-winrt-notification` and added 3 features + `APP_AUMID` +
 > `set_aumid()`). This task CONSUMES S1's outputs and lands the actual toast call.
@@ -15,6 +17,30 @@
 > advertising the AUMID — is **P1.M4.T2.S1** (Inno installer); until it lands the
 > `Show()` call succeeds but the toast is silently not rendered (by design — see
 > research §Q7). **S2 is still correct and complete to merge without T2.S1.**
+
+---
+
+## STATUS — read first (the implementation is already committed)
+
+**Both P1.M4.T1.S1 and S2 are already committed.** `git log --oneline -2`:
+
+```
+17e4f6f Replace Windows modal with WinRT toast          ← THIS task (S2): DONE + committed
+8eb03ac Initialize Windows toast identity and dependencies  ← S1: DONE + committed
+```
+
+The committed S2 implementation matches this PRP's design exactly in intent:
+`show_toast` (short-lived thread → `CoInitializeEx(STA)` → build/load XML →
+`ToastNotification::CreateToastNotification` → `ToastNotificationManager::CreateToastNotifierWithId(&APP_AUMID)`
+→ `ToastNotifier::Show`, with `log::warn!` on failure), `build_toast_xml` (`ToastText02`),
+`xml_escape`, the `#[cfg(all(test, target_os = "windows"))]` XML-parse test, and the
+`docs/troubleshooting.md` note. `Win32_System_Com` is at `Cargo.toml:98`.
+
+**Therefore this PRP is the authoritative design record + verification / regression
+checklist for the committed code.** Tasks 1–4 read as *"verify the committed state is as
+specified (and restore it if a future edit regressed it)"*; the implementing agent's job is
+**confirmation + running the validation gates**, not a from-scratch write. The orchestrator's
+`plan_status` (S2 = "Researching") is stale relative to git — **treat git as the source of truth.**
 
 ---
 
@@ -48,8 +74,9 @@ the caller's dedup (`notifier.rs` `RULES_INVALID_NOTIFIED`) byte-for-byte unchan
 - On the **Linux dev box**: `cargo build` succeeds (the resolver validates
   `Win32_System_Com` is a real windows-0.52 feature); `cargo test --bin qmkonnect
   -- --test-threads=1` is green with the test count **unchanged** (the new test is
-  `#[cfg(windows)]` and is not compiled/run on Linux). `git diff --stat` shows
-  exactly the three files above.
+  `#[cfg(windows)]` and is not compiled/run on Linux). The work is **committed at HEAD
+  `17e4f6f`**, so `git show 17e4f6f --stat` touches exactly those three source files
+  (+ this PRP/research) and the working-tree `git diff` is empty.
 - On **Windows** (deferred to the AGENTS.md Windows dev loop — the implementing
   agent runs on Linux and cannot compile the cfg-gated toast code): `cargo build
   --release` on the canonical path resolves `CoInitializeEx`,
@@ -151,7 +178,7 @@ anchor. **No** `docs/installation.md` change (Approach A → Mode A → none).
 - [ ] `notify()`'s signature `pub fn notify(title: &str, body: &str)` and its doc comment's contract (best-effort, fire-and-forget, caller dedupes) are **unchanged**.
 - [ ] The caller (`notifier.rs::host_context_for_window`) and `RULES_INVALID_NOTIFIED` dedup are **untouched**.
 - [ ] `docs/troubleshooting.md`: the rules.toml-parse-error section notes Windows shows a toast (auto-dismissing, Action Center).
-- [ ] Linux: `cargo build` succeeds; `cargo test --bin qmkonnect -- --test-threads=1` green, test count unchanged; `git diff --stat` = the 3 files.
+- [ ] Linux: `cargo build` succeeds; `cargo test --bin qmkonnect -- --test-threads=1` green, test count unchanged; `git show 17e4f6f --stat` = the 3 source files (work committed; working-tree `git diff` empty).
 
 ## All Needed Context
 
@@ -362,20 +389,30 @@ test module. All consume the already-present `pub const APP_AUMID` from S1.
 ### Implementation Tasks (ordered by dependencies)
 
 ```yaml
-Task 1: EDIT Cargo.toml — add the Win32_System_Com feature (the ONLY feature S2 adds)
-  In [target.'cfg(target_os = "windows")'.dependencies], S1 added a comment block + the three
-  features (Win32_UI_Shell, UI_Notifications, Data_Xml_Dom) ending roughly:
-      "    \"UI_Notifications\",\n    \"Data_Xml_Dom\",\n] }\n"
-  (the exact tail — locate the UI_Notifications/Data_Xml_Dom lines S1 added and insert the new
-  feature between them and the closing `] }`.)
-  Replace that tail with:
-      "    \"UI_Notifications\",\n    \"Data_Xml_Dom\",\n    # WinRT toast COM init (P1.M4.T1.S2):\n    # CoInitializeEx/CoUninitialize — WinRT toast calls require the calling thread to hold a\n    # COM apartment (unlike set_aumid, which is pure Win32). Sibling to the 3 features above.\n    \"Win32_System_Com\",\n] }\n"
-  - ANCHOR NOTE: pick oldText = the two S1 feature lines + the `] }` close, which is unique.
-    If S1's exact formatting differs, match what is actually in the file (run
-    `sed -n '78,93p' Cargo.toml` first) — the goal is: append `"Win32_System_Com",` with a
-    comment, before the `] }` that closes the windows features array.
-  - PRESERVE: every existing feature (Win32_Foundation … Win32_System_Registry, plus S1's 3). Do
-    NOT change the version (= "0.52.0") or add a new dependency entry.
+Task 1: VERIFY/EDIT Cargo.toml — `Win32_System_Com` feature  (ALREADY COMMITTED at HEAD)
+  In `[target.'cfg(target_os = "windows")'.dependencies]`, the `windows` dep's `features` array
+  must contain `Win32_System_Com` (for `CoInitializeEx`/`CoUninitialize`). **In the current tree
+  it is ALREADY PRESENT** — `Cargo.toml:98`, committed in `17e4f6f` (the comment block at :95-98
+  explains it). So this task is normally a no-op VERIFY:
+
+  ```bash
+  grep -n 'Win32_System_Com' Cargo.toml   # Expected: the feature line at :98 + comment refs
+  ```
+
+  If (only if) a future edit removed it, restore it by appending to the `features` array,
+  right after S1's three toast features (`Win32_UI_Shell`, `UI_Notifications`, `Data_Xml_Dom`):
+
+  ```toml
+      # WinRT toast COM init (P1.M4.T1.S2): CoInitializeEx/CoUninitialize — WinRT
+      # toast calls require the calling thread to hold a COM apartment (unlike
+      # set_aumid above, which is pure Win32 and needs none). Sibling to the three
+      # features directly above.
+      "Win32_System_Com",
+  ```
+
+  - PRESERVE: every existing feature (Win32_Foundation … Win32_System_Registry, plus S1's 3).
+    Do NOT change the version (`= "0.52.0"`) or add a new dependency entry. `Win32_System_Com`
+    is NOT auto-enabled by `UI_Notifications`/`Data_Xml_Dom`; it must be listed explicitly.
 
 Task 2: EDIT src/platforms/mod.rs — replace notify()'s Windows arm + add the toast helpers
 
@@ -593,7 +630,7 @@ Task 5: VALIDATE (no edits)
   - cargo build                                  # Linux: resolver validates Win32_System_Com.
   - cargo test --bin qmkonnect -- --test-threads=1   # Linux: green, test count UNCHANGED
                                                   #   (the new test is cfg(windows) → not run here).
-  - git diff --stat                              # exactly 3 files.
+  - git show 17e4f6f --stat                      # the commit touched exactly 3 source files (committed); working-tree git diff is empty.
   - (DEFERRED to Windows, AGENTS.md loop — see Validation Level 5) cargo build --release on
     the canonical path + cargo test run the cfg(windows) test + manual toast render check.
 
@@ -725,18 +762,18 @@ cargo test --bin qmkonnect -- --test-threads=1
 ```
 
 ### Level 3: Scope / Build Hygiene (Linux — runs)
+> The work is **committed at HEAD `17e4f6f`**, so `git diff` vs the working tree is empty for
+> source (only this `PRP.md` is modified). Verify the *committed* state instead:
+
 ```bash
 cd /home/dustin/projects/qmkonnect
-git diff --stat                                # Expected: EXACTLY 3 files — Cargo.toml, src/platforms/mod.rs, docs/troubleshooting.md
-git diff src/core/notifier.rs                  # Expected: EMPTY (caller/dedup untouched)
-git diff src/main.rs                           # Expected: EMPTY (S1's set_aumid call untouched)
-git diff packaging/windows/inno/QMKonnect.iss  # Expected: EMPTY (P1.M4.T2.S1 owns it)
-git diff docs/installation.md                  # Expected: EMPTY (Mode A → no change)
-grep -n 'Win32_System_Com' Cargo.toml          # Expected: 1 match (the new feature)
-grep -n 'MessageBoxW' src/platforms/mod.rs     # Expected: ZERO matches in notify() (the arm now calls show_toast);
-                                               #   tray.rs still has its OWN MessageBoxW (show_error_message) — that is OUT OF SCOPE, leave it.
-grep -n 'show_toast\|build_toast_xml\|xml_escape' src/platforms/mod.rs   # Expected: ≥3 (defs) + 2 (call sites: show_toast in notify arm, build_toast_xml+xml_escape in show_toast)
-grep -n 'fn notify' src/platforms/mod.rs       # Expected: signature UNCHANGED: `pub fn notify(title: &str, body: &str)`
+git show 17e4f6f --stat                # Expected: Cargo.toml, src/platforms/mod.rs, docs/troubleshooting.md (+ this PRP + research).
+                                         #   NO src/core/notifier.rs, src/main.rs, QMKonnect.iss, or docs/installation.md.
+grep -n 'Win32_System_Com' Cargo.toml   # Expected: the feature line (Cargo.toml:98) + comment refs.
+grep -n 'MessageBoxW' src/platforms/mod.rs   # Expected: only COMMENT references (the notify arm + show_toast doc explaining what was replaced);
+                                         #   NO `MessageBoxW(` *call*. tray.rs has its OWN MessageBoxW (show_error_message) — OUT OF SCOPE.
+grep -n 'show_toast\|build_toast_xml\|xml_escape' src/platforms/mod.rs   # Expected: defs + call sites (show_toast in notify arm; build_toast_xml+xml_escape in show_toast).
+grep -n 'fn notify' src/platforms/mod.rs      # Expected: signature UNCHANGED: `pub fn notify(title: &str, body: &str)`
 ```
 
 ### Level 4: Feature-resolution spot check (Linux — runs, quick)
@@ -782,7 +819,7 @@ taskkill /IM qmkonnect.exe /F   # mandatory — single-instance mutex (AGENTS.md
 ### Technical Validation
 - [ ] Linux: `cargo build` succeeds (resolver validates `Win32_System_Com`).
 - [ ] Linux: `cargo test --bin qmkonnect -- --test-threads=1` green, test count unchanged.
-- [ ] `git diff --stat` = exactly `Cargo.toml`, `src/platforms/mod.rs`, `docs/troubleshooting.md`.
+- [ ] `git show 17e4f6f --stat` = `Cargo.toml`, `src/platforms/mod.rs`, `docs/troubleshooting.md` (committed at HEAD; working-tree `git diff` empty except this PRP).
 - [ ] Windows (DEFERRED, AGENTS.md loop): `cargo build --release` resolves the toast API + CoInitializeEx; the `toast_xml_…` cfg(windows) test passes; a real toast renders (with the .lnk from T2.S1).
 
 ### Feature Validation
@@ -822,7 +859,13 @@ taskkill /IM qmkonnect.exe /F   # mandatory — single-instance mutex (AGENTS.md
 
 ---
 
-## Confidence Score: 8/10
+## Confidence Score: 9/10
+
+**Update since authoring:** the implementation is **committed at HEAD `17e4f6f`** and the
+Linux gate (`cargo build`) is **verified green** (the resolver accepts `Win32_System_Com`,
+the cfg-gated toast code is sound). This PRP is therefore an accurate record of code that
+already compiles + matches the design; the residual risk is Windows-only (see below), not
+authoring. Original (forward-looking) assessment retained for traceability:
 
 The defect is precisely located (verbatim MessageBoxW arm quoted for replacement),
 the windows-0.52 toast API sequence + exact signatures + the COM-init requirement

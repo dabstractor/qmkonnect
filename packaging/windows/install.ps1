@@ -84,6 +84,18 @@ if (Test-Path $IconDest) { $s.IconLocation = $IconDest }
 $s.Description = 'QMKonnect - window-change notifier for QMK keyboards'
 $s.Save()
 
+# (P1.M4.T2.S1) Set the AUMID on the Start Menu shortcut so WinRT toasts render as
+# "QMKonnect" - must equal src/platforms/mod.rs::APP_AUMID. Non-fatal: a failure only
+# degrades notification branding, never blocks install. Helper is shared with the Inno
+# installer (packaging/windows/inno/set_aumid.ps1) - keeps the two installers in sync.
+$Aumid = 'Mulletware.QMKonnect'
+$Helper = Join-Path $PSScriptRoot 'inno\set_aumid.ps1'
+try {
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $Helper $StartMenu $Aumid
+} catch {
+    Write-Warning "install.ps1: failed to set AUMID on shortcut (non-fatal): $_"
+}
+
 # Default-on autostart via the Run key (single source of truth shared with the
 # tray toggle in src/autostart.rs and the removal in uninstall.ps1).
 $RunKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'

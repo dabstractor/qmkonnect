@@ -88,6 +88,10 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Source: "{#ReleaseDir}\qmkonnect.exe"; DestDir: "{app}"; DestName: "{#MyAppExeName}"; Flags: ignoreversion
 Source: "{#AssetDir}\Icon.ico";          DestDir: "{app}"; Flags: ignoreversion
 Source: "{#AssetDir}\IconTray-dark.png"; DestDir: "{app}"; Flags: ignoreversion
+; Install-time only helper: sets System.AppUserModel.ID on the Start Menu shortcut so WinRT
+; toasts render as "QMKonnect" (P1.M4.T2.S1). Extracted to {tmp} and deleted after install
+; (deleteafterinstall) - never a runtime asset in {app}. Invoked by CurStepChanged below.
+Source: "set_aumid.ps1"; DestDir: "{tmp}"; Flags: deleteafterinstall
 
 [Icons]
 Name: "{userprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; IconFilename: "{app}\Icon.ico"; Comment: "QMKonnect - window-change notifier for QMK keyboards"
@@ -115,6 +119,36 @@ var
 begin
   Exec(ExpandConstant('{cmd}'), '/C taskkill /IM qmkonnect.exe /F /T', '',
     SW_HIDE, ewWaitUntilTerminated, ResultCode);
+end;
+
+// (P1.M4.T2.S1) Set System.AppUserModel.ID on the Start Menu shortcut so WinRT toasts render
+// as "QMKonnect" (must match src/platforms/mod.rs::APP_AUMID). ssPostInstall runs AFTER [Icons]
+// created the .lnk - the only ordering fact we need. (The [Run] app-launch may have already
+// fired; harmless - toasts trigger only on a post-startup window-focus rules.toml parse error.)
+// The AUMID literal below MUST equal APP_AUMID ("Mulletware.QMKonnect") byte-for-byte. Failure
+// is NON-FATAL (notification branding only): log and continue, never abort the install.
+procedure CurStepChanged(CurStep: TSetupStep);
+var
+  ResultCode: Integer;
+  LnkPath: String;
+  PsArgs: String;
+begin
+  if CurStep <> ssPostInstall then
+    Exit;
+  LnkPath := ExpandConstant('{userprograms}\{#MyAppName}.lnk');
+  if not FileExists(LnkPath) then begin
+    Log('CurStepChanged: Start Menu shortcut not found (' + LnkPath + '); skipping AUMID');
+    Exit;
+  end;
+  PsArgs := '-NoProfile -ExecutionPolicy Bypass -File "' +
+            ExpandConstant('{tmp}\set_aumid.ps1') + '" "' + LnkPath +
+            '" "Mulletware.QMKonnect"';
+  if not Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
+       PsArgs, '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+    Log('CurStepChanged: set_aumid.ps1 could not start (ResultCode=' +
+        IntToStr(ResultCode) + ') - non-fatal')
+  else if ResultCode <> 0 then
+    Log('CurStepChanged: set_aumid.ps1 exited ' + IntToStr(ResultCode) + ' - non-fatal');
 end;
 
 function InitializeSetup(): Boolean;

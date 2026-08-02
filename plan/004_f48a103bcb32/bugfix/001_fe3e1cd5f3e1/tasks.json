@@ -169,14 +169,14 @@
           "type": "Milestone",
           "id": "P1.M4",
           "title": "Windows Toast Notification Spec Compliance",
-          "status": "Planned",
+          "status": "Ready",
           "description": "Finding h2.1 #3: platforms::notify on Windows uses a modal MessageBoxW(HWND(0), MB_OK|MB_ICONERROR) on a detached spawned thread instead of a toast. It steals desktop focus, requires a click to dismiss, and leaks the thread until dismissed. This violates spec/UI.md §2.3 and spec/HOST_RULES.md §7 which mandate a Windows toast. The dedup logic (RULES_INVALID_NOTIFIED, one notification per broken rules.toml state) is correct and must not change. The fix requires: (1) an AppUserModelID (AUMID) registered on the process, (2) a Start Menu shortcut advertising that AUMID (otherwise the toast won't render), and (3) WinRT ToastNotificationManager API access. See architecture/windows_notify_research.md.",
           "tasks": [
             {
               "type": "Task",
               "id": "P1.M4.T1",
               "title": "WinRT toast notification infrastructure",
-              "status": "Complete",
+              "status": "Ready",
               "description": "Add the AUMID registration and WinRT toast API access needed to send real Windows toast notifications. Two viable approaches: (A) add windows crate features (Win32_UI_Shell for SetCurrentProcessExplicitAppUserModelID + WinRT toast features) — no new crate, more unsafe code; (B) add the tauri-winrt-notification crate — one new dep, handles AUMID/shortcut/toast XML in ~20 lines. Pick the approach that best fits the project's dependency philosophy.",
               "subtasks": [
                 {
@@ -198,7 +198,7 @@
                   "type": "Subtask",
                   "id": "P1.M4.T1.S2",
                   "title": "Implement WinRT toast replacing MessageBoxW in platforms::notify",
-                  "status": "Complete",
+                  "status": "Ready",
                   "story_points": 2,
                   "dependencies": [
                     "P1.M4.T1.S1"
@@ -216,14 +216,14 @@
               "type": "Task",
               "id": "P1.M4.T2",
               "title": "Ensure Start Menu shortcut has AUMID for toast rendering",
-              "status": "Planned",
+              "status": "Complete",
               "description": "A WinRT toast only renders if a Start Menu .lnk shortcut exists with the AUMID property. The Inno installer already creates a Start Menu shortcut but without the AUMID. Either update the Inno script to set the AUMID property (requires COM IPropertyStore via [Code] section or PowerShell), or use runtime shortcut creation (if P1.M4.T1.S1 chose approach B with tauri-winrt-notification's create_shortcut).",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M4.T2.S1",
                   "title": "Add AUMID property to Start Menu shortcut in QMKonnect.iss (or runtime fallback)",
-                  "status": "Planned",
+                  "status": "Complete",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M4.T1.S1"
@@ -243,21 +243,21 @@
           "type": "Milestone",
           "id": "P1.M5",
           "title": "Config Read-Path Caching",
-          "status": "Planned",
+          "status": "Researching",
           "description": "Finding h2.1 #2: config.toml and rules.toml are re-read from disk on every window focus change (hot-config is intentional). Per emitted send, config.toml is read 2x (once for debounce interval via configured_debounce_ms, once for device filter via configured_filter) and rules.toml 1x (via host_context_for_window). No caching exists. On local SSD this is sub-millisecond (negligible behind the HID send), but on slow/networked home directories it adds perceptible latency to the focus thread. An mtime-keyed cache (re-stat, re-read only when the file's modification time changes) preserves hot-config instant-propagation while eliminating redundant reads. See architecture/config_reread_research.md.",
           "tasks": [
             {
               "type": "Task",
               "id": "P1.M5.T1",
               "title": "mtime-keyed config/rules cache with double-read coalescing",
-              "status": "Planned",
+              "status": "Researching",
               "description": "Implement a thread-safe mtime-keyed cache for config.toml parses (Config struct) that serves both configured_timing() and configured_filter(). The cache re-stats the file on each call and only re-reads+re-parses when the modification time changes. This naturally coalesces the double-read (both callers hit the same cache). The existing test_debounce_ms_is_hot_config test must still pass (it verifies config changes take effect without restart).",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M5.T1.S1",
                   "title": "Implement mtime-keyed Config cache wrapping parse_config",
-                  "status": "Planned",
+                  "status": "Researching",
                   "story_points": 2,
                   "dependencies": [],
                   "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: configured_filter() at notifier.rs:80 calls parse_config() which does fs::read_to_string + toml::from_str (mod.rs:106). configured_timing() at mod.rs:89 also calls parse_config(). state.interval() at notifier.rs:778 calls configured_debounce_ms() → configured_timing() → parse_config(). So per immediate-send, parse_config() is called 2x (interval + filter). Per debounced-send flush, also 2x (worker calls interval() + configured_filter()). host_context_for_window (notifier.rs:1013) calls parse_rules() (rules.rs:210) once. No caching exists — the comments at notifier.rs:84 and notifier.rs:781 state this is intentional for hot-config. An mtime-keyed cache preserves hot-config: re-stat on every call, re-read+re-parse only when mtime changes. test_debounce_ms_is_hot_config (notifier.rs:1379) asserts config changes take effect mid-flight — this test MUST still pass (it writes a new config.toml and verifies the new interval is picked up). See architecture/config_reread_research.md.\n2. INPUT: parse_config() at mod.rs:106 (returns Result<Config, Box<dyn Error>>). Config struct (defined in mod.rs, has vendor_id/product_id/usage_page/usage/debounce_ms/poll_interval_ms fields). get_config_paths() (platforms/linux.rs:116 for Linux; equivalent in macos.rs/windows.rs) returns Vec<PathBuf> candidates. The config file path is resolved per-call by configured_timing() and configured_filter() via get_config_paths().find(|p| p.exists()).\n3. LOGIC: Add a thread-safe mtime-keyed cache in src/core/mod.rs: `static CONFIG_CACHE: Lazy<Mutex<Option<(SystemTime, Config)>>> = Lazy::new(|| Mutex::new(None));`. Add `fn cached_config() -> Result<Config, Box<dyn Error>>` that: (a) resolves the config path (same get_config_paths().find(|p| p.exists()) as parse_config); (b) stats the file's mtime via path.metadata()?.modified()?; (c) locks CONFIG_CACHE; (d) if cache is Some((cached_mtime, ref cached_config)) and cached_mtime == current_mtime → return cached_config.clone() (Config must derive Clone — check/derive it); (e) else → parse_config() (full read+parse), store (mtime, config) in cache, return config. Replace the parse_config() call INSIDE configured_timing() (mod.rs:89) and configured_filter() (notifier.rs:80) with cached_config(). Keep parse_config() as the underlying uncached function for direct callers (config_parse_error at startup, tests). Add `static RULES_CACHE: Lazy<Mutex<Option<(SystemTime, RuleSet)>>>` similarly wrapping parse_rules for host_context_for_window. RuleSet must derive Clone. Add tests: (a) test_config_cache_returns_same_result_on_unchanged_mtime — write config, call cached_config() twice, verify only one disk read (mock or count); (b) test_config_cache_invalidates_on_mtime_change — write config, cache it, touch the file (update mtime), verify re-read; (c) verify test_debounce_ms_is_hot_config (notifier.rs:1379) still passes — it writes a new config.toml (updating mtime) and verifies the cache picks up the new value. NOTE: on filesystems where mtime resolution is coarse (1s), two rapid writes might not change mtime — handle by also comparing file size as a secondary key (path.metadata()?.len()).\n4. OUTPUT: cached_config() and a rules cache eliminate redundant disk reads while preserving hot-config. configured_timing() and configured_filter() now share a single cache entry per mtime. host_context_for_window benefits from the rules cache. The double-read per send is eliminated. All 345+ tests pass.\n5. DOCS: none — internal performance optimization, no user-facing/config/API surface change.",

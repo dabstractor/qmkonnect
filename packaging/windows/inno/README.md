@@ -18,6 +18,11 @@ Replicates [`../install.ps1`](../install.ps1):
 - copies `qmkonnect.exe` + `Icon.ico` + `IconTray-dark.png` to
   `%LOCALAPPDATA%\Programs\QMKonnect`
 - Start Menu shortcut (manual launch)
+- sets the `System.AppUserModel.ID` (`Mulletware.QMKonnect`) on that Start Menu
+  shortcut - required for Windows **toast notifications** to render (e.g. the
+  "rules.toml invalid" toast); without it the toast is silently suppressed. Done
+  by a post-install PowerShell helper (`set_aumid.ps1`), so it applies to both
+  the installer and `install.ps1`.
 - `HKCU\…\Run\QMKonnect` autostart value — **default on**, and the same value the
   in-app **"Open at Login"** toggle manages (`src/autostart.rs`), so they never
   desync (single source of truth)
@@ -113,6 +118,14 @@ sha256sum target/release/qmkonnect.exe "$LOCALAPPDATA/Programs/QMKonnect/QMKonne
 
 # default-on autostart value present
 powershell -NoProfile -Command "(Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name QMKonnect).QMKonnect"
+
+# Start Menu shortcut advertises the AUMID (required for toasts).
+# Expect: Mulletware.QMKonnect
+# The installer sets it automatically; to read it back authoritatively, dot-source
+# packaging/windows/inno/set_aumid.ps1 and call:
+#   [QMKonnect.ShortcutAumid]::Get(
+#     "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\QMKonnect.lnk")
+# (the helper's Add-Type re-run guard makes dot-sourcing safe)
 ```
 
 Then right-click the tray icon → **"Open at Login"** should be checked.
