@@ -852,7 +852,18 @@ fn debounce_worker() {
                 let target = last + state.interval();
                 let now = Instant::now();
                 if now >= target {
-                    let pm = state.pending.take().unwrap();
+                    // The pending message may have been cleared by
+                    // `notify_qmk`'s immediate-send (`due`) branch — which sets
+                    // `pending = None` and bumps `last_sent_time` — while we
+                    // were parked in `wait_timeout`. Taking `.unwrap()` on an
+                    // empty pending would PANIC (crashing the worker thread;
+                    // with `panic = "abort"` in release, the whole service).
+                    // Re-check and, if it raced to None, fall back to the outer
+                    // wait for the next message instead of crashing.
+                    let pm = match state.pending.take() {
+                        Some(pm) => pm,
+                        None => break,
+                    };
                     let verbose = state.verbose;
                     state.last_sent_time = Some(Instant::now());
                     to_send = Some((pm, verbose));
@@ -2382,5 +2393,60 @@ disable = ["known_b", "phantom"]
         perform_handshake(false);
         assert!(host_capable());
         assert!(board_has_rules());
+    }
+
+    // ========================================================================
+    // BUG-HUNT FIX: debounce worker must not panic when `notify_qmk`'s
+    // immediate-send (`due`) branch clears `pending` while the worker is parked
+    // in its inner wait loop. Formerly the inner loop did
+    // `state.pending.take().unwrap()`, which panicked on the cleared pending —
+    // crashing the worker (and, with `panic = "abort"` in release, the whole
+    // service) under rapid window switching at a debounce boundary.
+    // ========================================================================
+    #[test]
+    fn test_debounce_worker_survives_pending_cleared_mid_wait() {
+        reset_test_state();
+        set_notifier(Box::new(MockNotifier::new()));
+        // Long interval so the worker parks in the INNER wait_timeout once a
+        // message is queued, giving a wide window to reproduce the race.
+        STATE.lock().unwrap().interval_override = Some(Duration::from_secs(30));
+
+        // Prime last_sent_time + drain via an immediate send (count -> 1).
+        let _ = notify_qmk(&WindowInfo::new("A".into(), "1".into()), false);
+        assert!(wait_for_count(1, Duration::from_millis(500)));
+
+        // Queue a pending message -> worker enters the inner wait.
+        let _ = notify_qmk(&WindowInfo::new("B".into(), "2".into()), false);
+        thread::sleep(Duration::from_millis(150)); // let the worker park
+
+        // Reproduce `notify_qmk`'s `due` branch racing at the debounce
+        // boundary: clear pending AND shrink the interval so the worker's
+        // next inner iteration sees now >= target with pending == None.
+        {
+            let mut s = STATE.lock().unwrap();
+            s.pending = None;
+            s.interval_override = Some(Duration::from_millis(1));
+            COND.notify_all();
+        }
+
+        // Give the worker time to wake and (formerly) panic. With the fix it
+        // gracefully falls back to waiting for the next message.
+        thread::sleep(Duration::from_millis(300));
+
+        // STATE must NOT be poisoned (worker did not panic).
+        assert!(
+            STATE.lock().is_ok(),
+            "worker panicked on cleared pending (immediate-send / flush race) — \
+             STATE poisoned"
+        );
+
+        // The worker must still be alive and able to process a new message:
+        // restore a normal interval and send a fresh window; it should flush.
+        STATE.lock().unwrap().interval_override = Some(Duration::from_millis(50));
+        let _ = notify_qmk(&WindowInfo::new("C".into(), "3".into()), false);
+        assert!(
+            wait_for_count(2, Duration::from_millis(500)),
+            "worker must keep processing after the survived race"
+        );
     }
 }
