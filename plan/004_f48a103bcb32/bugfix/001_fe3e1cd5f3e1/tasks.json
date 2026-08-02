@@ -50,14 +50,14 @@
               "type": "Task",
               "id": "P1.M2.T1",
               "title": "Implement cross-platform atomic_write helper",
-              "status": "Researching",
+              "status": "Ready",
               "description": "Add a std-only atomic_write(path, content) function to src/core/mod.rs that writes to a temp file in the same directory then renames over the target. fs::rename is atomic on the same filesystem on Linux/macOS/Windows. No new dependency needed (avoids promoting tempfile to a top-level dep).",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M2.T1.S1",
                   "title": "Add atomic_write() to src/core/mod.rs",
-                  "status": "Researching",
+                  "status": "Ready",
                   "story_points": 1,
                   "dependencies": [],
                   "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: Five config/rules write call sites use bare fs::write (truncate-then-write): mod.rs:218 (create_default_config), mod.rs:334 (create_default_rules), tray.rs:878 (Windows settings), tray.rs:1276 (macOS settings), linux_tray.rs:822 (Linux write_config). The ONLY atomic-write helper in the codebase is write_rule_atomic at platforms/linux.rs:336 (Linux-only, uses tempfile::NamedTempFile::persist which is rename under the hood). Readers (parse_config at mod.rs:106, parse_rules at rules.rs:210) have no locking and run per-notification on a different thread. See architecture/config_writes_research.md.\n2. INPUT: render_config_body() at mod.rs:157 (pure renderer → String); render_rules_body() at mod.rs:241 (pure renderer → String). These are the content sources for the writes.\n3. LOGIC: Add a public function `pub fn atomic_write(path: &Path, content: &str) -> Result<(), Box<dyn Error>>` in src/core/mod.rs (next to render_config_body). Implementation: derive a temp filename in the same parent directory as `path` (e.g. `.{stem}.tmp` — the leading dot hides it on Unix). Call `fs::write(&tmp, content)?` to write the full body. Then `fs::rename(&tmp, path)?` to atomically replace. On any error after creating the temp file, best-effort `let _ = fs::remove_file(&tmp);` to clean up. The temp file MUST be in the same directory as the target (same filesystem → rename is atomic). The config/rules files live in a per-user config dir the process already owns (created via fs::create_dir_all), so no permission issues (unlike write_rule_atomic which targets /etc/udev/rules.d). Do NOT add the `tempfile` crate — use std::fs only. Add tests: (a) test_atomic_write_creates_correct_content — write known content, read back, verify equality; (b) test_atomic_write_replaces_existing — pre-create a file with stale content, atomic_write new content, verify new content; (c) test_atomic_write_cleans_up_temp_on_error — mock a failure (e.g. path with invalid characters) and verify no .tmp file lingers. Use the `tempfile` dev-dependency (already available in tests) for temp dirs.\n4. OUTPUT: `atomic_write(path: &Path, content: &str) -> Result<(), Box<dyn Error>>` in src/core/mod.rs, importable by tray.rs and linux_tray.rs. Signature is compatible with replacing existing `fs::write(path, content)?` call sites.\n5. DOCS: none — internal helper, no user-facing/config/API surface change. (The function is internal infrastructure, not exported as a public API.)",
@@ -80,7 +80,7 @@
                   "type": "Subtask",
                   "id": "P1.M2.T2.S1",
                   "title": "Update create_default_config + create_default_rules in src/core/mod.rs",
-                  "status": "Planned",
+                  "status": "Researching",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M2.T1.S1"
