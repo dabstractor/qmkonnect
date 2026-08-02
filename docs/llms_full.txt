@@ -2570,6 +2570,16 @@ must be above your highest board layer; in **replace** mode any valid index
 wins. See the
 [Configuration Guide]({{ site.baseurl }}/configuration) for the full field table.
 
+At runtime, when `rules.toml` fails to parse during a window focus change,
+QMKonnect shows a **one-time desktop notification** (the app dedupes — at most
+one per broken state) and then falls back to string-only mode. On **Windows**
+this is a **toast** that auto-dismisses after a few seconds and lands in Action
+Center (it is no longer a modal dialog you must click away); Linux uses
+`notify-send` and macOS uses a Notification Center alert. (On Windows the toast
+requires the installed Start Menu shortcut to render — if you launched a dev
+build directly the notification may be silent, but the `--validate-rules` error
+above is always printed.)
+
 ### Device shows connected but rules not applying
 
 **Symptoms**: the keyboard is connected and firmware rules work, but your

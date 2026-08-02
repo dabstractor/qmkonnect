@@ -19,6 +19,13 @@ Minimal fix: revert macos.rs error handling to `Box<dyn Error>` returns. Must be
 The release profile aborts on panic, making every `panic::catch_unwind` supervisor in `src/runners/linux.rs` dead code in release builds. Decision: keep `abort` and delete the catch_unwind scaffolding (rely on systemd `Restart=always` — fine for this app), or switch to `unwind`.
 
 ### 4. udev update path is fragile and insecure
+
+> ✅ **Resolved.** The fragile `/tmp` + `sudo mv` + `MODE=0666` path is gone: device access now
+> goes through the static `packaging/linux/udev/69-qmkonnect-rawhid.rules` (single line,
+> `ENV{ID_QMKONNECT}=="1"`-guarded, `MODE="0660"` + `TAG+="uaccess"` — no `/tmp` race, no
+> world-writable node), and `-r`/`--reload` renders the same safe form and auto-repairs the
+> dangerous legacy rule. *(Bug-hunt h2.2; re-verified: static rule present, no `MODE=0666`.)*
+
 `src/platforms/linux.rs::update_udev_rules`:
 - Writes new rules to the fixed, predictable path `/tmp/99-qmkonnect.rules.tmp`, then `sudo mv`s to `/etc/udev/rules.d/` — a local attacker can race the window to install arbitrary udev rules as root.
 - `sudo` won't work from a systemd service or GUI context (no TTY).
@@ -29,6 +36,12 @@ With config-driven VID/PID now working, consider whether per-user udev rewriting
 ## Correctness / resource management
 
 ### 5. `static mut` data races (UB)
+
+> ✅ **Resolved.** The `static mut` globals are replaced with atomics / `OnceLock` / `Mutex`
+> (`src/platforms/windows.rs:22`, `src/platforms/macos.rs:43` reference "the former `static mut`").
+> *(Bug-hunt h2.2; re-verified: `grep -rn "static mut" src/platforms/{windows,macos}.rs` returns
+> only comments.)*
+
 - `src/platforms/windows.rs`: `G_VERBOSE`, `G_HOOK`, `LAST_WINDOW_INFO` are mutated/read from both the hook callback and the polling thread.
 - `src/platforms/macos.rs`: `static mut VERBOSE`.
 
@@ -38,6 +51,11 @@ Real undefined behavior; rustc edition 2024 hard-errors on these patterns. Repla
 `test_debounce_subsequent_messages` and `test_multiple_rapid_updates` fail on unmodified HEAD. The tests assume a ~600ms debounce window; `DEBOUNCE_INTERVAL` is 50ms. Update the tests to match the current design (or restore the intended interval). Tests must run with `cargo test --bin qmkonnect -- --test-threads=1` (shared global debouncer state).
 
 ### 7. Hyprland reconnect backoff never resets
+
+> ✅ **Resolved.** The backoff now resets to the initial value after a connection stays up a while,
+> so long-uptime sessions no longer get stuck at the 10s cap (`src/platforms/hyprland.rs:198-202`,
+> doc comment cites "#7"). *(Bug-hunt h2.2.)*
+
 In `src/platforms/hyprland.rs::start`, `delay_ms` grows across reconnects but is never reset after a successful reconnect, so long-uptime sessions eventually wait the full 10s cap on every reconnect.
 
 ### 8. Hyprland polling thread is likely redundant
@@ -62,9 +80,19 @@ Minor at this scale; a single long-lived timer thread or a `CondVar` wait would 
 The tray app + Run-key autostart covers the use case; deleting service mode removes ~450 lines (service.rs + sc plumbing).
 
 ### 13. macOS screen-recording permission handling
+
+> ✅ **Resolved.** `ensure_screen_recording_permission()` no longer hard-fails: it runs the app
+> sending the app-name only and redacts window titles until Screen Recording is granted, then picks
+> them up — graceful degradation (`src/platforms/macos.rs:85-101`). *(Bug-hunt h2.2.)*
+
 `CGWindowListCopyWindowInfo` (window titles) requires screen recording permission, and `start()` hard-fails while the permission dialog is still on screen. Degrade gracefully: send app name only when permission is missing, keep running, pick up titles once granted.
 
 ### 14. X11 monitor is a stub sending garbage
+
+> ✅ **Resolved.** The X11 monitor now shells out to real `xprop` (`_NET_ACTIVE_WINDOW` →
+> `WM_CLASS` / `_NET_WM_NAME`) instead of sending literal stub strings
+> (`src/platforms/x11.rs:25-53`, comment cites "issue #14"). *(Bug-hunt h2.2.)*
+
 `src/platforms/x11.rs` sends the literal strings `"X11Application"/"Active Window"` or `"Linux"/"Desktop"`. Either implement it (`_NET_ACTIVE_WINDOW` → `WM_CLASS` / `_NET_WM_NAME`) or make it fail loudly instead of pretending to work.
 
 ### 15. `check_hyprland_environment` unsoundness and shelling out

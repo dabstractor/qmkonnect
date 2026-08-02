@@ -4,7 +4,7 @@
       "type": "Phase",
       "id": "P1",
       "title": "Bug-Hunt Remediation & Reliability Hardening",
-      "status": "Ready",
+      "status": "Complete",
       "description": "Remediate the findings from the QMKonnect end-to-end PRD validation bug-hunt report. The CRITICAL debounce-worker panic (h2.0) is already fixed and tested (notifier.rs:863, regression test at :2407, 344 tests pass). This phase covers: (M1) defense-in-depth verification of the critical fix; (M2) atomic config/rules file persistence (h2.1 #1); (M3) device-lifecycle handshake consistency (h2.1 #4, #5); (M4) Windows toast notification spec compliance (h2.1 #3); (M5) config read-path caching (h2.1 #2); and (M6) changeset-level documentation sync. All findings were validated against the live codebase — see architecture/ for detailed research.",
       "milestones": [
         {
@@ -275,21 +275,21 @@
           "type": "Milestone",
           "id": "P1.M6",
           "title": "Sync changeset-level documentation",
-          "status": "Ready",
+          "status": "Complete",
           "description": "Final documentation sweep for cross-cutting changes that span the entire bugfix changeset. Per §5 Mode B: individual subtask docs were handled inline (Mode A). This task covers overview-level docs (README.md, docs/troubleshooting.md, docs/configuration.md) that summarize the delta as a whole. It depends on every implementing subtask so it runs last.",
           "tasks": [
             {
               "type": "Task",
               "id": "P1.M6.T1",
               "title": "Sync changeset-level documentation",
-              "status": "Ready",
+              "status": "Complete",
               "description": "Update README.md, docs/troubleshooting.md, and any overview docs to reflect the Windows toast notification change and any other user-visible behavior changes from the bugfix changeset.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M6.T1.S1",
                   "title": "Update README.md and docs/troubleshooting.md for changeset",
-                  "status": "Ready",
+                  "status": "Complete",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M1.T1.S1",
