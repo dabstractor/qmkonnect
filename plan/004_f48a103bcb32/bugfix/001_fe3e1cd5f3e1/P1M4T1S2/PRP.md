@@ -521,13 +521,99 @@ Task 2: EDIT src/platforms/mod.rs — replace notify()'s Windows arm + add the t
 Task 3: ADD the cfg(windows) unit test to src/platforms/mod.rs
   Add a new test module. Place it right AFTER the existing `#[cfg(test)] mod tests { … }`
   block (which ends near the bottom of the file), so cfg(windows) test code is grouped with the
-  other platform tests. Insert:
-      "\n#[cfg(all(test, target_os = \"windows\"))]\nmod toast_tests {\n    use super::*;\n\n    /// The toast XML must be well-formed AND correctly escaped for the body's special\n    /// characters (the body is an arbitrary TOML parse-error string). We verify by\n    /// loading it into a real XmlDocument — the same parse show_toast performs — WITHOUT\n    /// calling Show (no shortcut needed, no toast pops during `cargo test`).\n    ///\n    /// NOTE: runs only on Windows (the implementing agent is on Linux, so this is a\n    /// DEFERRED gate — see PRP Validation Level 5 / AGENTS.md Windows dev loop).\n    #[test]\n    fn toast_xml_is_well_formed_and_escapes_special_chars() {\n        use windows::core::HSTRING;\n        use windows::Data::Xml::Dom::XmlDocument;\n        use windows::Win32::System::Com::{CoInitializeEx, COINIT_APARTMENTTHREADED};\n\n        // XmlDocument::new() is a WinRT activation → needs COM on this test thread.\n        unsafe { let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED); }\n\n        // A realistic TOML-error body with the chars that break XML if unescaped.\n        let xml = build_toast_xml(\n            \"QMKonnect: rules.toml invalid\",\n            \"expected `=` at line 5 & column 3, found \\\"<weird>\\\"\",\n        );\n        let doc = XmlDocument::new().expect(\"XmlDocument::new\");\n        doc.LoadXml(&HSTRING::from(xml.as_str()))\n            .expect(\"toast XML must parse after xml_escape\");\n        // If LoadXml returned Ok, the XML is well-formed and escaping is correct.\n    }\n}\n"
+  other platform tests. Insert EXACTLY this:
+
+  ```rust
+  #[cfg(all(test, target_os = "windows"))]
+  mod toast_tests {
+      use super::*;
+
+      /// The toast XML must be well-formed AND correctly escaped for the body's special
+      /// characters (the body is an arbitrary TOML parse-error string). We verify by loading
+      /// it into a real XmlDocument — the same parse show_toast performs — WITHOUT calling
+      /// Show (no shortcut needed, no toast pops during `cargo test`).
+      ///
+      /// NOTE: runs only on Windows (the implementing agent is on Linux, so this is a DEFERRED
+      /// gate — see PRP Validation Level 5 / AGENTS.md Windows dev loop).
+      #[test]
+      fn toast_xml_is_well_formed_and_escapes_special_chars() {
+          use windows::core::HSTRING;
+          use windows::Data::Xml::Dom::XmlDocument;
+          use windows::Win32::System::Com::{CoInitializeEx, COINIT_APARTMENTTHREADED};
+
+          // XmlDocument::new() is a WinRT activation → needs COM on this test thread.
+          unsafe {
+              let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+          }
+
+          // A realistic TOML-error body with the chars that break XML if unescaped.
+          let xml = build_toast_xml(
+              "QMKonnect: rules.toml invalid",
+              "expected `=` at line 5 & column 3, found \"<weird>\"",
+          );
+          let doc = XmlDocument::new().expect("XmlDocument::new");
+          doc.LoadXml(&HSTRING::from(xml.as_str()))
+              .expect("toast XML must parse after xml_escape");
+          // If LoadXml returned Ok, the XML is well-formed and escaping is correct.
+      }
+  }
+  ```
+
   - COVERAGE: the XML-construction + escaping logic (the only non-trivial logic in this task).
-    The COM-init / Show path is pure API glue that cannot be meaningfully unit-tested without a\n    registered shortcut, so it is intentionally not tested here.
+    The COM-init / Show path is pure API glue that cannot be meaningfully unit-tested without a
+    registered shortcut, so it is intentionally not tested here.
   - PLACEMENT: after the existing `#[cfg(test)] mod tests`. The `use super::*;` brings
     build_toast_xml into scope (it is a module-level private fn; super::* sees it).
-  - GOTCHA: XmlDocument::new() inside the test ALSO needs CoInitializeEx on the test thread —\n    include it (cargo test may run the test on a worker thread with no apartment).\n\nTask 4: EDIT docs/troubleshooting.md — add the toast-behavior note (Mode A)\n  In the \"### `rules.toml` parse error\" section, append a paragraph describing the runtime\n  notification's appearance per platform. Locate the section's last paragraph (ending \"… See the\n  [Configuration Guide]({{ site.baseurl }}/configuration) for the full field table.\") and insert\n  AFTER it (before the next \"### Device shows connected…\" heading):\n      \"\nAt runtime, when `rules.toml` fails to parse during a window focus change, QMKonnect shows a\n**one-time desktop notification** (the app dedupes — at most one per broken state) and then\nfalls back to string-only mode. On **Windows** this is a **toast** that auto-dismisses after a\nfew seconds and lands in Action Center (it is no longer a modal dialog you must click away);\nLinux uses `notify-send` and macOS uses a Notification Center alert. (On Windows the toast\nrequires the installed Start Menu shortcut to render — if you launched a dev build directly the\nnotification may be silent, but the `--validate-rules` error above is always printed.)\n\"\n  - ANCHOR: the unique tail of the parse-error section is the sentence ending \"… for the full\n  field table.\" Find it with `grep -n 'full field table' docs/troubleshooting.md`. Insert the\n  new paragraph immediately after that line.\n  - TONE/SCOPE: one paragraph, user-facing, factual. No internal line numbers, no PRP/task IDs.\n  Matches the surrounding prose (Jekyll `{{ site.baseurl }}` links not needed here).\n\nTask 5: VALIDATE (no edits)\n  - cargo build                                  # Linux: resolver validates Win32_System_Com.\n  - cargo test --bin qmkonnect -- --test-threads=1   # Linux: green, test count UNCHANGED\n                                                  #   (the new test is cfg(windows) → not run here).\n  - git diff --stat                              # exactly 3 files.\n  - (DEFERRED to Windows, AGENTS.md loop — see Validation Level 5) cargo build --release on\n    the canonical path + cargo test run the cfg(windows) test + manual toast render check.\n\nTask 6: NEVER do these (out of scope / forbidden)\n  - DO NOT change notify()'s signature `pub fn notify(title: &str, body: &str)` or its doc comment.\n  - DO NOT touch the Linux (`notify-send`) or macOS (`osascript`) arms of notify().\n  - DO NOT touch the `#[cfg(not(any(…)))]` no-op arm.\n  - DO NOT edit src/core/notifier.rs (the caller, RULES_INVALID_NOTIFIED, host_context_for_window).\n  - DO NOT touch APP_AUMID / set_aumid (S1's output) — reference APP_AUMID as-is.\n  - DO NOT remove the S1 features (Win32_UI_Shell/UI_Notifications/Data_Xml_Dom) or re-add them.\n  - DO NOT introduce tauri-winrt-notification, notify-rust, or any new crate.\n  - DO NOT create a runtime Start Menu .lnk (that is P1.M4.T2.S1, Inno installer).\n  - DO NOT use the Inno AppId GUID as the AUMID; APP_AUMID is \"Mulletware.QMKonnect\".\n  - DO NOT call CoInitializeEx on the window-event thread inline (RPC_E_CHANGED_MODE risk); use the\n    short-lived worker thread. (See the Design Decision section.)\n  - DO NOT use snake_case WinRT method names (load_xml/show) — they do not exist in windows 0.52.\n  - DO NOT pass PCWSTR to the toast APIs — they take &HSTRING (HSTRING::from).\n  - DO NOT edit docs/installation.md (Approach A → Mode A → no change there).\n  - DO NOT edit PRD.md, tasks.json, prd_snapshot.md, or .gitignore.\n```
+  - GOTCHA: XmlDocument::new() inside the test ALSO needs CoInitializeEx on the test thread —
+    include it (cargo test may run the test on a worker thread with no apartment).
+
+Task 4: EDIT docs/troubleshooting.md — add the toast-behavior note (Mode A)
+  In the "### `rules.toml` parse error" section, append a paragraph describing the runtime
+  notification's appearance per platform. Locate the section's last paragraph (ending "… See the
+  [Configuration Guide]({{ site.baseurl }}/configuration) for the full field table.") and insert
+  AFTER it (before the next "### Device shows connected…" heading):
+
+  ```markdown
+  At runtime, when `rules.toml` fails to parse during a window focus change, QMKonnect shows a
+  **one-time desktop notification** (the app dedupes — at most one per broken state) and then
+  falls back to string-only mode. On **Windows** this is a **toast** that auto-dismisses after a
+  few seconds and lands in Action Center (it is no longer a modal dialog you must click away);
+  Linux uses `notify-send` and macOS uses a Notification Center alert. (On Windows the toast
+  requires the installed Start Menu shortcut to render — if you launched a dev build directly the
+  notification may be silent, but the `--validate-rules` error above is always printed.)
+  ```
+
+  - ANCHOR: the unique tail of the parse-error section is the sentence ending "… for the full
+    field table." Find it with `grep -n 'full field table' docs/troubleshooting.md`. Insert the
+    new paragraph immediately after that line.
+  - TONE/SCOPE: one paragraph, user-facing, factual. No internal line numbers, no PRP/task IDs.
+    Matches the surrounding prose (Jekyll `{{ site.baseurl }}` links not needed here).
+
+Task 5: VALIDATE (no edits)
+  - cargo build                                  # Linux: resolver validates Win32_System_Com.
+  - cargo test --bin qmkonnect -- --test-threads=1   # Linux: green, test count UNCHANGED
+                                                  #   (the new test is cfg(windows) → not run here).
+  - git diff --stat                              # exactly 3 files.
+  - (DEFERRED to Windows, AGENTS.md loop — see Validation Level 5) cargo build --release on
+    the canonical path + cargo test run the cfg(windows) test + manual toast render check.
+
+Task 6: NEVER do these (out of scope / forbidden)
+  - DO NOT change notify()'s signature `pub fn notify(title: &str, body: &str)` or its doc comment.
+  - DO NOT touch the Linux (`notify-send`) or macOS (`osascript`) arms of notify().
+  - DO NOT touch the `#[cfg(not(any(…)))]` no-op arm.
+  - DO NOT edit src/core/notifier.rs (the caller, RULES_INVALID_NOTIFIED, host_context_for_window).
+  - DO NOT touch APP_AUMID / set_aumid (S1's output) — reference APP_AUMID as-is.
+  - DO NOT remove the S1 features (Win32_UI_Shell/UI_Notifications/Data_Xml_Dom) or re-add them.
+  - DO NOT introduce tauri-winrt-notification, notify-rust, or any new crate.
+  - DO NOT create a runtime Start Menu .lnk (that is P1.M4.T2.S1, Inno installer).
+  - DO NOT use the Inno AppId GUID as the AUMID; APP_AUMID is "Mulletware.QMKonnect".
+  - DO NOT call CoInitializeEx on the window-event thread inline (RPC_E_CHANGED_MODE risk); use the
+    short-lived worker thread. (See the Design Decision section.)
+  - DO NOT use snake_case WinRT method names (load_xml/show) — they do not exist in windows 0.52.
+  - DO NOT pass PCWSTR to the toast APIs — they take &HSTRING (HSTRING::from).
+  - DO NOT edit docs/installation.md (Approach A → Mode A → no change there).
+  - DO NOT edit PRD.md, tasks.json, prd_snapshot.md, or .gitignore.
+```
 
 ### Implementation Patterns & Key Details
 ```rust
