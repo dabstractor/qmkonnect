@@ -875,7 +875,7 @@ fn show_settings_dialog(config_path: &std::path::Path) -> Result<(), Box<dyn std
             merged.product_id = product_id;
             let config_content = crate::core::render_config_body(&merged);
 
-            std::fs::write(config_path, config_content)?;
+            crate::core::atomic_write(config_path, &config_content)?;
 
             // Configuration saved successfully - no success dialog needed
             // The QMK connection is established fresh for each notification,
@@ -1273,7 +1273,7 @@ fn show_settings_dialog_with_pool(
                     merged.vendor_id = vendor_id;
                     merged.product_id = product_id;
                     let config_content = crate::core::render_config_body(&merged);
-                    std::fs::write(config_path, config_content)?;
+                    crate::core::atomic_write(config_path, &config_content)?;
                 }
                 (Err(e), _) | (_, Err(e)) => {
                     show_macos_error_message(&format!("Invalid input: {}", e));

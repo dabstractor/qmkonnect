@@ -43,7 +43,7 @@
           "type": "Milestone",
           "id": "P1.M2",
           "title": "Atomic Config & Rules File Persistence",
-          "status": "Researching",
+          "status": "Complete",
           "description": "Finding h2.1 #1: All config.toml and rules.toml save paths use std::fs::write (truncate-then-write) with no temp-file+rename. A concurrent reader (configured_filter, host_context_for_window, parse_rules — all run per-window-change on the notifier thread) can observe a truncated or empty file mid-save, producing a spurious 'rules.toml invalid' notification or a brief device-filter mismatch. Impact is low (transient, self-healing) but the fix is a simple std-only atomic_write helper (temp file + fs::rename, atomic same-directory). See architecture/config_writes_research.md.",
           "tasks": [
             {
@@ -73,7 +73,7 @@
               "type": "Task",
               "id": "P1.M2.T2",
               "title": "Migrate all config/rules write call sites to atomic_write",
-              "status": "Researching",
+              "status": "Complete",
               "description": "Replace all five fs::write call sites for config.toml and rules.toml with the new atomic_write helper. Each is a trivial one-line replacement (fs::write(path, content)? → atomic_write(path, &content)?).",
               "subtasks": [
                 {
@@ -95,7 +95,7 @@
                   "type": "Subtask",
                   "id": "P1.M2.T2.S2",
                   "title": "Update tray.rs (Windows + macOS) and linux_tray.rs settings-dialog saves",
-                  "status": "Researching",
+                  "status": "Complete",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M2.T1.S1"
@@ -121,14 +121,14 @@
               "type": "Task",
               "id": "P1.M3.T1",
               "title": "Fix first-tick device-absent race (#5)",
-              "status": "Planned",
+              "status": "Researching",
               "description": "Seed the poll thread's initial `last` state from the startup device connection result so it never starts None-but-already-handshooked. When startup detected a connected device (handshake ran, HAS_HANDSHAKED=true), seed last=Some(true); a transient first-tick false then correctly produces Loss → reset → re-handshake on recovery (re-sending SET_OS).",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M3.T1.S1",
                   "title": "Add startup_device_state API and seed poll thread initial state",
-                  "status": "Planned",
+                  "status": "Researching",
                   "story_points": 2,
                   "dependencies": [],
                   "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: The race: runners call is_device_connected() + perform_handshake() at startup (runners/macos.rs:31-33, runners/windows.rs:52-54 & 105-107, runners/linux.rs equivalent), setting HAS_HANDSHAKED=true. The poll threads (tray.rs:384-409 for macOS/Windows, linux_tray.rs:261-294 for Linux) seed `let mut last: Option<bool> = None`. On the first tick, if is_device_connected() returns false (transient hidapi hiccup), handshake_action(None, false) == None (no-op) → HAS_HANDSHAKED stays true → later reconnect short-circuits (SET_OS not re-sent). handshake_action at notifier.rs:689: match (prev, now) { (Some(true), false) => Loss, (p, true) if p != Some(true) => Gain, _ => None }. The ONLY reset trigger is (Some(true), false). See architecture/handshake_race_research.md §Finding #5.\n2. INPUT: is_device_connected() at notifier.rs:216. perform_handshake() at notifier.rs:315. Poll thread loops at tray.rs:384 (macOS/Windows, `let mut last: Option<bool> = None`) and linux_tray.rs:261 (`let mut last_device: Option<bool> = None`).\n3. LOGIC: Add a `static STARTUP_DEVICE_CONNECTED: OnceLock<bool> = OnceLock::new();` to notifier.rs (alongside HAS_HANDSHAKED at line 260). Add `pub fn record_startup_device_state() { let _ = STARTUP_DEVICE_CONNECTED.set(is_device_connected()); }` and `pub fn startup_device_was_connected() -> bool { *STARTUP_DEVICE_CONNECTED.get().unwrap_or(&false) }`. Call `crate::core::notifier::record_startup_device_state()` in each runner (macos.rs, windows.rs both paths, linux.rs) immediately BEFORE the `if is_device_connected() { perform_handshake(...) }` block. In each poll thread, change the seed from `None` to `Some(crate::core::notifier::startup_device_was_connected())`: tray.rs:387 `let mut last: Option<bool> = Some(crate::core::notifier::startup_device_was_connected());`; linux_tray.rs:263 `let mut last_device: Option<bool> = Some(crate::core::notifier::startup_device_was_connected());`. This ensures: (a) if startup was connected (seed Some(true)), a transient first-tick false → handshake_action(Some(true), false) == Loss → reset_handshake_state() → next tick true → Gain → perform_handshake() re-sends SET_OS (correct); (b) if startup was not connected (seed Some(false)), first tick true → Gain → handshake (correct). Add test `test_poll_thread_seeded_from_startup`: verify startup_device_was_connected() returns the value set by record_startup_device_state(). Add test `test_handshake_action_loss_on_seeded_true_to_false`: verify handshake_action(Some(true), false) == Loss (already implicitly tested, but document the fix's reliance on this).\n4. OUTPUT: Poll threads start from a consistent state derived from the startup device probe. The first-tick transient-false scenario now correctly resets HAS_HANDSHAKED, ensuring SET_OS is re-sent on the subsequent reconnect. All 345+ tests pass.\n5. DOCS: none — internal lifecycle fix, no user-facing/config/API surface change.",

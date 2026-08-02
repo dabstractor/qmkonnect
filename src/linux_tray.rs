@@ -819,7 +819,7 @@ fn write_config(
     config.vendor_id = vendor_id;
     config.product_id = product_id;
     let content = crate::core::render_config_body(&config);
-    std::fs::write(&path, content)?;
+    crate::core::atomic_write(&path, &content)?;
     Ok(path)
 }
 
