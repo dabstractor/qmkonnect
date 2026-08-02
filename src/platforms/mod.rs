@@ -123,6 +123,45 @@ pub fn create_config_dir() -> Result<std::path::PathBuf, Box<dyn Error>> {
     }
 }
 
+// ── Windows toast identity (P1.M4.T1.S1) ─────────────────────────────────────
+// Stable AppUserModelID for this app. A WinRT toast will not render unless the
+// process sets this AUMID (via set_aumid() below) AND a Start Menu shortcut
+// advertises it (P1.M4.T2.S1, Inno installer). Convention is Publisher.App; the
+// publisher/name mirror packaging/windows/inno/QMKonnect.iss (MyAppName=
+// "QMKonnect", MyAppPublisher="Mulletware"). NOTE: this is NOT the Inno `AppId`
+// GUID ({FAAE1F7A-…}) — that is the installer upgrade identity; the AUMID is the
+// toast identity and the two are distinct.
+pub const APP_AUMID: &str = "Mulletware.QMKonnect";
+
+// Compile-time guard: a blanked AUMID would silently break toasts at runtime;
+// fail the build instead. (Plain &str ⇒ compiles on every platform, so this also
+// gates the Linux dev build.)
+#[allow(dead_code)]
+const _APP_AUMID_NONEMPTY: () = {
+    assert!(!APP_AUMID.is_empty());
+};
+
+/// Set this process's AppUserModelID so WinRT toasts originate from "Mulletware.
+/// QMKonnect" (must match the Start Menu shortcut's System.AppUserModel.ID).
+/// Call once at startup on Windows, before any toast. Pure Win32 shell32 — no
+/// COM init needed. Idempotent; failure is non-fatal (toasts just won't render).
+#[cfg(target_os = "windows")]
+pub fn set_aumid() {
+    use windows::core::PCWSTR;
+    use windows::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID;
+    // PCWSTR wants a NUL-terminated UTF-16 buffer; keep the Vec alive across the call.
+    let wide: Vec<u16> = APP_AUMID
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+    let hr = unsafe {
+        SetCurrentProcessExplicitAppUserModelID(PCWSTR(wide.as_ptr()))
+    };
+    if let Err(e) = hr {
+        log::warn!("set_aumid: SetCurrentProcessExplicitAppUserModelID failed: {e}");
+    }
+}
+
 /// Best-effort, non-blocking desktop notification (fire-and-forget). Surfaces a
 /// malformed `rules.toml` to the user (HOST_RULES.md §7). The caller
 /// (`host_context_for_window`) dedupes, so this fires at most once per broken

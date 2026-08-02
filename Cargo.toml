@@ -78,6 +78,18 @@ windows = { version = "0.52.0", features = [
     # Per-user "Open at Login" autostart via the HKCU `Run` key
     # (src/autostart.rs; HANDOFF_WINDOWS_OPEN_AT_LOGIN.md).
     "Win32_System_Registry",
+    # WinRT toast infrastructure (P1.M4.T1 — spec/UI.md §2.3 mandates a toast, not
+    # the current modal MessageBoxW, for the "rules.toml invalid" notification):
+    #   - Win32_UI_Shell: SetCurrentProcessExplicitAppUserModelID (sets the process AUMID
+    #     at startup so the toast subsystem accepts notifications from this app).
+    #   - UI_Notifications: windows::UI::Notifications (ToastNotificationManager /
+    #     ToastNotification / ToastNotifier) — consumed by P1.M4.T1.S2.
+    #   - Data_Xml_Dom: windows::Data::Xml::Dom (XmlDocument to build the toast XML
+    #     payload) — consumed by P1.M4.T1.S2.
+    # Win32_Foundation is already present and auto-cascades; do not re-add it.
+    "Win32_UI_Shell",
+    "UI_Notifications",
+    "Data_Xml_Dom",
 ] }
 log = "0.4"
 env_logger = "0.11"

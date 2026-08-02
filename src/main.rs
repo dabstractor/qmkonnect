@@ -58,6 +58,13 @@ fn main() {
         process::exit(1);
     }
 
+    // Set the Windows process AppUserModelID BEFORE any toast could fire (P1.M4.T1.S1).
+    // A WinRT toast won't render unless the process identity is set; run() has many
+    // early-return subcommand branches, so set it here once for every path. Pure Win32,
+    // idempotent, non-fatal.
+    #[cfg(target_os = "windows")]
+    crate::platforms::set_aumid();
+
     if let Err(e) = run() {
         #[cfg(target_os = "windows")]
         error!("Application error: {}", e);
