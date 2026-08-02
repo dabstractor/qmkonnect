@@ -15,8 +15,8 @@ use windows::Win32::Foundation::HWND;
 use windows::Win32::System::LibraryLoader::GetModuleHandleA;
 use windows::Win32::UI::Accessibility::{SetWinEventHook, UnhookWinEvent, HWINEVENTHOOK};
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumChildWindows, GetClassNameW, GetForegroundWindow, GetWindowTextW, GetWindowThreadProcessId,
-    EVENT_OBJECT_FOCUS, WINEVENT_OUTOFCONTEXT,
+    EnumChildWindows, GetClassNameW, GetForegroundWindow, GetWindowTextW,
+    GetWindowThreadProcessId, EVENT_OBJECT_FOCUS, EVENT_OBJECT_NAMECHANGE, WINEVENT_OUTOFCONTEXT,
 };
 
 // Thread-safe replacements for the former `static mut` globals (issue #5).
@@ -24,6 +24,11 @@ use windows::Win32::UI::WindowsAndMessaging::{
 // depending on whether HWINEVENTHOOK itself is Send.
 static G_VERBOSE: AtomicBool = AtomicBool::new(false);
 static G_HOOK: AtomicIsize = AtomicIsize::new(0);
+// Handle for the separate EVENT_OBJECT_NAMECHANGE hook. Kept distinct from
+// G_HOOK (the focus hook) because NAMECHANGE must be hooked on its own range
+// — folding both into one `SetWinEventHook(eventMin, eventMax, …)` would hook
+// every event *between* them and flood the callback. See `start()`.
+static G_NAME_HOOK: AtomicIsize = AtomicIsize::new(0);
 static LAST_WINDOW_INFO: Mutex<Option<(String, String)>> = Mutex::new(None);
 
 pub struct WindowsMonitor {
@@ -70,6 +75,36 @@ impl WindowMonitor for WindowsMonitor {
 
             G_HOOK.store(hook.0, Ordering::SeqCst);
 
+            // Hook element/window NAMECHANGE too so in-app title edits are
+            // surfaced: a browser tab switch, a document/sheet change, or any
+            // title edit within an ALREADY-FOCUSED app changes the title without
+            // a focus transition, so EVENT_OBJECT_FOCUS never fires and the
+            // foreground window's new title would otherwise go unreported
+            // (title-pattern host rules like `["*chrome*","*youtube*"]` would
+            // silently stop reacting as the user tabs around inside Chrome).
+            // NAMECHANGE fires for the element whose name changed — often a
+            // CHILD window — so `event_proc` re-derives the FOREGROUND window for
+            // this event instead of trusting the event's own hwnd. Failure is
+            // non-fatal: the focus hook + poller still cover focus transitions,
+            // so we only lose the in-app title edge.
+            let name_hook = SetWinEventHook(
+                EVENT_OBJECT_NAMECHANGE,
+                EVENT_OBJECT_NAMECHANGE,
+                None,
+                Some(event_proc),
+                0,
+                0,
+                WINEVENT_OUTOFCONTEXT,
+            );
+            if name_hook.0 != 0 {
+                G_NAME_HOOK.store(name_hook.0, Ordering::SeqCst);
+            } else if self.verbose {
+                eprintln!(
+                    "Warning: failed to hook EVENT_OBJECT_NAMECHANGE; \
+                     in-app title changes may be missed"
+                );
+            }
+
             if self.verbose {
                 println!("Windows event hook established successfully");
             }
@@ -80,7 +115,15 @@ impl WindowMonitor for WindowsMonitor {
 
         self.running.store(true, Ordering::SeqCst);
 
-        // Background thread polls for window changes as a fallback.
+        // Background thread polls for window changes as a fallback. The WinEvent
+        // hook (focus + name-change) is the primary, low-latency signal; this
+        // poller catches transitions the hook misses (notably apps that don't
+        // emit EVENT_OBJECT_NAMECHANGE for in-window title edits). It calls
+        // `handle_focus_change` unconditionally each tick: `handle_focus_change`
+        // derives the foreground window's (class, title) and dedups via
+        // `LAST_WINDOW_INFO`, so this naturally surfaces BOTH focus changes and
+        // in-window title changes. (The previous form gated on HWND equality,
+        // which skipped any title change on the same top-level window.)
         let running = Arc::clone(&self.running);
         let verbose = self.verbose;
         thread::spawn(move || {
@@ -88,20 +131,11 @@ impl WindowMonitor for WindowsMonitor {
                 println!("Starting Windows polling thread as fallback");
             }
 
-            let mut last_hwnd = unsafe { GetForegroundWindow() };
-
             while running.load(Ordering::SeqCst) {
                 unsafe {
                     let current_hwnd = GetForegroundWindow();
-                    if current_hwnd.0 != last_hwnd.0 && current_hwnd.0 != 0 {
-                        if verbose {
-                            println!(
-                                "Polling detected window change (HWND: {:?})",
-                                current_hwnd.0
-                            );
-                        }
+                    if current_hwnd.0 != 0 {
                         handle_focus_change(current_hwnd);
-                        last_hwnd = current_hwnd;
                     }
                 }
                 thread::sleep(Duration::from_millis(100));
@@ -129,6 +163,12 @@ impl WindowMonitor for WindowsMonitor {
                 let _ = UnhookWinEvent(HWINEVENTHOOK(hook));
             }
         }
+        let name_hook = G_NAME_HOOK.swap(0, Ordering::SeqCst);
+        if name_hook != 0 {
+            unsafe {
+                let _ = UnhookWinEvent(HWINEVENTHOOK(name_hook));
+            }
+        }
         self.running.store(false, Ordering::SeqCst);
         Ok(())
     }
@@ -136,14 +176,26 @@ impl WindowMonitor for WindowsMonitor {
 
 unsafe extern "system" fn event_proc(
     _h_win_event_hook: HWINEVENTHOOK,
-    _event: u32,
+    event: u32,
     hwnd: HWND,
     _id_object: i32,
     _id_child: i32,
     _id_event_thread: u32,
     _dwms_event_time: u32,
 ) {
-    handle_focus_change(hwnd);
+    // A NAMECHANGE fires for the element whose name changed — frequently a
+    // CHILD window (e.g. a browser tab's document pane) rather than the
+    // top-level foreground window whose title we report. Re-derive the
+    // foreground window for this event so `handle_focus_change` reports the
+    // foreground app's (possibly new) title; its `LAST_WINDOW_INFO` dedup
+    // suppresses no-op re-reports when the foreground title didn't actually
+    // change. Focus events pass their own hwnd (it IS the focused window).
+    let target = if event == EVENT_OBJECT_NAMECHANGE {
+        GetForegroundWindow()
+    } else {
+        hwnd
+    };
+    handle_focus_change(target);
 }
 
 fn handle_focus_change(hwnd: HWND) {

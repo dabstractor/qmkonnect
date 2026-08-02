@@ -74,27 +74,38 @@ impl WindowMonitor for HyprlandMonitor {
         // corrects any such drift. `poll_window_state` dedups against
         // `last_window_state`, so steady-state polls are no-ops (one cheap IPC
         // call each). Disabled when `poll_interval_ms == 0` (the default).
-        let (_, poll_interval_ms) = crate::core::configured_timing();
-        if poll_interval_ms > 0 {
-            let lws = Arc::clone(&self.last_window_state);
-            let verbose = self.verbose;
-            thread::spawn(move || {
-                let interval = Duration::from_millis(poll_interval_ms);
-                if verbose {
-                    println!(
-                        "[{}ms] periodic active-window poll every {}ms",
-                        crate::core::now_ms(),
-                        poll_interval_ms
-                    );
+        //
+        // HOT-CONFIG (PRD §7): the interval is re-read from `configured_timing()`
+        // on EVERY iteration, so editing `config.toml` takes effect on the next
+        // tick — including 0→N (enable), N→0 (disable), and N→M (cadence change)
+        // — with no restart. The thread is always spawned (even when polling is
+        // initially disabled) so a live 0→N edit can start it; while disabled it
+        // just sleeps on a slow re-check cadence.
+        let lws = Arc::clone(&self.last_window_state);
+        let verbose = self.verbose;
+        thread::spawn(move || {
+            if verbose {
+                println!(
+                    "[{}ms] periodic active-window poll thread started (cadence re-read from config each tick; dormant when poll_interval_ms=0)",
+                    crate::core::now_ms()
+                );
+            }
+            loop {
+                let poll_interval_ms = crate::core::configured_timing().1;
+                if poll_interval_ms == 0 {
+                    // Polling disabled in config. Sleep on a slow cadence and
+                    // re-check so a live 0→N edit re-enables polling without a
+                    // restart (the thread stays alive on purpose rather than
+                    // breaking, which would make a later 0→N edit a no-op).
+                    thread::sleep(Duration::from_secs(1));
+                    continue;
                 }
-                loop {
-                    thread::sleep(interval);
-                    if let Err(err) = poll_window_state(&lws, verbose) {
-                        eprintln!("Error in periodic poll: {}", err);
-                    }
+                thread::sleep(Duration::from_millis(poll_interval_ms));
+                if let Err(err) = poll_window_state(&lws, verbose) {
+                    eprintln!("Error in periodic poll: {}", err);
                 }
-            });
-        }
+            }
+        });
 
         loop {
             // Re-resolve the live Hyprland instance on every reconnect attempt.
@@ -491,34 +502,40 @@ fn handle_window_state_change(
         None => return Ok(()),
     };
 
-    // Dedup against the last known state (same comparison as poll_window_state):
-    // Hyprland can emit spurious/duplicate `activewindow` events for the
-    // already-focused window (focus-management edge cases; the windowclosed and
-    // workspace handlers route through here too). Without this guard the
-    // identical payload is re-sent to the keyboard. Skip identical states.
-    let window_changed = {
-        let last_state = last_window_state.lock().unwrap();
-        match &*last_state {
+    // Dedup + update atomically in ONE critical section (mirrors
+    // `poll_window_state`). The previous two-lock form (compare under lock,
+    // release, then re-lock to update) left a TOCTOU window: `spawn_poll_burst`
+    // fires a poll thread from these same event handlers, and that thread could
+    // read the *same* stale `last_window_state`, also conclude "changed", also
+    // update, and also notify — re-introducing exactly the duplicate this dedup
+    // was added to prevent. Holding the lock across compare+update closes the
+    // race. The WindowInfo (a cheap clone of the two strings) is captured under
+    // the lock; `notify_qmk` runs AFTER the lock is dropped because it takes the
+    // debounce STATE/NOTIFIER locks, which must not be acquired while holding
+    // `last_window_state`.
+    let window_info = {
+        let mut last_state = last_window_state.lock().unwrap();
+        let changed = match &*last_state {
             None => true,
             Some(last) => {
                 last.app_class != current_window_state.app_class
                     || last.title != current_window_state.title
             }
+        };
+        if changed {
+            let wi = WindowInfo::new(
+                current_window_state.app_class.clone(),
+                current_window_state.title.clone(),
+            );
+            *last_state = Some(current_window_state);
+            Some(wi)
+        } else {
+            None
         }
     };
 
-    if window_changed {
-        let window_info = WindowInfo::new(
-            current_window_state.app_class.clone(),
-            current_window_state.title.clone(),
-        );
-        // Update last known state (after cloning the fields into window_info).
-        {
-            let mut last_state = last_window_state.lock().unwrap();
-            *last_state = Some(current_window_state);
-        }
-
-        if let Err(e) = notifier::notify_qmk(&window_info, verbose) {
+    if let Some(wi) = window_info {
+        if let Err(e) = notifier::notify_qmk(&wi, verbose) {
             eprintln!("Error notifying QMK: {}", e);
         }
     }

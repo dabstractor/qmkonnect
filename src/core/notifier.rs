@@ -2,6 +2,7 @@ use crate::core::types::WindowInfo;
 use once_cell::sync::Lazy;
 use std::collections::{BTreeSet, HashMap};
 use std::error::Error;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
@@ -95,6 +96,33 @@ fn configured_filter() -> DeviceFilter {
     }
 }
 
+/// If the user's `config.toml` is malformed, return its path + the parse error
+/// so [`startup_device_probe`] can report it clearly (PRD §2.1 Goal 4). Returns
+/// `None` when no config exists (valid: defaults apply) or it parses cleanly.
+///
+/// The hot readers (`configured_filter`/`configured_timing`) deliberately
+/// swallow parse errors via `.ok()` to degrade gracefully at runtime; this
+/// function re-parses independently (pure, no global side effects) purely so a
+/// startup diagnostic can distinguish "no config" from "broken config". Both
+/// read failures (e.g. permission denied) and TOML/serde failures are reported.
+fn config_parse_error() -> Option<(PathBuf, String)> {
+    let path = crate::platforms::get_config_paths()
+        .into_iter()
+        .find(|p| p.exists())?;
+    config_parse_error_at(&path)
+}
+
+/// Pure, hermetically-testable core of [`config_parse_error`]: given an
+/// explicit config path, return it + the error when parsing fails, or `None`
+/// when it parses cleanly. [`config_parse_error`] resolves the path (first
+/// existing candidate) then delegates here.
+fn config_parse_error_at(path: &Path) -> Option<(PathBuf, String)> {
+    match crate::core::parse_config(path) {
+        Ok(_) => None,
+        Err(e) => Some((path.to_path_buf(), e.to_string())),
+    }
+}
+
 /// List all HID devices WITHOUT opening them — pure enumeration from the kernel
 /// device list, so it can never disturb the keyboard. Backs the `--list-devices`
 /// flag for VID/PID discovery (#17).
@@ -119,6 +147,23 @@ pub fn list_devices() -> Result<(), Box<dyn Error>> {
 /// Prints a clear diagnostic when the configured device isn't found, instead of
 /// the runtime path's silent retry-and-give-up (#16).
 pub fn startup_device_probe(verbose: bool) {
+    // Surface a malformed `config.toml` at startup (PRD §2.1 Goal 4: "probe
+    // once and say so clearly"). The hot-config readers (`configured_filter`/
+    // `configured_timing`) swallow parse errors and fall back to defaults —
+    // correct for graceful degradation, but it means the probe below would run
+    // against the *defaulted* filter and print "Found QMK device" even when the
+    // user's config (with overridden usage_page/debounce_ms/poll_interval_ms) is
+    // unparseable, actively masking the typo. Re-parse once here purely to report
+    // a failure before probing.
+    if let Some((path, err)) = config_parse_error() {
+        eprintln!(
+            "Warning: could not parse {}: {} — using default config values. \
+             Fix the error above for your settings to take effect.",
+            path.display(),
+            err
+        );
+    }
+
     let f = configured_filter();
 
     let found = match hidapi::HidApi::new() {
@@ -732,11 +777,12 @@ struct PendingMessage {
 // Debounce state. A single, long-lived worker thread (see WORKER) consumes
 // `pending` messages, replacing the former "spawn a thread per burst" scheme.
 //
-// `debounce_ms` (and `poll_interval_ms`) are hot config (PRD §8,
-// ARCHITECTURE.md §10 #4, CONFIG.md §1.2): they are re-read from
-// `configured_debounce_ms()` on every notification and every status poll, so
-// they are intentionally NOT cached here — editing `config.toml` takes effect
-// within ~3 s with no restart.
+// `debounce_ms` is hot config (PRD §8, ARCHITECTURE.md §10 #4, CONFIG.md §1.2):
+// it is re-read from `configured_debounce_ms()` on every notification, so it is
+// intentionally NOT cached here — editing `config.toml` takes effect within
+// ~3 s with no restart. (`poll_interval_ms` is hot too, but it lives in the
+// Hyprland poll thread, not here — that thread re-reads `configured_timing()`
+// on every iteration; see `hyprland.rs`.)
 struct DebounceState {
     /// `None` until the first notification has actually been sent.
     last_sent_time: Option<Instant>,
@@ -1628,6 +1674,51 @@ mod tests {
             Some("App\x1DTitle".to_string())
         );
         assert_eq!(MockNotifier::get_send_command_calls().len(), 1);
+    }
+
+    // ========================================================================
+    // config.toml parse-error diagnostic (PRD §2.1 Goal 4)
+    // ========================================================================
+
+    #[test]
+    fn test_config_parse_error_at_reports_malformed_toml() {
+        // A malformed config.toml must surface a parse error so
+        // startup_device_probe can report it instead of silently probing against
+        // defaulted values. Writes a broken file to a TempDir (hermetic — does
+        // not touch the user's real config) and checks the path + message.
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config.toml");
+        // Duplicate key: valid TOML grammar but a serde error on the second
+        // `vendor_id` — the kind of typo a user makes (e.g. editing by hand).
+        std::fs::write(&path, "vendor_id = 0x1234\nvendor_id = 0x5678\n").unwrap();
+
+        let (err_path, msg) = config_parse_error_at(&path)
+            .expect("a malformed config must surface a parse error");
+        assert_eq!(err_path, path);
+        assert!(!msg.is_empty(), "error message must be non-empty");
+    }
+
+    #[test]
+    fn test_config_parse_error_at_none_for_valid_config() {
+        // A well-formed config parses cleanly -> None (no error to report).
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "vendor_id = 0xfeed\ndebounce_ms = 100\n").unwrap();
+
+        assert!(config_parse_error_at(&path).is_none());
+    }
+
+    #[test]
+    fn test_config_parse_error_at_reports_wrong_type() {
+        // A value of the wrong type (string where a u64 is expected) is a serde
+        // error, not a grammar error — must still be surfaced.
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, b"debounce_ms = \"fifty\"\n").unwrap();
+
+        let (err_path, _msg) = config_parse_error_at(&path)
+            .expect("a wrong-type value must surface a parse error");
+        assert_eq!(err_path, path);
     }
 
     // ========================================================================

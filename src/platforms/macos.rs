@@ -218,6 +218,38 @@ impl WindowMonitor for MacOSMonitor {
             }
         });
 
+        // Title-change poller. NSWorkspace's activation notification (registered
+        // above) only fires on APP SWITCHES, so in-app title edits (a browser
+        // tab switch, a document/sheet change within an already-focused app)
+        // would never be surfaced — title-pattern host rules like
+        // `["*chrome*","*youtube*"]` would silently stop reacting as the user
+        // tabs around inside Chrome. A cheap poll of the frontmost window's
+        // (class, title) on a short cadence closes that gap, mirroring the
+        // Hyprland poll_interval_ms design. The poll dedups against its own
+        // last-seen (class, title); the debouncer further coalesces any burst.
+        // Runs off the main thread and hands the result to the NOTIFY_TX worker
+        // (see NOTIFY_TX) so `notify_qmk` never runs on the main thread.
+        std::thread::spawn(move || {
+            let interval = std::time::Duration::from_millis(500);
+            let mut last: Option<(String, String)> = None;
+            loop {
+                std::thread::sleep(interval);
+                if let Ok(Some(info)) = get_active_window_info() {
+                    let key = (info.app_class.clone(), info.title.clone());
+                    if last.as_ref() != Some(&key) {
+                        last = Some(key);
+                        if let Some(tx) = NOTIFY_TX.get() {
+                            // Non-blocking: the bounded queue is drained by the
+                            // worker; drops under saturation are coalesced by
+                            // the debouncer (same lossy semantics as the
+                            // activation handler).
+                            let _ = tx.try_send(info);
+                        }
+                    }
+                }
+            }
+        });
+
         // Pump the run loop on this thread. The notification observer fires on
         // activation changes and pushes updates to QMK.
         unsafe { CFRunLoopRun() };

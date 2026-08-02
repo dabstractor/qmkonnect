@@ -48,9 +48,12 @@ pub struct Config {
 - `configured_timing()` resolves `debounce_ms`/`poll_interval_ms` to defaults
   when the file is missing or the field is unset.
 
-**Hot config:** both are re-read from disk on **every** notification and every
-status poll, so editing the file (or saving the Settings dialog) takes effect
-within ~3 s — no restart.
+**Hot config:** `debounce_ms` is re-read on every notification (by the debounce
+worker) and `poll_interval_ms` on every poll iteration (by the Hyprland poll
+thread), so editing the file (or saving the Settings dialog) takes effect
+within ~3 s — no restart. (On Hyprland this includes enabling the poller via
+`0 → N` live: the poll thread is always spawned and just sleeps while
+disabled.)
 
 ---
 

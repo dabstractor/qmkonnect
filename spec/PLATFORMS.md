@@ -94,25 +94,42 @@ monitor reports whatever Hyprland says is active (including empty).
 
 ### 2.1 Detection mechanism (belt + suspenders)
 
-1. **`SetWinEventHook(EVENT_OBJECT_FOCUS, EVENT_OBJECT_FOCUS, …,
-   WINEVENT_OUTOFCONTEXT)`** — the primary signal. The callback
-   `event_proc(hwnd,…)` runs on the thread pumping the message loop (the `tao`
-   tray loop on the shipped app). Each focus event → `handle_focus_change`.
-2. **100 ms polling thread** (`GetForegroundWindow()` compared to
-   `last_hwnd`) — a fallback for events the hook can miss. Deduped against
-   `LAST_WINDOW_INFO`.
+1. **`SetWinEventHook(EVENT_OBJECT_FOCUS, …, WINEVENT_OUTOFCONTEXT)`** — the
+   primary focus signal. The callback `event_proc(hwnd,…)` runs on the thread
+   pumping the message loop (the `tao` tray loop on the shipped app). Each
+   focus event → `handle_focus_change(hwnd)`.
+2. **`SetWinEventHook(EVENT_OBJECT_NAMECHANGE, …)`** — a *second* hook that
+   surfaces **in-app title edits** (browser tab switches, document/sheet
+   changes, …) which change the title without a focus transition. NAMECHANGE
+   fires for the element whose name changed — frequently a CHILD window — so
+   `event_proc` re-derives the **foreground** window (`GetForegroundWindow()`)
+   for this event rather than trusting the event's own `hwnd`. Without this
+   hook, title-pattern host rules (e.g. `match = ["*chrome*","*youtube*"]`)
+   would silently stop reacting as the user tabs around inside an already-
+   focused app. (Failure to install this hook is non-fatal: the focus hook +
+   poller still cover focus transitions.)
+3. **100 ms polling thread** (`GetForegroundWindow()` → `handle_focus_change`)
+   — a fallback for transitions the hooks can miss (notably apps that don't
+   emit `EVENT_OBJECT_NAMECHANGE` for in-window title edits). It calls
+   `handle_focus_change` unconditionally each tick; `handle_focus_change`'s
+   `(class,title)` dedup (`LAST_WINDOW_INFO`) is the real gate, so this surfaces
+   BOTH focus changes and same-window title changes (the former form gated on
+   HWND equality and so missed title-only changes).
 
 ### 2.2 `handle_focus_change(hwnd)`
 - `get_window_info(hwnd)` → `WindowInfo` (class via `GetClassNameW`, title via
   `GetWindowTextW`).
 - Skip if `should_ignore_window`.
 - Dedup against `LAST_WINDOW_INFO` (`Mutex<Option<(String,String)>>`) to kill
-  feedback loops.
+  feedback loops. The dedup key is the **(class, title)** pair, so identical
+  re-reports (e.g. a NAMECHANGE that didn't alter the foreground title, or a
+  poller tick with no change) collapse to a single send.
 - `notify_qmk(&window_info, verbose)`.
 
 ### 2.3 Thread-safe globals (replaced former `static mut` UB)
 - `G_VERBOSE: AtomicBool`
-- `G_HOOK: AtomicIsize` (holds the `HWINEVENTHOOK` handle)
+- `G_HOOK: AtomicIsize` (holds the focus `HWINEVENTHOOK` handle)
+- `G_NAME_HOOK: AtomicIsize` (holds the `EVENT_OBJECT_NAMECHANGE` hook handle)
 - `LAST_WINDOW_INFO: Mutex<Option<(String,String)>>`
 
 ### 2.4 `list_foreground_windows()` (the tray dialog data)
@@ -135,7 +152,17 @@ the live monitor would report.
 - Registers an observer on `NSWorkspace.sharedWorkspace.notificationCenter`
   for **`NSWorkspaceDidActivateApplicationNotification`**. The handler class
   `RustNotificationObserver` (declared once via `ClassDecl`) implements
-  `observeNotification:` → calls `get_active_window_info` → `notify_qmk`.
+  `observeNotification:` → calls `get_active_window_info` → hands the result to
+  the `NOTIFY_TX` worker (`notify_qmk` must never run on the main thread — see
+  `NOTIFY_TX` in source).
+- **Title-change poller** (500 ms): the activation notification only fires on
+  APP SWITCHES, so in-app title edits (a browser tab switch, a document/sheet
+  change within an already-focused app) would never be surfaced — title-pattern
+  host rules would silently stop reacting as the user tabs around inside the
+  focused app. A background thread polls `get_active_window_info` on a 500 ms
+  cadence and pushes to `NOTIFY_TX` only when the frontmost (class, title)
+  changes; the debouncer further coalesces any burst. Mirrors the Hyprland
+  `poll_interval_ms` design (§5.4).
 - `start()` calls `ensure_screen_recording_permission` (§4.2), sets up the
   observer, captures the initial frontmost app, then **`CFRunLoopRun()`** blocks
   the calling thread (a background thread — the tray owns main).
@@ -209,7 +236,11 @@ pre-built `owner → title` map from the CG window list, sorts alphabetically.
 ### 5.2 `handle_window_state_change`
 - `Client::get_active()` → if `Some`, report `initial_class` + `title`. If
   `None`, report the empty-window `WindowInfo` (deactivates layers).
-- Updates `last_window_state` (`Arc<Mutex<Option<WindowState>>>`) for dedup.
+- Dedup + update `last_window_state` (`Arc<Mutex<Option<WindowState>>>`)
+  **atomically in one critical section** (mirrors `poll_window_state`): the
+  compare and the update share a single lock acquisition so a concurrent poll-
+  burst thread (spawned from these same handlers) cannot read the same stale
+  state and double-notify. `notify_qmk` runs after the lock is dropped.
 
 ### 5.3 Reconnect backoff (fixes #7)
 - `INITIAL_RECONNECT_MS = 100`, `MAX_RECONNECT_MS = 10_000`, growth `×3`.
@@ -220,10 +251,15 @@ pre-built `owner → title` map from the CG window list, sorts alphabetically.
   (Hyprland genuinely unavailable).
 
 ### 5.4 Polling strategies (two distinct ones)
-- **Optional periodic poll** (`poll_interval_ms > 0`, default 0 = off): a thread
-  polls `Client::get_active()` on the configured cadence and dedups against
-  `last_window_state`. Corrects IPC drift (notably `movetoworkspacesilent`
-  scratchpad dismissals where the `activewindow` event lags).
+- **Optional periodic poll** (`poll_interval_ms`, default 0 = off): a thread
+  polls `Client::get_active()` and dedups against `last_window_state`. Corrects
+  IPC drift (notably `movetoworkspacesilent` scratchpad dismissals where the
+  `activewindow` event lags). **Hot-config (PRD §7):** the interval is re-read
+  from `configured_timing()` on every iteration, so a live edit to
+  `config.toml` takes effect on the next tick — including `0→N` (enable),
+  `N→0` (disable), and `N→M` (cadence change) — with no restart. The thread is
+  always spawned (even when polling is initially off) so a `0→N` edit can start
+  it; while disabled it sleeps on a slow re-check cadence.
 - **Poll burst after layer events** (`spawn_poll_burst`): 5× 100 ms polls after
   a layer open/close, to absorb the timing gap where focus hasn't settled at
   event time. Replaces the former permanent 100 ms poller.
