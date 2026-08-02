@@ -1,0 +1,258 @@
+{
+  "backlog": [
+    {
+      "type": "Phase",
+      "id": "P1",
+      "title": "Bug-Hunt Remediation & Reliability Hardening",
+      "status": "Ready",
+      "description": "Remediate the findings from the QMKonnect end-to-end PRD validation bug-hunt report. The CRITICAL debounce-worker panic (h2.0) is already fixed and tested (notifier.rs:863, regression test at :2407, 344 tests pass). This phase covers: (M1) defense-in-depth verification of the critical fix; (M2) atomic config/rules file persistence (h2.1 #1); (M3) device-lifecycle handshake consistency (h2.1 #4, #5); (M4) Windows toast notification spec compliance (h2.1 #3); (M5) config read-path caching (h2.1 #2); and (M6) changeset-level documentation sync. All findings were validated against the live codebase — see architecture/ for detailed research.",
+      "milestones": [
+        {
+          "type": "Milestone",
+          "id": "P1.M1",
+          "title": "Critical Debounce Race — Assurance & Defense-in-Depth",
+          "status": "Planned",
+          "description": "The CRITICAL debounce-worker panic (h2.0) is already fixed (notifier.rs:863 match-fallback) and regression-tested (notifier.rs:2407). This milestone adds defense-in-depth: mutex-poisoning recovery so the debounce worker and notify_qmk survive a poisoned STATE mutex in debug/test builds and future 'unwind' panic mode. In current release builds (panic='abort') poisoning is impossible (process dies immediately), so this is hardening for robustness, not a new correctness fix.",
+          "tasks": [
+            {
+              "type": "Task",
+              "id": "P1.M1.T1",
+              "title": "Debounce worker mutex-poisoning defense-in-depth",
+              "status": "Planned",
+              "description": "Replace bare .unwrap() on STATE mutex lock/condvar operations in debounce_worker and notify_qmk with poison-recovery closures. Add a test that manually poisons STATE and verifies continued operation. Verify the existing regression test still passes.",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P1.M1.T1.S1",
+                  "title": "Add STATE/COND poison-recovery to debounce_worker and notify_qmk",
+                  "status": "Planned",
+                  "story_points": 1,
+                  "dependencies": [],
+                  "prd_selectors": ["h2.0", "code.0", "code.1"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: The critical debounce panic fix is ALREADY APPLIED at src/core/notifier.rs:863 — `state.pending.take()` now uses `match { Some(pm) => pm, None => break }` instead of `.unwrap()`. The regression test `test_debounce_worker_survives_pending_cleared_mid_wait` exists at notifier.rs:2407 and passes. With `panic = \"abort\"` in Cargo.toml [profile.release], any panic kills the process immediately — mutex poisoning is impossible in release. This subtask adds defense-in-depth for debug/test builds only. See architecture/system_context.md §1.\n2. INPUT: debounce_worker() at notifier.rs:832-896; notify_qmk() at notifier.rs:919-967. STATE static at notifier.rs:805 (Lazy<Mutex<DebounceState>>); COND condvar at notifier.rs:815 (Lazy<Condvar>). Specific .unwrap() sites to harden: STATE.lock().unwrap() at lines 841 (worker outer loop), 927 (notify_qmk); COND.wait(state).unwrap() at line 845; COND.wait_timeout(state, ...).unwrap().0 at line 871.\n3. LOGIC: Replace `STATE.lock().unwrap()` with `STATE.lock().unwrap_or_else(|e| e.into_inner())` at lines 841 and 927. Replace `COND.wait(state).unwrap()` with `COND.wait(state).unwrap_or_else(|e| e.into_inner())` at line 845 (PoisonError<MutexGuard> derefs to the inner guard). Replace `COND.wait_timeout(state, target - now).unwrap().0` with `.unwrap_or_else(|e| e.into_inner()).0` at line 871 (WaitTimeoutResult poison recovery). Do NOT change ANY debouncing logic, timing, or message ordering — only the error-recovery path on mutex/condvar operations. The Condvar PoisonError for wait() derefs to the MutexGuard; for wait_timeout() it derefs to (MutexGuard, WaitTimeoutResult). Add test `test_debounce_worker_survives_poisoned_state`: use std::panic::catch_unwind with a helper that locks STATE, panics (poisoning it), then verify notify_qmk + debounce_worker continue to function correctly after poison recovery. Use the existing MockNotifier infrastructure (notifier.rs:1228+) for send verification.\n4. OUTPUT: Hardened debounce_worker and notify_qmk that survive STATE mutex poisoning. The full test suite (345 tests: 344 existing + 1 new) must pass with `cargo test --bin qmkonnect -- --test-threads=1`.\n5. DOCS: none — internal hardening, no user-facing/config/API surface change."
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "Milestone",
+          "id": "P1.M2",
+          "title": "Atomic Config & Rules File Persistence",
+          "status": "Planned",
+          "description": "Finding h2.1 #1: All config.toml and rules.toml save paths use std::fs::write (truncate-then-write) with no temp-file+rename. A concurrent reader (configured_filter, host_context_for_window, parse_rules — all run per-window-change on the notifier thread) can observe a truncated or empty file mid-save, producing a spurious 'rules.toml invalid' notification or a brief device-filter mismatch. Impact is low (transient, self-healing) but the fix is a simple std-only atomic_write helper (temp file + fs::rename, atomic same-directory). See architecture/config_writes_research.md.",
+          "tasks": [
+            {
+              "type": "Task",
+              "id": "P1.M2.T1",
+              "title": "Implement cross-platform atomic_write helper",
+              "status": "Planned",
+              "description": "Add a std-only atomic_write(path, content) function to src/core/mod.rs that writes to a temp file in the same directory then renames over the target. fs::rename is atomic on the same filesystem on Linux/macOS/Windows. No new dependency needed (avoids promoting tempfile to a top-level dep).",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P1.M2.T1.S1",
+                  "title": "Add atomic_write() to src/core/mod.rs",
+                  "status": "Planned",
+                  "story_points": 1,
+                  "dependencies": [],
+                  "prd_selectors": ["h2.1", "list.0", "para.10"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: Five config/rules write call sites use bare fs::write (truncate-then-write): mod.rs:218 (create_default_config), mod.rs:334 (create_default_rules), tray.rs:878 (Windows settings), tray.rs:1276 (macOS settings), linux_tray.rs:822 (Linux write_config). The ONLY atomic-write helper in the codebase is write_rule_atomic at platforms/linux.rs:336 (Linux-only, uses tempfile::NamedTempFile::persist which is rename under the hood). Readers (parse_config at mod.rs:106, parse_rules at rules.rs:210) have no locking and run per-notification on a different thread. See architecture/config_writes_research.md.\n2. INPUT: render_config_body() at mod.rs:157 (pure renderer → String); render_rules_body() at mod.rs:241 (pure renderer → String). These are the content sources for the writes.\n3. LOGIC: Add a public function `pub fn atomic_write(path: &Path, content: &str) -> Result<(), Box<dyn Error>>` in src/core/mod.rs (next to render_config_body). Implementation: derive a temp filename in the same parent directory as `path` (e.g. `.{stem}.tmp` — the leading dot hides it on Unix). Call `fs::write(&tmp, content)?` to write the full body. Then `fs::rename(&tmp, path)?` to atomically replace. On any error after creating the temp file, best-effort `let _ = fs::remove_file(&tmp);` to clean up. The temp file MUST be in the same directory as the target (same filesystem → rename is atomic). The config/rules files live in a per-user config dir the process already owns (created via fs::create_dir_all), so no permission issues (unlike write_rule_atomic which targets /etc/udev/rules.d). Do NOT add the `tempfile` crate — use std::fs only. Add tests: (a) test_atomic_write_creates_correct_content — write known content, read back, verify equality; (b) test_atomic_write_replaces_existing — pre-create a file with stale content, atomic_write new content, verify new content; (c) test_atomic_write_cleans_up_temp_on_error — mock a failure (e.g. path with invalid characters) and verify no .tmp file lingers. Use the `tempfile` dev-dependency (already available in tests) for temp dirs.\n4. OUTPUT: `atomic_write(path: &Path, content: &str) -> Result<(), Box<dyn Error>>` in src/core/mod.rs, importable by tray.rs and linux_tray.rs. Signature is compatible with replacing existing `fs::write(path, content)?` call sites.\n5. DOCS: none — internal helper, no user-facing/config/API surface change. (The function is internal infrastructure, not exported as a public API.)"
+                }
+              ]
+            },
+            {
+              "type": "Task",
+              "id": "P1.M2.T2",
+              "title": "Migrate all config/rules write call sites to atomic_write",
+              "status": "Planned",
+              "description": "Replace all five fs::write call sites for config.toml and rules.toml with the new atomic_write helper. Each is a trivial one-line replacement (fs::write(path, content)? → atomic_write(path, &content)?).",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P1.M2.T2.S1",
+                  "title": "Update create_default_config + create_default_rules in src/core/mod.rs",
+                  "status": "Planned",
+                  "story_points": 1,
+                  "dependencies": ["P1.M2.T1.S1"],
+                  "prd_selectors": ["h2.1", "list.0"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: create_default_config at mod.rs:218 calls `fs::write(config_path, default_config)` where default_config is the output of render_default_config_template(). create_default_rules at mod.rs:334 calls `fs::write(rules_path, render_rules_body())`. Both are no-ops if the file already exists (guarded by path.exists() checks above). See architecture/config_writes_research.md §1.A/B.\n2. INPUT: atomic_write() from P1.M2.T1.S1. The path variables `config_path` (mod.rs:218) and `rules_path` (mod.rs:334) are PathBuf resolved from get_config_dir(). The content strings are already computed above each call site.\n3. LOGIC: Replace `fs::write(&config_path, &default_config)` at mod.rs:218 with `atomic_write(&config_path, &default_config)?`. Replace `fs::write(&rules_path, render_rules_body())` at mod.rs:334 with `atomic_write(&rules_path, &render_rules_body())?`. Add `use std::path::Path;` if not already imported (atomic_write takes &Path; PathBuf derefs to &Path via &). These functions return Result<(), Box<dyn Error>> so the `?` propagates. No behavior change — the file content and error handling are identical; only the write mechanism changes from truncate-then-write to atomic temp+rename.\n4. OUTPUT: create_default_config and create_default_rules now write atomically. Existing tests (test_config_default_generation etc.) must still pass.\n5. DOCS: none — no user-facing/config/API surface change."
+                },
+                {
+                  "type": "Subtask",
+                  "id": "P1.M2.T2.S2",
+                  "title": "Update tray.rs (Windows + macOS) and linux_tray.rs settings-dialog saves",
+                  "status": "Planned",
+                  "story_points": 1,
+                  "dependencies": ["P1.M2.T1.S1"],
+                  "prd_selectors": ["h2.1", "list.0"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: Three settings-dialog save call sites: tray.rs:878 (Windows show_settings_dialog, #[cfg(windows)]) — `std::fs::write(config_path, config_content)?`; tray.rs:1276 (macOS show_settings_dialog_with_pool, #[cfg(macos)]) — `std::fs::write(config_path, config_content)?`; linux_tray.rs:822 (write_config fn, #[cfg(target_os=linux)]) — `std::fs::write(&path, content)?`. Each follows the pattern: read current config → merge user edits via render_config_body → write. See architecture/config_writes_research.md §1.A.\n2. INPUT: atomic_write() from P1.M2.T1.S1. Each call site has a local `config_path`/`path` (PathBuf) and `config_content`/`content` (String) already computed.\n3. LOGIC: Replace each `std::fs::write(<path>, <content>)?` with `crate::core::atomic_write(<path>, &<content>)?` at tray.rs:878, tray.rs:1276, and linux_tray.rs:822. The functions already return Result so `?` propagates. No logic change — only the write mechanism. Add `use crate::core::atomic_write;` import at the top of tray.rs and linux_tray.rs if not already in scope.\n4. OUTPUT: All settings-dialog saves are now atomic. The concurrent reader race (parse_config/parse_rules observing truncated files) is eliminated.\n5. DOCS: none — no user-facing/config/API surface change."
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "Milestone",
+          "id": "P1.M3",
+          "title": "Device-Lifecycle Handshake Robustness",
+          "status": "Planned",
+          "description": "Findings h2.1 #4 and #5 both concern the capability handshake / device-lifecycle path. #5 (Medium): the poll thread seeds `last = None`, but the startup handshake already set HAS_HANDSHAKED=true. If the first poll tick reads a transient `false`, handshake_action(None, false) returns None (no reset), so a later reconnect short-circuits (SET_OS not re-sent). #4 (Low-Med): perform_handshake_with holds the NOTIFIER mutex during the entire callback sweep (up to 5-8s on a buggy board), blocking all window notifications. See architecture/handshake_race_research.md.",
+          "tasks": [
+            {
+              "type": "Task",
+              "id": "P1.M3.T1",
+              "title": "Fix first-tick device-absent race (#5)",
+              "status": "Planned",
+              "description": "Seed the poll thread's initial `last` state from the startup device connection result so it never starts None-but-already-handshooked. When startup detected a connected device (handshake ran, HAS_HANDSHAKED=true), seed last=Some(true); a transient first-tick false then correctly produces Loss → reset → re-handshake on recovery (re-sending SET_OS).",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P1.M3.T1.S1",
+                  "title": "Add startup_device_state API and seed poll thread initial state",
+                  "status": "Planned",
+                  "story_points": 2,
+                  "dependencies": [],
+                  "prd_selectors": ["h2.1", "list.0", "para.10"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: The race: runners call is_device_connected() + perform_handshake() at startup (runners/macos.rs:31-33, runners/windows.rs:52-54 & 105-107, runners/linux.rs equivalent), setting HAS_HANDSHAKED=true. The poll threads (tray.rs:384-409 for macOS/Windows, linux_tray.rs:261-294 for Linux) seed `let mut last: Option<bool> = None`. On the first tick, if is_device_connected() returns false (transient hidapi hiccup), handshake_action(None, false) == None (no-op) → HAS_HANDSHAKED stays true → later reconnect short-circuits (SET_OS not re-sent). handshake_action at notifier.rs:689: match (prev, now) { (Some(true), false) => Loss, (p, true) if p != Some(true) => Gain, _ => None }. The ONLY reset trigger is (Some(true), false). See architecture/handshake_race_research.md §Finding #5.\n2. INPUT: is_device_connected() at notifier.rs:216. perform_handshake() at notifier.rs:315. Poll thread loops at tray.rs:384 (macOS/Windows, `let mut last: Option<bool> = None`) and linux_tray.rs:261 (`let mut last_device: Option<bool> = None`).\n3. LOGIC: Add a `static STARTUP_DEVICE_CONNECTED: OnceLock<bool> = OnceLock::new();` to notifier.rs (alongside HAS_HANDSHAKED at line 260). Add `pub fn record_startup_device_state() { let _ = STARTUP_DEVICE_CONNECTED.set(is_device_connected()); }` and `pub fn startup_device_was_connected() -> bool { *STARTUP_DEVICE_CONNECTED.get().unwrap_or(&false) }`. Call `crate::core::notifier::record_startup_device_state()` in each runner (macos.rs, windows.rs both paths, linux.rs) immediately BEFORE the `if is_device_connected() { perform_handshake(...) }` block. In each poll thread, change the seed from `None` to `Some(crate::core::notifier::startup_device_was_connected())`: tray.rs:387 `let mut last: Option<bool> = Some(crate::core::notifier::startup_device_was_connected());`; linux_tray.rs:263 `let mut last_device: Option<bool> = Some(crate::core::notifier::startup_device_was_connected());`. This ensures: (a) if startup was connected (seed Some(true)), a transient first-tick false → handshake_action(Some(true), false) == Loss → reset_handshake_state() → next tick true → Gain → perform_handshake() re-sends SET_OS (correct); (b) if startup was not connected (seed Some(false)), first tick true → Gain → handshake (correct). Add test `test_poll_thread_seeded_from_startup`: verify startup_device_was_connected() returns the value set by record_startup_device_state(). Add test `test_handshake_action_loss_on_seeded_true_to_false`: verify handshake_action(Some(true), false) == Loss (already implicitly tested, but document the fix's reliance on this).\n4. OUTPUT: Poll threads start from a consistent state derived from the startup device probe. The first-tick transient-false scenario now correctly resets HAS_HANDSHAKED, ensuring SET_OS is re-sent on the subsequent reconnect. All 345+ tests pass.\n5. DOCS: none — internal lifecycle fix, no user-facing/config/API surface change."
+                }
+              ]
+            },
+            {
+              "type": "Task",
+              "id": "P1.M3.T2",
+              "title": "Reduce handshake NOTIFIER mutex contention (#4)",
+              "status": "Planned",
+              "description": "Restructure perform_handshake_with's callback sweep to release the NOTIFIER mutex between each QueryCallback iteration, allowing window notifications to interleave. The sweep loop currently holds NOTIFIER for up to 5-8s on a buggy board, blocking all notifications.",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P1.M3.T2.S1",
+                  "title": "Release NOTIFIER lock per sweep iteration in perform_handshake_with",
+                  "status": "Planned",
+                  "story_points": 2,
+                  "dependencies": [],
+                  "prd_selectors": ["h2.1", "list.0", "para.10"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: perform_handshake_with (notifier.rs:388) acquires the NOTIFIER mutex (Arc<Mutex<Box<dyn Notifier>>>) at line 402 (`let n = notifier.lock().unwrap()`) and holds it through: QueryInfo (line 407), SetOs (line 420), and the entire QUERY_CALLBACK sweep loop (lines 430-481, bounded by MAX_HOST_CALLBACKS=64 and CALLBACK_SWEEP_DEADLINE=5s). The lock is dropped at line 484 (`drop(n)`). Both window-notification send paths also need NOTIFIER: notify_qmk immediate-send (line 957) and debounce_worker flush (line 889). Each send_command call opens the HID device independently (qmk_notifier::run), so releasing/re-acquiring NOTIFIER between iterations is safe — no shared device handle state. CALLBACK_NAMES is published AFTER the sweep (lines 486-490), so during the sweep a concurrent notification would use stale/empty callback names (acceptable — same as pre-handshake state). HOST_CAPABLE and BOARD_HAS_RULES are set before the sweep starts (in the Info match arm), so they're already visible to concurrent sends. See architecture/handshake_race_research.md §Finding #4.\n2. INPUT: perform_handshake_with at notifier.rs:388-550. NOTIFIER at notifier.rs:764. get_notifier() at notifier.rs:829. The sweep loop variables: sweep_start (Instant), sweep_cap (u8), local (HashMap<String, u8>). CALLBACK_SWEEP_DEADLINE = Duration::from_secs(5) at line 379.\n3. LOGIC: Restructure the sweep to acquire/release NOTIFIER per iteration instead of holding it for the full loop. Keep QueryInfo + SetOs under a single lock acquisition (they are quick and must precede the sweep). Then for the sweep loop (lines 430-481): at the TOP of each iteration, acquire NOTIFIER fresh (`let n = notifier.lock().unwrap();`), execute the single `n.send_command(QueryCallback(i), &filter)`, process the response into `local`, then `drop(n)` at the BOTTOM of the iteration body (before the loop continues). The sweep_start.elapsed() > CALLBACK_SWEEP_DEADLINE check stays at the top of each iteration (before re-locking). This allows a window-notification send to acquire NOTIFIER between any two QueryCallback iterations. IMPORTANT: do NOT change the QueryCallback ordering (still sequential 0, 1, 2, ...) — the firmware processes commands FIFO and callback indices are positional. The `configured_filter()` call before the loop (line 393) must remain outside the loop. Preserve all existing Timeout/Err/Info/non-capable arms unchanged (they already drop(n) early). Update the comment at lines 427-429 to note the lock is now per-iteration. Add test `test_handshake_sweep_releases_lock_between_iterations`: using the MockNotifier (notifier.rs:1228+), configure N callback responses with a small artificial delay, spawn a thread that tries to acquire NOTIFIER during the sweep, and verify it succeeds between iterations (not blocked for the full sweep duration). Also verify CALLBACK_NAMES is fully populated after the sweep completes.\n4. OUTPUT: perform_handshake_with no longer holds NOTIFIER for the full sweep duration. Window notifications can interleave between QueryCallback iterations. CALLBACK_NAMES is still published atomically after the sweep. All existing handshake tests pass.\n5. DOCS: none — internal concurrency improvement, no user-facing/config/API surface change."
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "Milestone",
+          "id": "P1.M4",
+          "title": "Windows Toast Notification Spec Compliance",
+          "status": "Planned",
+          "description": "Finding h2.1 #3: platforms::notify on Windows uses a modal MessageBoxW(HWND(0), MB_OK|MB_ICONERROR) on a detached spawned thread instead of a toast. It steals desktop focus, requires a click to dismiss, and leaks the thread until dismissed. This violates spec/UI.md §2.3 and spec/HOST_RULES.md §7 which mandate a Windows toast. The dedup logic (RULES_INVALID_NOTIFIED, one notification per broken rules.toml state) is correct and must not change. The fix requires: (1) an AppUserModelID (AUMID) registered on the process, (2) a Start Menu shortcut advertising that AUMID (otherwise the toast won't render), and (3) WinRT ToastNotificationManager API access. See architecture/windows_notify_research.md.",
+          "tasks": [
+            {
+              "type": "Task",
+              "id": "P1.M4.T1",
+              "title": "WinRT toast notification infrastructure",
+              "status": "Planned",
+              "description": "Add the AUMID registration and WinRT toast API access needed to send real Windows toast notifications. Two viable approaches: (A) add windows crate features (Win32_UI_Shell for SetCurrentProcessExplicitAppUserModelID + WinRT toast features) — no new crate, more unsafe code; (B) add the tauri-winrt-notification crate — one new dep, handles AUMID/shortcut/toast XML in ~20 lines. Pick the approach that best fits the project's dependency philosophy.",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P1.M4.T1.S1",
+                  "title": "Register process AUMID and add toast API dependencies/features",
+                  "status": "Planned",
+                  "story_points": 1,
+                  "dependencies": [],
+                  "prd_selectors": ["h2.1", "list.0", "para.10", "h2.2"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: A WinRT toast will NOT render unless the process has (a) set its AUMID via SetCurrentProcessExplicitAppUserModelID, and (b) a Start Menu .lnk shortcut exists advertising that AUMID. The windows crate (v0.52.0) is already a dependency (Cargo.toml lines 65-79) but lacks the toast/AUMID features. The AUMID should be a stable string like \"Mulletware.QMKonnect\" matching the Inno installer's AppId. See architecture/windows_notify_research.md §5.\n2. INPUT: Cargo.toml [target.'cfg(target_os = \"windows\")'.dependencies] windows features list (lines 68-79). The app identity: MyAppName=\"QMKonnect\", MyAppPublisher=\"Mulletware\" from packaging/windows/inno/QMKonnet.iss.\n3. LOGIC: CHOOSE ONE APPROACH — (A) std/windows-crate approach: Add features to the existing windows dependency: \"Win32_UI_Shell\" (for SetCurrentProcessExplicitAppUserModelID via IPropertyStore), and the WinRT toast features. In Windows 0.52 these are accessed as windows::UI::Notifications::* and windows::Data::Xml::Dom::* with features \"UI_Notifications\" and \"Data_Xml_Dom\". Add a function `fn set_aumid() ` in src/platforms/mod.rs (#[cfg(windows)]) that calls SetCurrentProcessExplicitAppUserModelID(PCWSTR) with the AUMID \"Mulletware.QMKonnect\". Call it early in main() or the Windows runner startup (before any toast). OR (B) tauri-winrt-notification approach: Add `tauri-winrt-notification = \"0.2\"` to Cargo.toml Windows deps. This crate provides ToastNotification, PowerShell::create_shortcut (creates the Start Menu .lnk with AUMID at runtime), and toast XML building — eliminating the need for Inno changes. Use its register_aumid / create_shortcut on first toast. Whichever approach: the AUMID string MUST be \"Mulletware.QMKonnect\" (matches the Inno AppId stable identity). Add a compile-time test verifying the AUMID constant is non-empty.\n4. OUTPUT: Process AUMID is set at startup on Windows. Toast API (either raw windows crate features or tauri-winrt-notification) is available for P1.M4.T1.S2 to consume.\n5. DOCS: [Mode A] If approach B (new crate), add a one-line note in docs/installation.md §Windows dependencies about the new toast crate. If approach A, none."
+                },
+                {
+                  "type": "Subtask",
+                  "id": "P1.M4.T1.S2",
+                  "title": "Implement WinRT toast replacing MessageBoxW in platforms::notify",
+                  "status": "Planned",
+                  "story_points": 2,
+                  "dependencies": ["P1.M4.T1.S1"],
+                  "prd_selectors": ["h2.1", "list.0", "para.10"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: The Windows arm of platforms::notify is at src/platforms/mod.rs:150-166 (the #[cfg(target_os = \"windows\")] block). It currently spawns a detached thread running MessageBoxW(HWND(0), body, title, MB_OK|MB_ICONERROR). The ONLY caller is host_context_for_window (notifier.rs:1035) via the RULES_INVALID_NOTIFIED dedup (notifier.rs:264). The dedup ensures at most one notification per broken rules.toml state — DO NOT change the dedup or the notification trigger. The Linux (notify-send) and macOS (osascript) arms are correct and must not change. See architecture/windows_notify_research.md §1, §3, §6.\n2. INPUT: The notify(title: &str, body: &str) function signature at mod.rs:126. The AUMID infrastructure from P1.M4.T1.S1. The windows crate features or tauri-winrt-notification from P1.M4.T1.S1.\n3. LOGIC: Replace the entire #[cfg(target_os = \"windows\")] block (mod.rs:150-166) with toast notification code. APPROACH A (windows crate): Build a toast XML payload via XmlDocument::LoadXml with a template like `<toast><visual><binding template=\"ToastText02\"><text id=\"1\">{title}</text><text id=\"2\">{body}</text></binding></visual></toast>`. Create a ToastNotificationManager::CreateToastNotifier(&aumid) (or ToastNotificationManagerCompat), create ToastNotification::Create(xml), call notifier.Show(&toast). All fire-and-forget — toast disappears automatically (no thread, no modal, no click required). APPROACH B (tauri-winrt-notification): `ToastNotification::new(aumid).title(title).text1(body).show().unwrap_or_default()`. Either way: remove the std::thread::spawn wrapper (toasts are inherently non-blocking). Keep the function signature `pub fn notify(title: &str, body: &str)` unchanged. Keep the doc comment's contract (best-effort, fire-and-forget, caller dedupes). Silently ignore toast failures (same as the current `_ = MessageBoxW(...)` pattern). For testing on non-Windows: the function is cfg-gated so no cross-compilation test is needed, but add a #[cfg(windows)] test that builds the toast XML and verifies it parses (without actually showing it, using a mock or dry-run if the API supports it).\n4. OUTPUT: Windows notify() sends a real toast notification. No modal dialog, no thread leak, no focus stealing. Linux/macOS arms unchanged. The dedup and trigger logic unchanged.\n5. DOCS: [Mode A] Update docs/troubleshooting.md — find any section mentioning Windows notifications or 'rules.toml invalid' notifications and update to reflect toast behavior (auto-dismissing, appears in Action Center). If no such section exists, add a brief note under the Windows troubleshooting section."
+                }
+              ]
+            },
+            {
+              "type": "Task",
+              "id": "P1.M4.T2",
+              "title": "Ensure Start Menu shortcut has AUMID for toast rendering",
+              "status": "Planned",
+              "description": "A WinRT toast only renders if a Start Menu .lnk shortcut exists with the AUMID property. The Inno installer already creates a Start Menu shortcut but without the AUMID. Either update the Inno script to set the AUMID property (requires COM IPropertyStore via [Code] section or PowerShell), or use runtime shortcut creation (if P1.M4.T1.S1 chose approach B with tauri-winrt-notification's create_shortcut).",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P1.M4.T2.S1",
+                  "title": "Add AUMID property to Start Menu shortcut in QMKonnect.iss (or runtime fallback)",
+                  "status": "Planned",
+                  "story_points": 1,
+                  "dependencies": ["P1.M4.T1.S1"],
+                  "prd_selectors": ["h2.1", "list.0", "para.10"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: The Inno installer at packaging/windows/inno/QMKonnet.iss creates a Start Menu shortcut in [Icons] (line ~89): `Name: \"{userprograms}\\{#MyAppName}\"; Filename: \"{app}\\{#MyAppExeName}\"; ...` — but WITHOUT an AUMID property. Setting the AUMID on a .lnk requires IPropertyStore::SetValue(PKEY_AppUserModel_ID) which is NOT accessible via Inno's WScript.Shell COM automation. Options: (A) Inno [Code] section with direct COM IShellLinkW + IPropertyStore calls via external helper; (B) post-install PowerShell with Add-Type P/Invoke; (C) runtime creation via the Rust app (if P1.M4.T1.S1 used tauri-winrt-notification's PowerShell::create_shortcut which creates the .lnk with AUMID). If approach C was chosen in P1.M4.T1.S1, this subtask is a no-op (document that the shortcut is created at runtime). See architecture/windows_notify_research.md §5.\n2. INPUT: QMKonnet.iss [Icons] section (line ~89) and [Code] section. The AUMID \"Mulletware.QMKonnect\" from P1.M4.T1.S1.\n3. LOGIC: IF P1.M4.T1.S1 chose approach B (tauri-winrt-notification with runtime shortcut creation): mark this subtask as satisfied by P1.M4.T1.S1's create_shortcut call — add a comment to QMKonnet.iss noting the shortcut AUMID is set at runtime by the app, not the installer. IF approach A (windows crate): add a [Code] procedure `SetShortcutAUMID` in QMKonnet.iss that runs after the [Icons] step. Use Inno's `CreateOleObject('WScript.Shell')` to get the shortcut, then use a post-install [Run] PowerShell command: `powershell -Command \"$s=(New-Object -ComObject WScript.Shell).CreateShortcut('...'); # set AUMID via System.Windows.Shell.PropertyStore P/Invoke\"`. Alternatively, add a minimal PowerShell helper script packaging/windows/inno/set_aumid.ps1 that uses Add-Type to P/Invoke IPropertyStore::SetValue with the System.AppUserModel.ID property key and calls it from [Run] with `Flags: nowait`. Verify the .lnk appears in %APPDATA%\\Microsoft\\Windows\\Start Menu\\Programs\\ with the AUMID set (check via PowerShell `(Get-Item '...').PropertyStore`).\n4. OUTPUT: A Start Menu shortcut with the AUMID property exists after installation, enabling toast rendering.\n5. DOCS: [Mode A] Update packaging/windows/inno/README.md to note the AUMID shortcut requirement for toast notifications."
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "Milestone",
+          "id": "P1.M5",
+          "title": "Config Read-Path Caching",
+          "status": "Planned",
+          "description": "Finding h2.1 #2: config.toml and rules.toml are re-read from disk on every window focus change (hot-config is intentional). Per emitted send, config.toml is read 2x (once for debounce interval via configured_debounce_ms, once for device filter via configured_filter) and rules.toml 1x (via host_context_for_window). No caching exists. On local SSD this is sub-millisecond (negligible behind the HID send), but on slow/networked home directories it adds perceptible latency to the focus thread. An mtime-keyed cache (re-stat, re-read only when the file's modification time changes) preserves hot-config instant-propagation while eliminating redundant reads. See architecture/config_reread_research.md.",
+          "tasks": [
+            {
+              "type": "Task",
+              "id": "P1.M5.T1",
+              "title": "mtime-keyed config/rules cache with double-read coalescing",
+              "status": "Planned",
+              "description": "Implement a thread-safe mtime-keyed cache for config.toml parses (Config struct) that serves both configured_timing() and configured_filter(). The cache re-stats the file on each call and only re-reads+re-parses when the modification time changes. This naturally coalesces the double-read (both callers hit the same cache). The existing test_debounce_ms_is_hot_config test must still pass (it verifies config changes take effect without restart).",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P1.M5.T1.S1",
+                  "title": "Implement mtime-keyed Config cache wrapping parse_config",
+                  "status": "Planned",
+                  "story_points": 2,
+                  "dependencies": [],
+                  "prd_selectors": ["h2.1", "list.0", "para.10"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: configured_filter() at notifier.rs:80 calls parse_config() which does fs::read_to_string + toml::from_str (mod.rs:106). configured_timing() at mod.rs:89 also calls parse_config(). state.interval() at notifier.rs:778 calls configured_debounce_ms() → configured_timing() → parse_config(). So per immediate-send, parse_config() is called 2x (interval + filter). Per debounced-send flush, also 2x (worker calls interval() + configured_filter()). host_context_for_window (notifier.rs:1013) calls parse_rules() (rules.rs:210) once. No caching exists — the comments at notifier.rs:84 and notifier.rs:781 state this is intentional for hot-config. An mtime-keyed cache preserves hot-config: re-stat on every call, re-read+re-parse only when mtime changes. test_debounce_ms_is_hot_config (notifier.rs:1379) asserts config changes take effect mid-flight — this test MUST still pass (it writes a new config.toml and verifies the new interval is picked up). See architecture/config_reread_research.md.\n2. INPUT: parse_config() at mod.rs:106 (returns Result<Config, Box<dyn Error>>). Config struct (defined in mod.rs, has vendor_id/product_id/usage_page/usage/debounce_ms/poll_interval_ms fields). get_config_paths() (platforms/linux.rs:116 for Linux; equivalent in macos.rs/windows.rs) returns Vec<PathBuf> candidates. The config file path is resolved per-call by configured_timing() and configured_filter() via get_config_paths().find(|p| p.exists()).\n3. LOGIC: Add a thread-safe mtime-keyed cache in src/core/mod.rs: `static CONFIG_CACHE: Lazy<Mutex<Option<(SystemTime, Config)>>> = Lazy::new(|| Mutex::new(None));`. Add `fn cached_config() -> Result<Config, Box<dyn Error>>` that: (a) resolves the config path (same get_config_paths().find(|p| p.exists()) as parse_config); (b) stats the file's mtime via path.metadata()?.modified()?; (c) locks CONFIG_CACHE; (d) if cache is Some((cached_mtime, ref cached_config)) and cached_mtime == current_mtime → return cached_config.clone() (Config must derive Clone — check/derive it); (e) else → parse_config() (full read+parse), store (mtime, config) in cache, return config. Replace the parse_config() call INSIDE configured_timing() (mod.rs:89) and configured_filter() (notifier.rs:80) with cached_config(). Keep parse_config() as the underlying uncached function for direct callers (config_parse_error at startup, tests). Add `static RULES_CACHE: Lazy<Mutex<Option<(SystemTime, RuleSet)>>>` similarly wrapping parse_rules for host_context_for_window. RuleSet must derive Clone. Add tests: (a) test_config_cache_returns_same_result_on_unchanged_mtime — write config, call cached_config() twice, verify only one disk read (mock or count); (b) test_config_cache_invalidates_on_mtime_change — write config, cache it, touch the file (update mtime), verify re-read; (c) verify test_debounce_ms_is_hot_config (notifier.rs:1379) still passes — it writes a new config.toml (updating mtime) and verifies the cache picks up the new value. NOTE: on filesystems where mtime resolution is coarse (1s), two rapid writes might not change mtime — handle by also comparing file size as a secondary key (path.metadata()?.len()).\n4. OUTPUT: cached_config() and a rules cache eliminate redundant disk reads while preserving hot-config. configured_timing() and configured_filter() now share a single cache entry per mtime. host_context_for_window benefits from the rules cache. The double-read per send is eliminated. All 345+ tests pass.\n5. DOCS: none — internal performance optimization, no user-facing/config/API surface change."
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "Milestone",
+          "id": "P1.M6",
+          "title": "Sync changeset-level documentation",
+          "status": "Planned",
+          "description": "Final documentation sweep for cross-cutting changes that span the entire bugfix changeset. Per §5 Mode B: individual subtask docs were handled inline (Mode A). This task covers overview-level docs (README.md, docs/troubleshooting.md, docs/configuration.md) that summarize the delta as a whole. It depends on every implementing subtask so it runs last.",
+          "tasks": [
+            {
+              "type": "Task",
+              "id": "P1.M6.T1",
+              "title": "Sync changeset-level documentation",
+              "status": "Planned",
+              "description": "Update README.md, docs/troubleshooting.md, and any overview docs to reflect the Windows toast notification change and any other user-visible behavior changes from the bugfix changeset.",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P1.M6.T1.S1",
+                  "title": "Update README.md and docs/troubleshooting.md for changeset",
+                  "status": "Planned",
+                  "story_points": 1,
+                  "dependencies": ["P1.M1.T1.S1", "P1.M2.T2.S1", "P1.M2.T2.S2", "P1.M3.T1.S1", "P1.M3.T2.S1", "P1.M4.T1.S2", "P1.M4.T2.S1", "P1.M5.T1.S1"],
+                  "prd_selectors": ["h2.0", "h2.1", "h2.2", "para.10"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: This changeset includes one user-visible behavior change: Windows notifications for invalid rules.toml now appear as auto-dismissing toasts (Action Center) instead of modal MessageBoxW dialogs (P1.M4). All other fixes (M1 debounce hardening, M2 atomic writes, M3 device lifecycle, M5 config caching) are internal with no user-facing surface. README.md has a features section. docs/troubleshooting.md has platform-specific sections. docs/configuration.md documents config.toml/rules.toml.\n2. INPUT: All implementing subtasks (P1.M1–P1.M5). The Windows toast change from P1.M4.T1.S2.\n3. LOGIC: Review and update: (a) docs/troubleshooting.md — if there's a Windows section about notifications or rules.toml errors, update to mention toast notifications (auto-dismissing, appear in Action Center, no longer a blocking modal dialog). If the Windows notification behavior was never documented, add a brief note under the Windows troubleshooting section. (b) README.md — if the features list mentions Windows notifications or desktop alerts, verify it's consistent with toast behavior. If not mentioned, no change needed (the feature is minor/edge-case). (c) docs/configuration.md — no change expected (config format is unchanged). (d) Check if REMAINING_ISSUES.md should have items crossed off — items #4 (atomic writes via static udev rule), #5 (static mut races), #7 (Hyprland backoff), #13 (macOS screen recording), #14 (X11 stub) were validated as already fixed per h2.2; if this changeset also resolves any open items, note them. Do NOT create new sections unless the change is significant — err on the side of minimal, accurate updates.\n4. OUTPUT: README.md and docs/troubleshooting.md accurately reflect the post-changeset notification behavior. No stale documentation.\n5. DOCS: This IS the documentation task (Mode B catch-all)."
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

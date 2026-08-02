@@ -1,0 +1,6 @@
+h1.0 Creative Bug-Hunt Report — QMKonnect End-to-End PRD Validation
+ h2.0 🔴 CRITICAL — Debounce worker panic crashes the service (race condition)
+ h2.1 🟡 Lower-severity findings (not fixed — design tradeoffs / polish)
+ h2.2 ✅ Validated as correct / already fixed
+---
+code:2 para:10 list:2
