@@ -451,7 +451,10 @@ fn handle_window_state_change(
     last_window_state: &Arc<Mutex<Option<WindowState>>>,
     verbose: bool,
 ) -> Result<(), Box<dyn Error>> {
-    match Client::get_active() {
+    // Resolve the current window state: Some for an active window, Some(empty)
+    // for an empty workspace, None on error (already logged below). Mirrors how
+    // poll_window_state builds its `current_window_state`.
+    let current_window_state = match Client::get_active() {
         Ok(Some(active_window)) => {
             if verbose {
                 println!(
@@ -461,50 +464,65 @@ fn handle_window_state_change(
                     active_window.title
                 );
             }
-            let window_info = WindowInfo::new(
-                active_window.initial_class.clone(),
-                active_window.title.clone(),
-            );
-
-            // Update last known state
-            {
-                let mut last_state = last_window_state.lock().unwrap();
-                *last_state = Some(WindowState {
-                    app_class: active_window.initial_class.clone(),
-                    title: active_window.title.clone(),
-                });
-            }
-
-            if let Err(e) = notifier::notify_qmk(&window_info, verbose) {
-                eprintln!("Error notifying QMK: {}", e);
-            }
+            Some(WindowState {
+                app_class: active_window.initial_class.clone(),
+                title: active_window.title.clone(),
+            })
         }
         Ok(None) => {
-            // No active window - we're on an empty workspace
+            // No active window - we're on an empty workspace.
             if verbose {
                 println!("Empty workspace detected");
             }
-
-            // Create a special window info for empty workspace
-            let window_info = WindowInfo::new("".to_string(), "".to_string());
-
-            // Update last known state
-            {
-                let mut last_state = last_window_state.lock().unwrap();
-                *last_state = Some(WindowState {
-                    app_class: "".to_string(),
-                    title: "".to_string(),
-                });
-            }
-
-            if let Err(e) = notifier::notify_qmk(&window_info, verbose) {
-                eprintln!("Error notifying QMK: {}", e);
-            }
+            Some(WindowState {
+                app_class: "".to_string(),
+                title: "".to_string(),
+            })
         }
         Err(err) => {
             eprintln!("Failed to get active window info: {}", err);
+            None
+        }
+    };
+
+    let current_window_state = match current_window_state {
+        Some(ws) => ws,
+        // Error already logged; do not touch last_window_state or notify.
+        None => return Ok(()),
+    };
+
+    // Dedup against the last known state (same comparison as poll_window_state):
+    // Hyprland can emit spurious/duplicate `activewindow` events for the
+    // already-focused window (focus-management edge cases; the windowclosed and
+    // workspace handlers route through here too). Without this guard the
+    // identical payload is re-sent to the keyboard. Skip identical states.
+    let window_changed = {
+        let last_state = last_window_state.lock().unwrap();
+        match &*last_state {
+            None => true,
+            Some(last) => {
+                last.app_class != current_window_state.app_class
+                    || last.title != current_window_state.title
+            }
+        }
+    };
+
+    if window_changed {
+        let window_info = WindowInfo::new(
+            current_window_state.app_class.clone(),
+            current_window_state.title.clone(),
+        );
+        // Update last known state (after cloning the fields into window_info).
+        {
+            let mut last_state = last_window_state.lock().unwrap();
+            *last_state = Some(current_window_state);
+        }
+
+        if let Err(e) = notifier::notify_qmk(&window_info, verbose) {
+            eprintln!("Error notifying QMK: {}", e);
         }
     }
+
     Ok(())
 }
 

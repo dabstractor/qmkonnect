@@ -13,7 +13,7 @@ use std::time::Instant;
 // missing field deserializes to `None`, which means "match any" (auto-discovery
 // by the standard QMK raw-HID usage page/usage). Existing config files that set
 // `vendor_id = 0xfeed` keep working (they become `Some(0xfeed)`).
-#[derive(serde::Deserialize, serde::Serialize, Default)]
+#[derive(serde::Deserialize, serde::Serialize)]
 pub struct Config {
     /// USB vendor ID. `None` = match any (auto-discovery by usage page/usage).
     #[serde(default)]
@@ -42,6 +42,30 @@ pub struct Config {
 
 const DEFAULT_DEBOUNCE_MS: u64 = 50;
 const DEFAULT_POLL_INTERVAL_MS: u64 = 0;
+
+impl Default for Config {
+    /// The canonical default config: auto-discovery (every device-identifying
+    /// field `None`) and the runtime timing defaults (`debounce_ms = 50`,
+    /// `poll_interval_ms = 0`). This MUST agree with the serde
+    /// `default = ...` attributes above so that `Config::default()`, an empty
+    /// `config.toml`, and `configured_timing()` all describe the SAME
+    /// zero-config state. Otherwise a Settings-dialog save that falls back to
+    /// `Config::default()` (no existing config) would write a different — and
+    /// surprising — value for a timing field (e.g. `debounce_ms = 0`, silently
+    /// disabling debouncing). A manual impl is used instead of `#[derive(Default)]`
+    /// because the derive would zero-init `debounce_ms`, not match the serde
+    /// default.
+    fn default() -> Self {
+        Self {
+            vendor_id: None,
+            product_id: None,
+            usage_page: None,
+            usage: None,
+            debounce_ms: DEFAULT_DEBOUNCE_MS,
+            poll_interval_ms: DEFAULT_POLL_INTERVAL_MS,
+        }
+    }
+}
 
 fn default_debounce_ms() -> u64 {
     DEFAULT_DEBOUNCE_MS
@@ -88,19 +112,64 @@ pub fn parse_config(config_path: &Path) -> Result<Config, Box<dyn Error>> {
     Ok(config)
 }
 
-/// Render a `config.toml` body for VID/PID values. A line is explicit when the
-/// value is `Some`, or commented out ("auto-discovery") when `None`. Timing and
-/// usage/page options are always shown as commented hints. Used by
-/// `create_default_config` and every platform's settings-dialog write path so
-/// all of them agree on the file format.
-pub fn render_config_body(vendor_id: Option<u16>, product_id: Option<u16>) -> String {
-    let vid_line = match vendor_id {
+/// Render a fully-commented zero-config `config.toml` template. Every field
+/// is shown as a commented-out hint, so a freshly-seeded file parses to
+/// all-default (auto-discovery, default debounce/poll) and behaves identically
+/// to having no config at all. Used by [`create_default_config`] (the `-c`
+/// seeder / first-run seed).
+pub fn render_default_config_template() -> String {
+    "# QMKonnect Configuration\n\
+     #\n\
+     # All fields are OPTIONAL. By default QMKonnect auto-discovers any QMK\n\
+     # keyboard using the standard Raw HID usage page (0xFF60 / 0x61). Set\n\
+     # vendor_id/product_id only to disambiguate among multiple QMK\n\
+     # keyboards, or usage_page/usage to target a board that overrode\n\
+     # RAW_USAGE_PAGE/RAW_USAGE_ID in its firmware.\n\
+     #\n\
+     # usage_page = 0xff60\n\
+     # usage      = 0x61\n\
+     #\n\
+     # Debounce window (ms) for coalescing rapid window-change bursts before\n\
+     # sending to the keyboard. 0 disables debouncing entirely. Default 50.\n\
+     # debounce_ms = 50\n\
+     #\n\
+     # (Hyprland only) periodic active-window poll interval (ms).\n\
+     # 0 disables. Default 0.\n\
+     # poll_interval_ms = 0\n\
+     \n\
+     # vendor_id  = 0xfeed   # unset: auto-discovery\n\
+     # product_id = 0x0000   # unset: auto-discovery\n"
+        .to_string()
+}
+
+/// Render a `config.toml` body that **preserves every field** of `config`.
+/// This is the **save renderer** used by every platform's Settings-dialog write
+/// path: the optional device-identifying fields (`vendor_id`/`product_id`/
+/// `usage_page`/`usage`) are written explicitly when `Some` and as commented-out
+/// "auto-discovery" hints when `None`, and the always-present timing fields
+/// (`debounce_ms`/`poll_interval_ms`) are written with their actual values.
+///
+/// The Settings dialog edits only VID/PID, so each save path reads the current
+/// [`Config`], overlays the dialog's VID/PID, and serializes the full struct via
+/// this function — guaranteeing the user's `usage_page`/`usage`/`debounce_ms`/
+/// `poll_interval_ms` survive a VID/PID edit (previously they were silently
+/// reset to defaults because the save path rendered a VID/PID-only body).
+pub fn render_config_body(config: &Config) -> String {
+    let vid_line = match config.vendor_id {
         Some(v) => format!("vendor_id  = 0x{v:04x}"),
         None => "# vendor_id  = 0xfeed   # unset: auto-discovery".to_string(),
     };
-    let pid_line = match product_id {
+    let pid_line = match config.product_id {
         Some(p) => format!("product_id = 0x{p:04x}"),
         None => "# product_id = 0x0000   # unset: auto-discovery".to_string(),
+    };
+    let usage_page_line = match config.usage_page {
+        Some(u) => format!("usage_page = 0x{u:04x}"),
+        None => "# usage_page = 0xff60".to_string(),
+    };
+    let usage_line = match config.usage {
+        Some(u) => format!("usage      = 0x{u:02x}"),
+        None => "# usage      = 0x61".to_string(),
     };
     format!(
         "# QMKonnect Configuration\n\
@@ -110,20 +179,20 @@ pub fn render_config_body(vendor_id: Option<u16>, product_id: Option<u16>) -> St
          # vendor_id/product_id only to disambiguate among multiple QMK\n\
          # keyboards, or usage_page/usage to target a board that overrode\n\
          # RAW_USAGE_PAGE/RAW_USAGE_ID in its firmware.\n\
-         #\n\
-         # usage_page = 0xff60\n\
-         # usage      = 0x61\n\
-         #\n\
+         {vid_line}\n\
+         {pid_line}\n\
+         {usage_page_line}\n\
+         {usage_line}\n\
+         \n\
          # Debounce window (ms) for coalescing rapid window-change bursts before\n\
          # sending to the keyboard. 0 disables debouncing entirely. Default 50.\n\
-         # debounce_ms = 50\n\
-         #\n\
+         debounce_ms = {debounce}\n\
+         \n\
          # (Hyprland only) periodic active-window poll interval (ms).\n\
          # 0 disables. Default 0.\n\
-         # poll_interval_ms = 0\n\
-         \n\
-         {vid_line}\n\
-         {pid_line}\n"
+         poll_interval_ms = {poll}\n",
+        debounce = config.debounce_ms,
+        poll = config.poll_interval_ms,
     )
 }
 
@@ -143,7 +212,7 @@ pub fn create_default_config(config_path: &Path) -> Result<(), Box<dyn Error>> {
     }
 
     // Zero-config default: every device-identifying field commented out.
-    let default_config = render_config_body(None, None);
+    let default_config = render_default_config_template();
 
     // Write the config file
     fs::write(config_path, default_config)?;
@@ -337,18 +406,65 @@ mod tests {
     }
 
     #[test]
-    fn render_config_body_round_trips() {
-        // Rendering (None, None) must parse back to all-None device IDs.
-        let body = render_config_body(None, None);
+    fn render_default_config_template_round_trips_to_defaults() {
+        // The seeded template is fully commented -> parses to all-default: the
+        // device-identifying fields are None and timing falls back to the serde
+        // defaults. A fresh install behaves identically to having no config.
+        let body = render_default_config_template();
         let cfg: Config = toml::from_str(&body).unwrap();
         assert_eq!(cfg.vendor_id, None);
         assert_eq!(cfg.product_id, None);
+        assert_eq!(cfg.usage_page, None);
+        assert_eq!(cfg.usage, None);
+        assert_eq!(cfg.debounce_ms, DEFAULT_DEBOUNCE_MS);
+        assert_eq!(cfg.poll_interval_ms, DEFAULT_POLL_INTERVAL_MS);
+    }
 
-        // Rendering explicit values must parse back to Some.
-        let body = render_config_body(Some(0xfeed), Some(0x1234));
+    #[test]
+    fn render_config_body_round_trips() {
+        // A default config -> all device IDs None, timing at the defaults.
+        let body = render_config_body(&Config::default());
+        let cfg: Config = toml::from_str(&body).unwrap();
+        assert_eq!(cfg.vendor_id, None);
+        assert_eq!(cfg.product_id, None);
+        assert_eq!(cfg.usage_page, None);
+        assert_eq!(cfg.usage, None);
+        assert_eq!(cfg.debounce_ms, DEFAULT_DEBOUNCE_MS);
+        assert_eq!(cfg.poll_interval_ms, DEFAULT_POLL_INTERVAL_MS);
+
+        // Explicit VID/PID -> parse back to Some (timing still at defaults).
+        let body = render_config_body(&Config {
+            vendor_id: Some(0xfeed),
+            product_id: Some(0x1234),
+            ..Config::default()
+        });
         let cfg: Config = toml::from_str(&body).unwrap();
         assert_eq!(cfg.vendor_id, Some(0xfeed));
         assert_eq!(cfg.product_id, Some(0x1234));
+    }
+
+    #[test]
+    fn render_config_body_preserves_non_vidpid_fields() {
+        // Bug-hunt HIGH finding: saving VID/PID via the Settings dialog must NOT
+        // clobber the user's usage_page/usage/debounce_ms/poll_interval_ms.
+        // render_config_body serializes the FULL config, so every set field
+        // round-trips through a write+re-parse.
+        let original = Config {
+            vendor_id: Some(0x1234),
+            product_id: Some(0x5678),
+            usage_page: Some(0xff61),
+            usage: Some(0x61),
+            debounce_ms: 120,
+            poll_interval_ms: 250,
+        };
+        let body = render_config_body(&original);
+        let parsed: Config = toml::from_str(&body).unwrap();
+        assert_eq!(parsed.vendor_id, original.vendor_id);
+        assert_eq!(parsed.product_id, original.product_id);
+        assert_eq!(parsed.usage_page, original.usage_page);
+        assert_eq!(parsed.usage, original.usage);
+        assert_eq!(parsed.debounce_ms, original.debounce_ms);
+        assert_eq!(parsed.poll_interval_ms, original.poll_interval_ms);
     }
 
     // ========================================================================

@@ -865,8 +865,15 @@ fn show_settings_dialog(config_path: &std::path::Path) -> Result<(), Box<dyn std
         let result = DIALOG_RESULT.lock().unwrap().take();
 
         if let Some((vendor_id, product_id)) = result {
-            // Save to file. None values are written commented out (auto-discovery).
-            let config_content = crate::core::render_config_body(vendor_id, product_id);
+            // Save to file, PRESERVING every non-VID/PID field
+            // (usage_page/usage/debounce_ms/poll_interval_ms): overlay the
+            // dialog's VID/PID onto the config parsed at dialog-open time and
+            // serialize the full struct. Previously this rendered a VID/PID-only
+            // body and silently reset the user's other fields on every save.
+            let mut merged = current_config;
+            merged.vendor_id = vendor_id;
+            merged.product_id = product_id;
+            let config_content = crate::core::render_config_body(&merged);
 
             std::fs::write(config_path, config_content)?;
 
@@ -1256,7 +1263,16 @@ fn show_settings_dialog_with_pool(
 
             match (parse_id_field(&vendor_str), parse_id_field(&product_str)) {
                 (Ok(vendor_id), Ok(product_id)) => {
-                    let config_content = crate::core::render_config_body(vendor_id, product_id);
+                    // PRESERVE every non-VID/PID field
+                    // (usage_page/usage/debounce_ms/poll_interval_ms): overlay
+                    // the dialog's VID/PID onto the config parsed at dialog-open
+                    // time and serialize the full struct. Previously this rendered
+                    // a VID/PID-only body and silently reset the user's other
+                    // fields on every save.
+                    let mut merged = current_config;
+                    merged.vendor_id = vendor_id;
+                    merged.product_id = product_id;
+                    let config_content = crate::core::render_config_body(&merged);
                     std::fs::write(config_path, config_content)?;
                 }
                 (Err(e), _) | (_, Err(e)) => {

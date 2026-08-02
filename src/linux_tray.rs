@@ -795,16 +795,30 @@ fn current_config_hex() -> (String, String) {
     (fmt(v), fmt(p))
 }
 
-/// Persist VID/PID to the config file. `None` means "auto-discovery" (the
-/// field is written commented out). Shares the renderer with `qmkonnect -c` and
-/// the macOS/Windows dialogs so every write path agrees on the format.
+/// Persist VID/PID to the config file, preserving every other field. `None`
+/// means "auto-discovery" (the field is written commented out). Starts from the
+/// current parsed config (wherever it lives among the candidate paths) and
+/// overlays only the dialog's VID/PID, so the user's usage_page/usage/
+/// debounce_ms/poll_interval_ms survive a VID/PID edit (previously they were
+/// silently reset to defaults). Shares the renderer with `qmkonnect -c` and the
+/// macOS/Windows dialogs so every write path agrees on the format.
 fn write_config(
     vendor_id: Option<u16>,
     product_id: Option<u16>,
 ) -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
     let dir = crate::platforms::create_config_dir()?;
     let path = dir.join("config.toml");
-    let content = crate::core::render_config_body(vendor_id, product_id);
+    // Preserve existing non-VID/PID fields: start from the current config
+    // (first existing candidate, mirroring current_config_hex's search) and
+    // overlay only the dialog's VID/PID.
+    let mut config = crate::platforms::get_config_paths()
+        .into_iter()
+        .find(|p| p.exists())
+        .and_then(|p| crate::core::parse_config(&p).ok())
+        .unwrap_or_default();
+    config.vendor_id = vendor_id;
+    config.product_id = product_id;
+    let content = crate::core::render_config_body(&config);
     std::fs::write(&path, content)?;
     Ok(path)
 }

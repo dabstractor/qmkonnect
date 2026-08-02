@@ -453,11 +453,26 @@ fn validate_rules(rules_path: Option<PathBuf>, verbose: bool) -> Result<(), Box<
         println!("Device not connected — callback-name validation skipped (schema-only).");
     }
 
-    let layer_count = rs.rules.iter().filter(|r| r.layer.is_some()).count();
-    let cb_count = rs.rules.iter().filter(|r| r.layer.is_none()).count();
+    // Under the unified [[rule]] schema a single rule may set BOTH `layer` and
+    // callbacks, so count rules-with-a-layer and rules-with-callbacks
+    // independently (plus how many set both) rather than bucketing each rule as
+    // exclusively one or the other. A combined rule would otherwise hide its
+    // callbacks from the count.
+    let total = rs.rules.len();
+    let with_layer = rs.rules.iter().filter(|r| r.layer.is_some()).count();
+    let with_callbacks = rs
+        .rules
+        .iter()
+        .filter(|r| !r.enable.is_empty() || !r.disable.is_empty())
+        .count();
+    let combined = rs
+        .rules
+        .iter()
+        .filter(|r| r.layer.is_some() && (!r.enable.is_empty() || !r.disable.is_empty()))
+        .count();
+    let plural = if total == 1 { "" } else { "s" };
     println!(
-        "rules.toml valid: {} layer rules, {} callback rules.",
-        layer_count, cb_count
+        "rules.toml valid: {total} rule{plural} ({with_layer} with layer, {with_callbacks} with callbacks, {combined} set both)."
     );
     Ok(())
 }
