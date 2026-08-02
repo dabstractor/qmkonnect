@@ -114,7 +114,7 @@
           "type": "Milestone",
           "id": "P1.M3",
           "title": "Device-Lifecycle Handshake Robustness",
-          "status": "Ready",
+          "status": "Complete",
           "description": "Findings h2.1 #4 and #5 both concern the capability handshake / device-lifecycle path. #5 (Medium): the poll thread seeds `last = None`, but the startup handshake already set HAS_HANDSHAKED=true. If the first poll tick reads a transient `false`, handshake_action(None, false) returns None (no reset), so a later reconnect short-circuits (SET_OS not re-sent). #4 (Low-Med): perform_handshake_with holds the NOTIFIER mutex during the entire callback sweep (up to 5-8s on a buggy board), blocking all window notifications. See architecture/handshake_race_research.md.",
           "tasks": [
             {
@@ -144,14 +144,14 @@
               "type": "Task",
               "id": "P1.M3.T2",
               "title": "Reduce handshake NOTIFIER mutex contention (#4)",
-              "status": "Ready",
+              "status": "Complete",
               "description": "Restructure perform_handshake_with's callback sweep to release the NOTIFIER mutex between each QueryCallback iteration, allowing window notifications to interleave. The sweep loop currently holds NOTIFIER for up to 5-8s on a buggy board, blocking all notifications.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M3.T2.S1",
                   "title": "Release NOTIFIER lock per sweep iteration in perform_handshake_with",
-                  "status": "Ready",
+                  "status": "Complete",
                   "story_points": 2,
                   "dependencies": [],
                   "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: perform_handshake_with (notifier.rs:388) acquires the NOTIFIER mutex (Arc<Mutex<Box<dyn Notifier>>>) at line 402 (`let n = notifier.lock().unwrap()`) and holds it through: QueryInfo (line 407), SetOs (line 420), and the entire QUERY_CALLBACK sweep loop (lines 430-481, bounded by MAX_HOST_CALLBACKS=64 and CALLBACK_SWEEP_DEADLINE=5s). The lock is dropped at line 484 (`drop(n)`). Both window-notification send paths also need NOTIFIER: notify_qmk immediate-send (line 957) and debounce_worker flush (line 889). Each send_command call opens the HID device independently (qmk_notifier::run), so releasing/re-acquiring NOTIFIER between iterations is safe — no shared device handle state. CALLBACK_NAMES is published AFTER the sweep (lines 486-490), so during the sweep a concurrent notification would use stale/empty callback names (acceptable — same as pre-handshake state). HOST_CAPABLE and BOARD_HAS_RULES are set before the sweep starts (in the Info match arm), so they're already visible to concurrent sends. See architecture/handshake_race_research.md §Finding #4.\n2. INPUT: perform_handshake_with at notifier.rs:388-550. NOTIFIER at notifier.rs:764. get_notifier() at notifier.rs:829. The sweep loop variables: sweep_start (Instant), sweep_cap (u8), local (HashMap<String, u8>). CALLBACK_SWEEP_DEADLINE = Duration::from_secs(5) at line 379.\n3. LOGIC: Restructure the sweep to acquire/release NOTIFIER per iteration instead of holding it for the full loop. Keep QueryInfo + SetOs under a single lock acquisition (they are quick and must precede the sweep). Then for the sweep loop (lines 430-481): at the TOP of each iteration, acquire NOTIFIER fresh (`let n = notifier.lock().unwrap();`), execute the single `n.send_command(QueryCallback(i), &filter)`, process the response into `local`, then `drop(n)` at the BOTTOM of the iteration body (before the loop continues). The sweep_start.elapsed() > CALLBACK_SWEEP_DEADLINE check stays at the top of each iteration (before re-locking). This allows a window-notification send to acquire NOTIFIER between any two QueryCallback iterations. IMPORTANT: do NOT change the QueryCallback ordering (still sequential 0, 1, 2, ...) — the firmware processes commands FIFO and callback indices are positional. The `configured_filter()` call before the loop (line 393) must remain outside the loop. Preserve all existing Timeout/Err/Info/non-capable arms unchanged (they already drop(n) early). Update the comment at lines 427-429 to note the lock is now per-iteration. Add test `test_handshake_sweep_releases_lock_between_iterations`: using the MockNotifier (notifier.rs:1228+), configure N callback responses with a small artificial delay, spawn a thread that tries to acquire NOTIFIER during the sweep, and verify it succeeds between iterations (not blocked for the full sweep duration). Also verify CALLBACK_NAMES is fully populated after the sweep completes.\n4. OUTPUT: perform_handshake_with no longer holds NOTIFIER for the full sweep duration. Window notifications can interleave between QueryCallback iterations. CALLBACK_NAMES is still published atomically after the sweep. All existing handshake tests pass.\n5. DOCS: none — internal concurrency improvement, no user-facing/config/API surface change.",

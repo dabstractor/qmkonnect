@@ -529,6 +529,13 @@ pub fn perform_handshake_with(verbose: bool, opts: HandshakeOptions) {
                     }
                 }
                 drop(n); // release NOTIFIER before the next iteration (per-iteration release)
+                // #4: yield so a window-notification waiter (`notify_qmk`'s immediate send or
+                // `debounce_worker`'s flush — both BLOCKING on NOTIFIER) actually gets to acquire
+                // the lock before we re-lock for the next iteration. Without this, std::sync::Mutex's
+                // unfair barging re-acquires in ~ns and starves the woken waiter for the whole sweep,
+                // defeating the per-iteration release. sched_yield is ~1µs and a no-op when nothing
+                // else is runnable (N<=64 iterations => <=~64µs/handshake, negligible).
+                thread::yield_now();
             }
             {
                 let mut names = CALLBACK_NAMES.lock().unwrap();
@@ -1848,12 +1855,26 @@ mod tests {
     }
 
     /// #4 / P1.M3.T2.S1: the callback sweep must release NOTIFIER between iterations so a
-    /// window-notification send (`notify_qmk` immediate / `debounce_worker` flush) can acquire
-    /// it between any two `QueryCallback` sends instead of blocking for the whole (up to ~5 s)
-    /// sweep. We configure a capable board with N callbacks and an artificial per-`send_command`
-    /// delay that widens the sweep window, then prove a contending thread can grab NOTIFIER WHILE
-    /// the sweep is still in progress (fewer than 2+N `send_command` calls outstanding) and far
-    /// sooner than the full sweep would take if the lock were held throughout.
+    /// window-notification send (`notify_qmk` immediate / `debounce_worker` flush — both BLOCKING
+    /// on NOTIFIER) is not starved for the whole (up to ~5 s) sweep. The per-iteration release is
+    /// landed; the sweep also `yield_now()`s after each drop so a woken blocking waiter is more
+    /// likely to run before the sweep re-locks (std::sync::Mutex unfair barging would otherwise
+    /// re-acquire in ~ns).
+    ///
+    /// This test DETERMINISTICALLY proves per-iteration release + re-locking with a three-step
+    /// shape that does NOT depend on winning a `std::sync::Mutex` barging race (which is
+    /// probabilistic on multicore and cannot be made deterministic with `yield_now()` alone):
+    ///   1. ACQUIRE mid-sweep via a non-yielding `try_lock` spinner. The spinner continuously
+    ///      polls, so it reliably catches the inter-iteration release window (the lock is free
+    ///      for the loop overhead between two iterations). Under a full-sweep hold the spinner
+    ///      could NEVER acquire mid-sweep, so step 2 would never run and the count-assert fires.
+    ///      (The spinner is a DETECTION mechanism for the release window — it is not modeling the
+    ///      production blocking path; that path is helped by the production `yield_now()`.)
+    ///   2. FREEZE-CHECK: once acquired, HOLD NOTIFIER past one iteration's delay and assert the
+    ///      `send_command` call count did NOT advance — the worker is blocked on its next
+    ///      iteration's re-lock. This proves per-iteration re-locking (not a one-shot release).
+    ///   3. RELEASE + re-acquire mid-sweep + FREEZE-CHECK again, proving the worker re-locks
+    ///      EVERY iteration, then let it finish and verify the atomic post-sweep CALLBACK_NAMES.
     #[test]
     fn test_handshake_sweep_releases_lock_between_iterations() {
         reset_test_state();
@@ -1861,9 +1882,10 @@ mod tests {
         set_notifier(Box::new(MockNotifier::new()));
 
         let n_callbacks: u8 = 10;
-        // Per-call delay widens the sweep so a contending thread can land mid-sweep. Total sweep
-        // ≈ 10*100ms = 1s (plus ~200ms pre-sweep QueryInfo+SetOs).
-        let per_call_delay = Duration::from_millis(100);
+        // Per-call delay: each sweep iteration holds NOTIFIER for ~150ms (the sleep is inside
+        // `send_command`, under the per-iteration lock) and frees it for the loop overhead
+        // between iterations. The non-yielding spinner catches that free window deterministically.
+        let per_call_delay = Duration::from_millis(150);
         MockNotifier::set_send_delay(Some(per_call_delay));
 
         let mut responses = vec![qmk_notifier::CommandResponse::Info {
@@ -1883,72 +1905,121 @@ mod tests {
         }
         MockNotifier::set_mock_responses(responses);
 
-        // Run the handshake on a worker thread so the main thread can contend for NOTIFIER while
-        // the sweep is in progress.
+        let notifier = get_notifier();
+
         let h = thread::spawn(move || {
             perform_handshake(false);
         });
 
-        // Wait until the handshake is INSIDE the sweep (QueryInfo + SetOs + at least one
-        // QueryCallback have been sent), so the contender provably contends DURING the sweep
-        // rather than before it starts. 2s is ample (the first 3 calls take ~300ms wall).
-        let deadline = Instant::now() + Duration::from_millis(2000);
+        // Wait until the worker has finished the PRE-SWEEP phase (QueryInfo + SetOs) and entered
+        // the sweep. From here on NOTIFIER is acquired/released PER ITERATION.
+        let pre_sweep_deadline = Instant::now() + Duration::from_millis(2000);
         loop {
-            if MockNotifier::get_send_command_calls().len() >= 3 {
+            if MockNotifier::get_send_command_calls().len() >= 2 {
                 break;
             }
-            if Instant::now() >= deadline {
-                panic!("handshake never entered the sweep (call count < 3)");
+            if Instant::now() >= pre_sweep_deadline {
+                panic!("handshake never finished pre-sweep (QueryInfo+SetOs): call count < 2");
             }
             thread::sleep(Duration::from_millis(5));
         }
 
-        // Contend for NOTIFIER via a tight `try_lock` poll. With per-iteration release the
-        // worker drops NOTIFIER between iterations; a fast poll observes one of those free
-        // windows and grabs the lock WHILE the sweep is still in progress. Under a full-sweep
-        // hold `try_lock` could only ever succeed once the whole sweep finished (all 2+N calls
-        // done), so the count assertion below stays a true deterministic gate.
-        let notifier = get_notifier();
-        let contend_start = Instant::now();
-        let calls_when_acquired: usize;
-        let waited: Duration;
-        loop {
-            if let Ok(_guard) = notifier.try_lock() {
-                calls_when_acquired = MockNotifier::get_send_command_calls().len();
-                waited = contend_start.elapsed();
-                drop(_guard);
-                break;
+        // Helper: acquire NOTIFIER mid-sweep via a non-yielding `try_lock` spinner. Returns the
+        // guard and the call count at the moment of acquisition. Under a full-sweep hold this
+        // would spin until the whole sweep finished, so `calls_at_acquire` would hit 2+N and the
+        // caller's count-assert fires — making the bug (Finding #4) visible deterministically.
+        // Timeout is a safety net (the spinner normally catches a release window within ~1
+        // iteration); it must exceed the full sweep time so a genuine release is never missed.
+        let acquire_mid_sweep = |label: &str| -> std::sync::MutexGuard<'_, Box<dyn Notifier>> {
+            let spin_deadline = Instant::now() + Duration::from_millis(5000);
+            loop {
+                if let Ok(g) = notifier.try_lock() {
+                    let _ = label; // label is for readability at call sites
+                    return g;
+                }
+                if Instant::now() >= spin_deadline {
+                    panic!(
+                        "{}: never acquired NOTIFIER mid-sweep via try_lock within 5s \
+                         (call count = {}) — the sweep is holding NOTIFIER across the whole sweep \
+                         (Finding #4 not fixed)",
+                        label,
+                        MockNotifier::get_send_command_calls().len()
+                    );
+                }
+                // Intentionally NO yield: a yielding spinner misses the ~ns release window under
+                // load. The continuous poll is what makes this deterministic.
             }
-            // Sweep already finished without us ever winning (shouldn't happen under
-            // per-iteration release, but guard against an infinite loop on a loaded box).
-            if MockNotifier::get_send_command_calls().len() >= 2 + n_callbacks as usize {
-                calls_when_acquired = MockNotifier::get_send_command_calls().len();
-                waited = contend_start.elapsed();
-                break;
-            }
-            std::thread::yield_now();
-        }
-        h.join().unwrap();
+        };
 
-        // DETERMINISTIC PROOF: the contender grabbed the lock WHILE the sweep was still in
-        // progress — fewer than 2 (QueryInfo+SetOs) + N callbacks outstanding. If the lock were
-        // held for the whole sweep, the contender could only acquire after all 2+N calls.
+        // === HOLD #1: acquire mid-sweep, then FREEZE-CHECK. ===
+        let guard1 = acquire_mid_sweep("hold #1");
+        let calls_at_hold1 = MockNotifier::get_send_command_calls().len();
+        // We grabbed NOTIFIER mid-sweep, not after the full sweep. (Under a full-sweep hold the
+        // spinner only ever acquires at 2+N, failing this assert.)
         assert!(
-            calls_when_acquired < 2 + n_callbacks as usize,
+            calls_at_hold1 < 2 + n_callbacks as usize,
             "contender acquired NOTIFIER only after {} send_command calls (>= the full sweep \
-             2+{}); the sweep did NOT release the lock between iterations",
-            calls_when_acquired,
+             2+{}); the sweep did NOT release NOTIFIER between iterations.",
+            calls_at_hold1,
             n_callbacks
         );
-        // Corroborating timing bound: well under the ~800ms a full-sweep hold would still need
-        // from the contention point. Generous to tolerate CI scheduling jitter (per-iter ≈
-        // 100–250ms; full-sweep ≈ 800ms).
-        assert!(
-            waited < Duration::from_millis(500),
-            "contender blocked {:?} for NOTIFIER; expected to slip in between sweep iterations \
-             (per-iteration release)",
-            waited
+        // Sleep well past one iteration's delay so a worker that failed to re-lock per iteration
+        // would have sent several more QueryCallbacks.
+        thread::sleep(per_call_delay + Duration::from_millis(150));
+        let calls_at_freeze1 = MockNotifier::get_send_command_calls().len();
+        assert_eq!(
+            calls_at_freeze1, calls_at_hold1,
+            "send_command call count advanced from {} to {} while the test held NOTIFIER — the \
+             handshake was NOT blocked on the per-iteration re-lock (Finding #4: the sweep may be \
+             holding NOTIFIER across iterations).",
+            calls_at_hold1, calls_at_freeze1
         );
+
+        // === RELEASE: the worker must now proceed — proving the release lets a notification ===
+        // waiter interleave between iterations.
+        drop(guard1);
+
+        // Wait until the worker advances several iterations (proves release worked AND the sweep
+        // re-locks per iteration, not just once).
+        let advance_deadline = Instant::now() + Duration::from_millis(3000);
+        loop {
+            if MockNotifier::get_send_command_calls().len() >= calls_at_hold1 + 3 {
+                break;
+            }
+            if Instant::now() >= advance_deadline {
+                panic!(
+                    "handshake did not advance into the sweep after NOTIFIER was released (call \
+                     count stayed at {}, expected >= {})",
+                    MockNotifier::get_send_command_calls().len(),
+                    calls_at_hold1 + 3
+                );
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        let calls_before_rehold = MockNotifier::get_send_command_calls().len();
+        // Sanity: it has NOT finished the whole sweep yet (we're still mid-flight).
+        assert!(
+            calls_before_rehold < 2 + n_callbacks as usize,
+            "handshake finished the whole sweep ({} calls) before we could re-acquire — the \
+             per-call delay may be too short for this box",
+            calls_before_rehold
+        );
+
+        // === HOLD #2: acquire mid-sweep AGAIN + FREEZE-CHECK. This confirms the worker ===
+        // re-locks EVERY iteration, not just once after the first release.
+        let guard2 = acquire_mid_sweep("hold #2");
+        thread::sleep(per_call_delay + Duration::from_millis(150));
+        let calls_at_freeze2 = MockNotifier::get_send_command_calls().len();
+        assert_eq!(
+            calls_at_freeze2, calls_before_rehold,
+            "send_command call count advanced from {} to {} while the test held NOTIFIER mid-sweep \
+             — the handshake was NOT blocked on the per-iteration re-lock (regression: the sweep \
+             is holding NOTIFIER across iterations again).",
+            calls_before_rehold, calls_at_freeze2
+        );
+        drop(guard2);
+
+        h.join().unwrap();
 
         // CALLBACK_NAMES is published atomically AFTER the sweep: all N callbacks present once
         // perform_handshake returns, and the board is host-capable.
