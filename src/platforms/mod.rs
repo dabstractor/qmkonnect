@@ -147,8 +147,11 @@ const _APP_AUMID_NONEMPTY: () = {
 /// COM init needed. Idempotent; failure is non-fatal (toasts just won't render).
 #[cfg(target_os = "windows")]
 pub fn set_aumid() {
-    use windows::core::PCWSTR;
-    use windows::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID;
+    // NOTE: qualify the extern crate as `::windows` — this module declares a
+    // `mod windows;` submodule (the platform impl in windows.rs), so a bare
+    // `windows::…` resolves to the SUBMODULE, not the windows-rs crate.
+    use ::windows::core::PCWSTR;
+    use ::windows::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID;
     // PCWSTR wants a NUL-terminated UTF-16 buffer; keep the Vec alive across the call.
     let wide: Vec<u16> = APP_AUMID
         .encode_utf16()
@@ -215,10 +218,11 @@ fn show_toast(title: &str, body: &str) {
     let title = title.to_string();
     let body = body.to_string();
     std::thread::spawn(move || {
-        use windows::core::HSTRING;
-        use windows::Data::Xml::Dom::XmlDocument;
-        use windows::UI::Notifications::{ToastNotification, ToastNotificationManager};
-        use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED};
+        // `::windows` = the windows-rs crate (bare `windows` here is the submodule).
+        use ::windows::core::HSTRING;
+        use ::windows::Data::Xml::Dom::XmlDocument;
+        use ::windows::UI::Notifications::{ToastNotification, ToastNotificationManager};
+        use ::windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED};
 
         // 1. COM apartment on THIS thread (STA). Required for every WinRT call
         //    below; `let _ =` because S_FALSE (already-init) is benign and
@@ -230,7 +234,7 @@ fn show_toast(title: &str, body: &str) {
 
         // 2. Fire-and-forget: build XML → load → wrap → notifier → show. Log a
         //    warn on failure (matches set_aumid's posture; init_logging ran first).
-        let res = (|| -> windows::core::Result<()> {
+        let res = (|| -> ::windows::core::Result<()> {
             let xml = build_toast_xml(&title, &body);
             let doc = XmlDocument::new()?;
             doc.LoadXml(&HSTRING::from(xml.as_str()))?;
@@ -393,9 +397,10 @@ mod toast_tests {
     /// loop).
     #[test]
     fn toast_xml_is_well_formed_and_escapes_special_chars() {
-        use windows::core::HSTRING;
-        use windows::Data::Xml::Dom::XmlDocument;
-        use windows::Win32::System::Com::{CoInitializeEx, COINIT_APARTMENTTHREADED};
+        // `::windows` = the windows-rs crate (bare `windows` here is the submodule).
+        use ::windows::core::HSTRING;
+        use ::windows::Data::Xml::Dom::XmlDocument;
+        use ::windows::Win32::System::Com::{CoInitializeEx, COINIT_APARTMENTTHREADED};
 
         // XmlDocument::new() is a WinRT activation → needs COM on this test
         // thread (cargo test may run the test on a worker thread with no
