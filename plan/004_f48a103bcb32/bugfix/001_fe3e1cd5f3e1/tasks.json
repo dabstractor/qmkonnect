@@ -169,14 +169,14 @@
           "type": "Milestone",
           "id": "P1.M4",
           "title": "Windows Toast Notification Spec Compliance",
-          "status": "Ready",
+          "status": "Complete",
           "description": "Finding h2.1 #3: platforms::notify on Windows uses a modal MessageBoxW(HWND(0), MB_OK|MB_ICONERROR) on a detached spawned thread instead of a toast. It steals desktop focus, requires a click to dismiss, and leaks the thread until dismissed. This violates spec/UI.md §2.3 and spec/HOST_RULES.md §7 which mandate a Windows toast. The dedup logic (RULES_INVALID_NOTIFIED, one notification per broken rules.toml state) is correct and must not change. The fix requires: (1) an AppUserModelID (AUMID) registered on the process, (2) a Start Menu shortcut advertising that AUMID (otherwise the toast won't render), and (3) WinRT ToastNotificationManager API access. See architecture/windows_notify_research.md.",
           "tasks": [
             {
               "type": "Task",
               "id": "P1.M4.T1",
               "title": "WinRT toast notification infrastructure",
-              "status": "Ready",
+              "status": "Complete",
               "description": "Add the AUMID registration and WinRT toast API access needed to send real Windows toast notifications. Two viable approaches: (A) add windows crate features (Win32_UI_Shell for SetCurrentProcessExplicitAppUserModelID + WinRT toast features) — no new crate, more unsafe code; (B) add the tauri-winrt-notification crate — one new dep, handles AUMID/shortcut/toast XML in ~20 lines. Pick the approach that best fits the project's dependency philosophy.",
               "subtasks": [
                 {
@@ -198,7 +198,7 @@
                   "type": "Subtask",
                   "id": "P1.M4.T1.S2",
                   "title": "Implement WinRT toast replacing MessageBoxW in platforms::notify",
-                  "status": "Ready",
+                  "status": "Complete",
                   "story_points": 2,
                   "dependencies": [
                     "P1.M4.T1.S1"
