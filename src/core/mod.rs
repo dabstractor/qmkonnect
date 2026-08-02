@@ -5,15 +5,22 @@ pub mod types;
 
 use std::error::Error;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::time::Instant;
+use std::time::SystemTime;
+use once_cell::sync::Lazy;
+#[cfg(test)]
+use std::sync::atomic::Ordering;
+#[cfg(test)]
+use std::sync::atomic::AtomicU64;
 
 // Define the Config struct. VID/PID (and usage page/usage) are OPTIONAL: a
 // missing field deserializes to `None`, which means "match any" (auto-discovery
 // by the standard QMK raw-HID usage page/usage). Existing config files that set
 // `vendor_id = 0xfeed` keep working (they become `Some(0xfeed)`).
-#[derive(serde::Deserialize, serde::Serialize)]
+#[derive(serde::Deserialize, serde::Serialize, Clone)]
 pub struct Config {
     /// USB vendor ID. `None` = match any (auto-discovery by usage page/usage).
     #[serde(default)]
@@ -90,15 +97,113 @@ pub fn configured_debounce_ms() -> u64 {
     configured_timing().0
 }
 
+/// mtime+size-keyed cache for the hot-config `config.toml` read. Re-stats every
+/// call (cheap `stat()`); re-reads+re-parses only when the resolved file's
+/// (path, mtime, size) change. Preserves hot-config: editing `config.toml`
+/// invalidates on the NEXT call (~instant — no TTL delay). Keyed on path too,
+/// so a relocated candidate never serves a stale entry from a different file.
+/// Shared by `configured_timing` + `configured_filter` so the per-send
+/// double-read is coalesced to one parse per mtime.
+static CONFIG_CACHE: Lazy<Mutex<Option<(PathBuf, SystemTime, u64, Config)>>> =
+    Lazy::new(|| Mutex::new(None));
+
+/// mtime+size-keyed cache for the hot-config `rules.toml` read
+/// (`host_context_for_window`). Same contract as [`CONFIG_CACHE`].
+/// [`crate::core::rules::parse_rules`] stays uncached for its other callers
+/// (`validate_rules_callback_names`, `--validate-rules`, tests).
+static RULES_CACHE: Lazy<Mutex<Option<(PathBuf, SystemTime, u64, crate::core::rules::RuleSet)>>> =
+    Lazy::new(|| Mutex::new(None));
+
+// Test-only observables: incremented ONLY on a cache miss (the fall-through to
+// parse_config/parse_rules). Tests snapshot the delta to prove HIT/MISS —
+// ns-mtime Linux can't fake a hit via mtime/size control, so the counter is the
+// only rigorous, platform-independent observable.
+#[cfg(test)]
+static CONFIG_CACHE_MISSES: AtomicU64 = AtomicU64::new(0);
+#[cfg(test)]
+static RULES_CACHE_MISSES: AtomicU64 = AtomicU64::new(0);
+
+/// Hermetic, testable core: cache `config.toml` at `path` by
+/// (path, mtime, size). On a cache HIT returns the stored [`Config`] clone (no
+/// disk read, no parse). On a MISS calls [`parse_config`] and stores the
+/// result. Parse ERRORS ARE NOT CACHED (a later valid edit must re-read).
+/// Mirror of the `parse_config` / `config_parse_error_at` `_at` convention.
+///
+/// Poison recovery uses the `unwrap_or_else(|e| e.into_inner())` idiom
+/// (P1.M1.T1.S1) — a panic in one caller must not poison the cache for the
+/// whole process.
+pub fn cached_config_at(path: &Path) -> Result<Config, Box<dyn Error>> {
+    let meta = path.metadata()?;
+    let mtime = meta.modified()?;
+    let size = meta.len();
+    {
+        let cache = CONFIG_CACHE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if let Some((cp, cm, cs, cfg)) = cache.as_ref() {
+            if cp == path && *cm == mtime && *cs == size {
+                return Ok(cfg.clone());
+            }
+        }
+    }
+    #[cfg(test)]
+    CONFIG_CACHE_MISSES.fetch_add(1, Ordering::SeqCst);
+    let cfg = parse_config(path)?; // errors NOT cached (re-read on next call)
+    *CONFIG_CACHE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) = Some((path.to_path_buf(), mtime, size, cfg.clone()));
+    Ok(cfg)
+}
+
+/// Hermetic, testable core for `rules.toml` — identical shape to
+/// [`cached_config_at`], wrapping [`crate::core::rules::parse_rules`].
+pub fn cached_rules_at(path: &Path) -> Result<crate::core::rules::RuleSet, Box<dyn Error>> {
+    let meta = path.metadata()?;
+    let mtime = meta.modified()?;
+    let size = meta.len();
+    {
+        let cache = RULES_CACHE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if let Some((cp, cm, cs, rs)) = cache.as_ref() {
+            if cp == path && *cm == mtime && *cs == size {
+                return Ok(rs.clone());
+            }
+        }
+    }
+    #[cfg(test)]
+    RULES_CACHE_MISSES.fetch_add(1, Ordering::SeqCst);
+    let rs = crate::core::rules::parse_rules(path)?; // errors NOT cached
+    *RULES_CACHE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) =
+        Some((path.to_path_buf(), mtime, size, rs.clone()));
+    Ok(rs)
+}
+
+/// Resolve the first existing `config.toml` candidate and return it via the
+/// mtime cache. When NO candidate exists, returns [`Config::default`] WITHOUT
+/// caching (cheap; and avoids serving a stale default after the user later
+/// creates the file). Errors from [`cached_config_at`] propagate (callers
+/// swallow via `.ok()` — same as today's `parse_config` usage).
+pub fn cached_config() -> Result<Config, Box<dyn Error>> {
+    match crate::platforms::get_config_paths()
+        .into_iter()
+        .find(|p| p.exists())
+    {
+        Some(p) => cached_config_at(&p),
+        None => Ok(Config::default()),
+    }
+}
+
 /// Read both timing knobs (debounce ms, poll interval ms) from the user's
 /// config, falling back to defaults when unset or when no config exists. Both
 /// default when the file is missing, so a fresh zero-config install behaves
-/// correctly.
+/// correctly. Reads via [`cached_config`] (mtime-keyed): an edit invalidates
+/// on the next call (~instant, no TTL) so hot-config is preserved.
 pub fn configured_timing() -> (u64, u64) {
-    crate::platforms::get_config_paths()
-        .into_iter()
-        .find(|p| p.exists())
-        .and_then(|p| parse_config(&p).ok())
+    cached_config()
+        .ok()
         .map(|cfg| (cfg.debounce_ms, cfg.poll_interval_ms))
         .unwrap_or((DEFAULT_DEBOUNCE_MS, DEFAULT_POLL_INTERVAL_MS))
 }
@@ -654,5 +759,113 @@ mod tests {
             !lingering_tmp,
             "no .tmp file should linger after atomic_write fails mid-write"
         );
+    }
+
+    // ========================================================================
+    // P1.M5.T1.S1 — mtime+size-keyed Config/Rules cache (cached_config[_at],
+    // cached_rules_at). The cache re-stats every call but only re-reads+re-parses
+    // when (path, mtime, size) change. Hot-config preserved (no TTL).
+    // ========================================================================
+
+    #[test]
+    fn test_config_cache_hit_avoids_reparse() {
+        // A cache HIT provably skips re-parse: on Linux ext4 mtime has NANOSECOND
+        // resolution so two rapid writes always differ — you CANNOT force a hit
+        // by controlling mtime. The only rigorous, platform-independent observable
+        // is the test-only CONFIG_CACHE_MISSES counter, incremented ONLY on the
+        // fall-through to parse_config. Delta 0 across two unchanged calls = HIT.
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "debounce_ms = 100\npoll_interval_ms = 7\n").unwrap();
+
+        let before = CONFIG_CACHE_MISSES.load(Ordering::SeqCst);
+        let c1 = cached_config_at(&path).unwrap();
+        assert_eq!(c1.debounce_ms, 100);
+        assert_eq!(c1.poll_interval_ms, 7);
+        let after_first = CONFIG_CACHE_MISSES.load(Ordering::SeqCst);
+        assert_eq!(
+            after_first - before,
+            1,
+            "first call is a MISS -> parse_config runs once"
+        );
+
+        // Second call, file unchanged -> cache HIT -> parse_config must NOT run.
+        let c2 = cached_config_at(&path).unwrap();
+        assert_eq!(c2.debounce_ms, 100, "HIT returns the same parsed value");
+        let after_second = CONFIG_CACHE_MISSES.load(Ordering::SeqCst);
+        assert_eq!(
+            after_second - after_first,
+            0,
+            "second call is a HIT -> no re-parse (mtime+size unchanged)"
+        );
+    }
+
+    #[test]
+    fn test_config_cache_invalidates_on_change() {
+        // Hot-config is preserved: a change invalidates on the next call. Verified
+        // for BOTH a size change AND an mtime-only change (same byte length), using
+        // std::fs::FileTimes to advance mtime deterministically (no flaky sleep).
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "debounce_ms = 100\n").unwrap();
+        let _ = cached_config_at(&path).unwrap(); // prime the cache
+        let before = CONFIG_CACHE_MISSES.load(Ordering::SeqCst);
+
+        // (a) SIZE change: longer value -> different cache key -> re-parse.
+        std::fs::write(&path, "debounce_ms = 2000\n").unwrap();
+        let c = cached_config_at(&path).unwrap();
+        assert_eq!(c.debounce_ms, 2000, "size change must invalidate");
+        let after_size = CONFIG_CACHE_MISSES.load(Ordering::SeqCst);
+        assert_eq!(after_size - before, 1, "size change -> MISS (re-parse)");
+
+        // (b) MTIME-only change: same byte length ("100" -> "999"), advance mtime
+        // deterministically via FileTimes (stable 1.75; MSRV 1.88 satisfies).
+        std::fs::write(&path, "debounce_ms = 999\n").unwrap();
+        let f = std::fs::File::options().write(true).open(&path).unwrap();
+        let times = std::fs::FileTimes::new()
+            .set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(2));
+        f.set_times(times).unwrap();
+        drop(f);
+        let c = cached_config_at(&path).unwrap();
+        assert_eq!(c.debounce_ms, 999, "mtime change (same size) must invalidate");
+        let after_mtime = CONFIG_CACHE_MISSES.load(Ordering::SeqCst);
+        assert_eq!(
+            after_mtime - after_size,
+            1,
+            "mtime change -> MISS (re-parse) — hot-config preserved"
+        );
+    }
+
+    #[test]
+    fn test_rules_cache_hit_and_invalidation_and_no_error_caching() {
+        // Parallel to the two config tests, for cached_rules_at. Also asserts the
+        // don't-cache-failures rule: a malformed file returns Err WITHOUT storing,
+        // so fixing it re-reads cleanly (host_context_for_window's re-arm logic
+        // depends on this).
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("rules.toml");
+        std::fs::write(&path, "[[rule]]\nmatch = \"x\"\nlayer = 1\n").unwrap();
+
+        // HIT: second call with unchanged file skips re-parse.
+        let before = RULES_CACHE_MISSES.load(Ordering::SeqCst);
+        let _ = cached_rules_at(&path).unwrap();
+        let _ = cached_rules_at(&path).unwrap();
+        let after_two = RULES_CACHE_MISSES.load(Ordering::SeqCst);
+        assert_eq!(after_two - before, 1, "first=MISS, second=HIT -> exactly one parse");
+
+        // INVALIDATE: different size -> re-parse, and the new value is picked up.
+        std::fs::write(&path, "[[rule]]\nmatch = \"y\"\nlayer = 22\n").unwrap();
+        let rs = cached_rules_at(&path).unwrap();
+        let after_three = RULES_CACHE_MISSES.load(Ordering::SeqCst);
+        assert_eq!(after_three - after_two, 1, "size change -> MISS");
+        assert_eq!(rs.rules[0].layer, Some(22), "invalidation picked up the new value");
+
+        // NO ERROR CACHING: a malformed file returns Err and is NOT stored, so
+        // fixing it re-reads.
+        std::fs::write(&path, "this is = = not valid toml\n").unwrap();
+        assert!(cached_rules_at(&path).is_err(), "malformed -> Err");
+        std::fs::write(&path, "[[rule]]\nmatch = \"z\"\nlayer = 3\n").unwrap();
+        let rs = cached_rules_at(&path).expect("error was NOT cached -> fixed file re-reads cleanly");
+        assert_eq!(rs.rules[0].layer, Some(3));
     }
 }

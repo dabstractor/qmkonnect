@@ -73,15 +73,15 @@ pub struct DeviceFilter {
 }
 
 /// Resolve the device match criteria from the user's config file, falling back
-/// to QMK's raw-HID defaults. VID/PID default to `None` (auto-discovery) when
-/// unset; usage page/usage default to `0xFF60`/`0x61` (overridable for boards
-/// that changed `RAW_USAGE_PAGE`/`RAW_USAGE_ID` in firmware). Read per-call so
-/// config changes take effect without restarting the service.
+/// to QMK's raw-HID defaults. VID/PID are optional (`None` = auto-discovery)
+/// when unset; usage page/usage default to `0xFF60`/`0x61` (overridable for
+/// boards that changed `RAW_USAGE_PAGE`/`RAW_USAGE_ID` in firmware). Read via
+/// `cached_config()` (mtime-keyed cache in core): re-stats every call,
+/// re-reads+re-parses only when the file's mtime/size change — so config edits
+/// still take effect on the next call (hot-config), without the redundant
+/// per-call disk read.
 fn configured_filter() -> DeviceFilter {
-    let cfg = crate::platforms::get_config_paths()
-        .into_iter()
-        .find(|p| p.exists())
-        .and_then(|p| crate::core::parse_config(&p).ok());
+    let cfg = crate::core::cached_config().ok();
     DeviceFilter {
         vendor_id: cfg.as_ref().and_then(|c| c.vendor_id),
         product_id: cfg.as_ref().and_then(|c| c.product_id),
@@ -827,11 +827,16 @@ struct PendingMessage {
 // `pending` messages, replacing the former "spawn a thread per burst" scheme.
 //
 // `debounce_ms` is hot config (PRD §8, ARCHITECTURE.md §10 #4, CONFIG.md §1.2):
-// it is re-read from `configured_debounce_ms()` on every notification, so it is
-// intentionally NOT cached here — editing `config.toml` takes effect within
-// ~3 s with no restart. (`poll_interval_ms` is hot too, but it lives in the
-// Hyprland poll thread, not here — that thread re-reads `configured_timing()`
-// on every iteration; see `hyprland.rs`.)
+// it is re-read from `configured_debounce_ms()` on every notification, so it
+// is intentionally re-resolved here each call — editing `config.toml` takes
+// effect within ~3 s with no restart. The underlying value IS now mtime-cached
+// in `cached_config()` (shared by `configured_timing` + `configured_filter`,
+// coalescing the per-send double-read), but `interval()` still re-resolves the
+// effective window each call: an mtime change invalidates the cache on the
+// next call (~instant, not via a TTL delay), so hot-config is preserved.
+// (`poll_interval_ms` is hot too, but it lives in the Hyprland poll thread, not
+// here — that thread re-reads `configured_timing()` on every iteration; see
+// `hyprland.rs`.)
 struct DebounceState {
     /// `None` until the first notification has actually been sent.
     last_sent_time: Option<Instant>,
@@ -1069,7 +1074,7 @@ fn host_context_for_window(
     let path = crate::core::rules::get_rules_paths()
         .into_iter()
         .find(|p| p.exists())?; // no rules.toml -> None -> string-only
-    let rules = match crate::core::rules::parse_rules(&path) {
+    let rules = match crate::core::cached_rules_at(&path) {
         Ok(r) => {
             // A good parse re-arms the malformed-file notification (so a later
             // breakage notifies again). HOST_RULES.md §7.

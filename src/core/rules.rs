@@ -70,7 +70,7 @@ use serde::Deserialize;
 /// enable = ["vim_lazy", "disable_vim"]
 /// disable_firmware_config = true           # for this window, skip the string -> board can't match
 /// ```
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Deserialize, Default, Clone)]
 pub struct RuleSet {
     /// Global host defaults applied to every rule that does not override them.
     #[serde(default)]
@@ -94,7 +94,7 @@ pub struct RuleSet {
 /// [host]
 /// disable_firmware_config = false   # global default: false = stack (board runs), true = replace
 /// ```
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, Clone)]
 pub struct HostDefaults {
     /// Global default for whether the board runs its own config (`false` = stack)
     /// or is replaced by the host layer (`true`). Per-rule
@@ -135,7 +135,7 @@ pub struct HostDefaults {
 /// enable = ["vim_lazy", "disable_vim"]      # run on focus-in
 /// disable = ["vim_lazy"]                    # optional: force-off override
 /// ```
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct Rule {
     /// Window pattern (TOML key `match`). A bare string → [`Pattern::Single`]
     /// (class-only); a 2-element array → [`Pattern::Parts`] (class + title, == firmware `WT()`).

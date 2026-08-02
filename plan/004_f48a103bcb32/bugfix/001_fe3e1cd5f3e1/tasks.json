@@ -4,7 +4,7 @@
       "type": "Phase",
       "id": "P1",
       "title": "Bug-Hunt Remediation & Reliability Hardening",
-      "status": "Planned",
+      "status": "Researching",
       "description": "Remediate the findings from the QMKonnect end-to-end PRD validation bug-hunt report. The CRITICAL debounce-worker panic (h2.0) is already fixed and tested (notifier.rs:863, regression test at :2407, 344 tests pass). This phase covers: (M1) defense-in-depth verification of the critical fix; (M2) atomic config/rules file persistence (h2.1 #1); (M3) device-lifecycle handshake consistency (h2.1 #4, #5); (M4) Windows toast notification spec compliance (h2.1 #3); (M5) config read-path caching (h2.1 #2); and (M6) changeset-level documentation sync. All findings were validated against the live codebase — see architecture/ for detailed research.",
       "milestones": [
         {
@@ -243,21 +243,21 @@
           "type": "Milestone",
           "id": "P1.M5",
           "title": "Config Read-Path Caching",
-          "status": "Researching",
+          "status": "Complete",
           "description": "Finding h2.1 #2: config.toml and rules.toml are re-read from disk on every window focus change (hot-config is intentional). Per emitted send, config.toml is read 2x (once for debounce interval via configured_debounce_ms, once for device filter via configured_filter) and rules.toml 1x (via host_context_for_window). No caching exists. On local SSD this is sub-millisecond (negligible behind the HID send), but on slow/networked home directories it adds perceptible latency to the focus thread. An mtime-keyed cache (re-stat, re-read only when the file's modification time changes) preserves hot-config instant-propagation while eliminating redundant reads. See architecture/config_reread_research.md.",
           "tasks": [
             {
               "type": "Task",
               "id": "P1.M5.T1",
               "title": "mtime-keyed config/rules cache with double-read coalescing",
-              "status": "Researching",
+              "status": "Complete",
               "description": "Implement a thread-safe mtime-keyed cache for config.toml parses (Config struct) that serves both configured_timing() and configured_filter(). The cache re-stats the file on each call and only re-reads+re-parses when the modification time changes. This naturally coalesces the double-read (both callers hit the same cache). The existing test_debounce_ms_is_hot_config test must still pass (it verifies config changes take effect without restart).",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M5.T1.S1",
                   "title": "Implement mtime-keyed Config cache wrapping parse_config",
-                  "status": "Researching",
+                  "status": "Complete",
                   "story_points": 2,
                   "dependencies": [],
                   "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: configured_filter() at notifier.rs:80 calls parse_config() which does fs::read_to_string + toml::from_str (mod.rs:106). configured_timing() at mod.rs:89 also calls parse_config(). state.interval() at notifier.rs:778 calls configured_debounce_ms() → configured_timing() → parse_config(). So per immediate-send, parse_config() is called 2x (interval + filter). Per debounced-send flush, also 2x (worker calls interval() + configured_filter()). host_context_for_window (notifier.rs:1013) calls parse_rules() (rules.rs:210) once. No caching exists — the comments at notifier.rs:84 and notifier.rs:781 state this is intentional for hot-config. An mtime-keyed cache preserves hot-config: re-stat on every call, re-read+re-parse only when mtime changes. test_debounce_ms_is_hot_config (notifier.rs:1379) asserts config changes take effect mid-flight — this test MUST still pass (it writes a new config.toml and verifies the new interval is picked up). See architecture/config_reread_research.md.\n2. INPUT: parse_config() at mod.rs:106 (returns Result<Config, Box<dyn Error>>). Config struct (defined in mod.rs, has vendor_id/product_id/usage_page/usage/debounce_ms/poll_interval_ms fields). get_config_paths() (platforms/linux.rs:116 for Linux; equivalent in macos.rs/windows.rs) returns Vec<PathBuf> candidates. The config file path is resolved per-call by configured_timing() and configured_filter() via get_config_paths().find(|p| p.exists()).\n3. LOGIC: Add a thread-safe mtime-keyed cache in src/core/mod.rs: `static CONFIG_CACHE: Lazy<Mutex<Option<(SystemTime, Config)>>> = Lazy::new(|| Mutex::new(None));`. Add `fn cached_config() -> Result<Config, Box<dyn Error>>` that: (a) resolves the config path (same get_config_paths().find(|p| p.exists()) as parse_config); (b) stats the file's mtime via path.metadata()?.modified()?; (c) locks CONFIG_CACHE; (d) if cache is Some((cached_mtime, ref cached_config)) and cached_mtime == current_mtime → return cached_config.clone() (Config must derive Clone — check/derive it); (e) else → parse_config() (full read+parse), store (mtime, config) in cache, return config. Replace the parse_config() call INSIDE configured_timing() (mod.rs:89) and configured_filter() (notifier.rs:80) with cached_config(). Keep parse_config() as the underlying uncached function for direct callers (config_parse_error at startup, tests). Add `static RULES_CACHE: Lazy<Mutex<Option<(SystemTime, RuleSet)>>>` similarly wrapping parse_rules for host_context_for_window. RuleSet must derive Clone. Add tests: (a) test_config_cache_returns_same_result_on_unchanged_mtime — write config, call cached_config() twice, verify only one disk read (mock or count); (b) test_config_cache_invalidates_on_mtime_change — write config, cache it, touch the file (update mtime), verify re-read; (c) verify test_debounce_ms_is_hot_config (notifier.rs:1379) still passes — it writes a new config.toml (updating mtime) and verifies the cache picks up the new value. NOTE: on filesystems where mtime resolution is coarse (1s), two rapid writes might not change mtime — handle by also comparing file size as a secondary key (path.metadata()?.len()).\n4. OUTPUT: cached_config() and a rules cache eliminate redundant disk reads while preserving hot-config. configured_timing() and configured_filter() now share a single cache entry per mtime. host_context_for_window benefits from the rules cache. The double-read per send is eliminated. All 345+ tests pass.\n5. DOCS: none — internal performance optimization, no user-facing/config/API surface change.",
@@ -275,21 +275,21 @@
           "type": "Milestone",
           "id": "P1.M6",
           "title": "Sync changeset-level documentation",
-          "status": "Planned",
+          "status": "Researching",
           "description": "Final documentation sweep for cross-cutting changes that span the entire bugfix changeset. Per §5 Mode B: individual subtask docs were handled inline (Mode A). This task covers overview-level docs (README.md, docs/troubleshooting.md, docs/configuration.md) that summarize the delta as a whole. It depends on every implementing subtask so it runs last.",
           "tasks": [
             {
               "type": "Task",
               "id": "P1.M6.T1",
               "title": "Sync changeset-level documentation",
-              "status": "Planned",
+              "status": "Researching",
               "description": "Update README.md, docs/troubleshooting.md, and any overview docs to reflect the Windows toast notification change and any other user-visible behavior changes from the bugfix changeset.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M6.T1.S1",
                   "title": "Update README.md and docs/troubleshooting.md for changeset",
-                  "status": "Planned",
+                  "status": "Researching",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M1.T1.S1",
