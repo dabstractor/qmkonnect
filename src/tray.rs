@@ -382,7 +382,8 @@ pub fn setup_tray(verbose: bool) {
     {
         let status_proxy = proxy.clone();
         std::thread::spawn(move || {
-            let mut last: Option<bool> = None;
+            let mut last: Option<bool> =
+                Some(crate::core::notifier::startup_device_was_connected());
             loop {
                 let connected = crate::core::notifier::is_device_connected();
                 if last != Some(connected) {

@@ -4,7 +4,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::error::Error;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -228,6 +228,29 @@ pub fn is_device_connected() -> bool {
     }
 }
 
+/// Capture the device-presence snapshot ONCE for the poll threads (P1.M3.T1.S1).
+///
+/// Called by each runner on the main thread, immediately before its
+/// `if is_device_connected() { perform_handshake() }` startup block. Stores
+/// the result in the set-once [`STARTUP_DEVICE_CONNECTED`]; the poll threads
+/// read it via [`startup_device_was_connected`] to seed their `last` tracker
+/// so a transient first-tick `false` (after a connected startup) is correctly
+/// classified as a `Loss` (resetting [`HAS_HANDSHAKED`]) instead of a no-op.
+/// A second call is a silent no-op (OnceLock::set returns Err, discarded).
+pub fn record_startup_device_state() {
+    let _ = STARTUP_DEVICE_CONNECTED.set(is_device_connected());
+}
+
+/// The device-presence value captured at startup by [`record_startup_device_state`]
+/// (P1.M3.T1.S1). Poll threads seed their `last: Option<bool>` with
+/// `Some(startup_device_was_connected())`. Defaults to `false` if
+/// [`record_startup_device_state`] has not been called yet (e.g. in unit tests
+/// before any record) — harmless: the poll thread then behaves as "absent at
+/// startup", identical to the pre-fix cold-start path.
+pub fn startup_device_was_connected() -> bool {
+    *STARTUP_DEVICE_CONNECTED.get().unwrap_or(&false)
+}
+
 // ============================================================================
 // Host-rules capability handshake (P4.M2.T1.S1, HOST_RULES.md §8(5))
 // ============================================================================
@@ -258,6 +281,16 @@ static CALLBACK_NAMES: Lazy<Mutex<HashMap<String, u8>>> = Lazy::new(|| Mutex::ne
 /// resets it (via [`reset_handshake_state`]) on a real device transition
 /// (`is_device_connected()` false→true) to re-trigger.
 static HAS_HANDSHAKED: AtomicBool = AtomicBool::new(false);
+
+/// The device-presence snapshot captured ONCE at startup by
+/// [`record_startup_device_state`], read by the poll threads to seed their
+/// `last` tracker (P1.M3.T1.S1 / Finding #5). Without it the poll thread
+/// starts at `None` and a transient first-tick `false` after a connected
+/// startup never records a `Loss`, so [`HAS_HANDSHAKED`] stays `true` and a
+/// reconnect skips the `SET_OS` re-send. `OnceLock` is set-once: the first
+/// runner to call [`record_startup_device_state`] wins; subsequent calls are
+/// no-ops (the poll threads only ever read).
+static STARTUP_DEVICE_CONNECTED: OnceLock<bool> = OnceLock::new();
 
 /// Dedup guard for the malformed-`rules.toml` desktop notification
 /// (HOST_RULES.md §7). Set the first time a parse failure is notified; cleared
@@ -2040,6 +2073,34 @@ disable = ["known_b", "phantom"]
         assert_eq!(handshake_action(Some(true), false), HandshakeAction::Loss);
         assert_eq!(handshake_action(Some(true), true), HandshakeAction::None);
         assert_eq!(handshake_action(Some(false), false), HandshakeAction::None);
+    }
+
+    #[test]
+    fn test_poll_thread_seeded_from_startup() {
+        // record_startup_device_state() probes is_device_connected() once and freezes the
+        // result in the set-once STARTUP_DEVICE_CONNECTED. startup_device_was_connected()
+        // then returns that bool. OnceLock is process-global & set-once, and tests run in one
+        // process — so the FIRST record call wins; later calls are no-ops. We assert the
+        // round-trip contract: after recording, the accessor matches the live probe (on a CI
+        // box with no QMK device both are false; on a box with a device both are true).
+        record_startup_device_state();
+        assert_eq!(
+            startup_device_was_connected(),
+            is_device_connected(),
+            "after record_startup_device_state, startup_device_was_connected must match the \
+             live is_device_connected probe (OnceLock freezes the first record's value)"
+        );
+    }
+
+    #[test]
+    fn test_handshake_action_loss_on_seeded_true_to_false() {
+        // The P1.M3.T1.S1 seed fix relies on this exact transition being `Loss`: when the poll
+        // thread is seeded from startup_device_was_connected() == Some(true) and the first tick
+        // transiently reads false, handshake_action(Some(true), false) MUST be Loss so
+        // reset_handshake_state() fires and the subsequent reconnect re-sends SET_OS. (Also
+        // asserted in test_handshake_action_transitions; restated here to pin the invariant
+        // the seed fix depends on.)
+        assert_eq!(handshake_action(Some(true), false), HandshakeAction::Loss);
     }
 
     // ========================================================================

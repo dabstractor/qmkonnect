@@ -259,7 +259,8 @@ pub fn spawn(verbose: bool) -> Option<ksni::blocking::Handle<QmkTray>> {
     // via the Settings dialog are reflected within one poll interval.
     let poll_handle = handle.clone();
     std::thread::spawn(move || {
-        let mut last_device: Option<bool> = None;
+        let mut last_device: Option<bool> =
+            Some(crate::core::notifier::startup_device_was_connected());
         let mut last_dark: Option<bool> = None;
         let mut tick: u32 = 0;
         loop {
