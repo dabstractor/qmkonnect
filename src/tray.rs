@@ -1884,6 +1884,14 @@ fn show_settings_dialog_with_pool(
 
             match (parse_id_field(&vendor_str), parse_id_field(&product_str)) {
                 (Ok(vid), Ok(pid)) => {
+                    // Snapshot pre-save VID/PID BEFORE the move below — Config
+                    // is Clone (not Copy), so `let mut merged = current_config`
+                    // moves it; vendor_id/product_id are Option<u16> (Copy), so
+                    // copying them out here is valid and required for the
+                    // post-save diff check (Bug 4 / PRD ID 3).
+                    let old_vid = current_config.vendor_id;
+                    let old_pid = current_config.product_id;
+
                     // PRESERVE every non-VID/PID field
                     // (usage_page/usage/debounce_ms/poll_interval_ms): overlay
                     // the dialog's result onto the config parsed at dialog-open
@@ -1899,6 +1907,20 @@ fn show_settings_dialog_with_pool(
                     }
                     let config_content = crate::core::render_config_body(&merged);
                     crate::core::atomic_write(config_path, &config_content)?;
+
+                    // Bug 4 / PRD ID 3: if VID/PID changed, reset the handshake
+                    // state and re-run the handshake for the newly-selected
+                    // board. reset_handshake_state clears HOST_CAPABLE/
+                    // BOARD_HAS_RULES/CALLBACK_NAMES/HAS_HANDSHAKED;
+                    // perform_handshake then re-runs (its HAS_HANDSHAKED guard
+                    // was just cleared) and reads config.toml fresh, so the
+                    // just-written VID/PID selects the new board and rebuilds its
+                    // name→id map. `false` = non-verbose (verbose is not in
+                    // scope here — bug_findings.md §132).
+                    if merged.vendor_id != old_vid || merged.product_id != old_pid {
+                        crate::core::notifier::reset_handshake_state();
+                        crate::core::notifier::perform_handshake(false);
+                    }
                 }
                 (Err(e), _) | (_, Err(e)) => {
                     show_macos_error_message(&format!("Invalid input: {}", e));
