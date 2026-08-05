@@ -152,7 +152,7 @@
       "type": "Phase",
       "id": "P3",
       "title": "Discovered-device Settings picker (the elaborate F13 piece)",
-      "status": "Planned",
+      "status": "Researching",
       "description": "The new primary Settings surface (D1 section 5): a live, self-populating list of 0xFF60 devices with capability markers, plus an Advanced/manual override disclosure that relocates the existing VID/PID hex fields. Depends on a real classify_devices() (per-candidate ping).",
       "milestones": [
         {
@@ -214,14 +214,14 @@
           "type": "Milestone",
           "id": "P3.M2",
           "title": "Three-platform picker + Advanced disclosure",
-          "status": "Planned",
+          "status": "Researching",
           "description": "Build the discovered-device picker on all three platforms (Windows Win32, macOS NSAlert, Linux zenity), plus the Advanced/manual override disclosure that relocates the VID/PID hex fields.",
           "tasks": [
             {
               "type": "Task",
               "id": "P3.M2.T1",
               "title": "Discovered-device picker on Windows (Win32), macOS (NSAlert), and Linux (zenity)",
-              "status": "Planned",
+              "status": "Researching",
               "description": "Add the discovered-device picker UI to each platform's settings dialog, plus the Advanced disclosure. Each subtask is platform-isolated but depends on classify_devices() from P3.M1.",
               "subtasks": [
                 {
@@ -249,7 +249,7 @@
                   "type": "Subtask",
                   "id": "P3.M2.T1.S2",
                   "title": "macOS NSAlert picker (NSStackView of rows) + Advanced toggle in src/tray.rs",
-                  "status": "Researching",
+                  "status": "Complete",
                   "story_points": 2,
                   "dependencies": [
                     "P3.M1.T1.S2"
@@ -270,7 +270,7 @@
                   "type": "Subtask",
                   "id": "P3.M2.T1.S3",
                   "title": "Linux zenity --list picker + Advanced --forms in src/linux_tray.rs",
-                  "status": "Planned",
+                  "status": "Researching",
                   "story_points": 1,
                   "dependencies": [
                     "P3.M1.T1.S2"

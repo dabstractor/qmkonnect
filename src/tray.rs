@@ -1503,6 +1503,67 @@ fn show_error_message(message: &str) {
 }
 
 #[cfg(target_os = "macos")]
+/// One macOS picker row's label: the ✓/✗ capability glyph, the live HID
+/// `product_name` (or `(unnamed)`), the `0xVID:0xPID` pair, and the status
+/// suffix (`qmk_notifier` / `QMK board, no module`). Built from a
+/// [`crate::core::notifier::ClassifiedDevice`] per `spec/DEVICE_DISCOVERY.md`
+/// §5.1 / §3. Pure string builder; unit-tested by `test_picker_row_text_glyphs`.
+///
+/// `#[cfg(target_os = "macos")]` (NOT `any(macos, windows)`): the parallel
+/// sibling P3.M2.T1.S1 adds a Windows-gated `fn picker_row_text`. The two are
+/// mutually exclusive by `target_os`, so exactly one compiles per platform —
+/// no symbol collision and no merge conflict on the function name.
+fn picker_row_text(d: &crate::core::notifier::ClassifiedDevice) -> String {
+    use crate::core::notifier::DeviceKind;
+    let (glyph, status) = match d.kind {
+        DeviceKind::Capable { .. } => ("\u{2713}", "qmk_notifier"), // ✓
+        DeviceKind::NotQmkNotifier => ("\u{2717}", "QMK board, no module"), // ✗
+    };
+    let name = d.product_name.as_deref().unwrap_or("(unnamed)");
+    format!(
+        "{}  {:<22} 0x{:04X}:0x{:04X}  {}",
+        glyph, name, d.vendor_id, d.product_id, status
+    )
+}
+
+// The Advanced checkbox's `toggleAdvanced:` action is an `extern "C" fn` (an
+// Obj-C method registered on `RustMacSettingsTarget`) and CANNOT capture Rust
+// locals, so it reads the two NSTextField pointers from this static. Mirrors
+// `WINDOW_INFO_ROWS` (@the established pattern for a free/extern fn that needs
+// shared state). Only one Settings dialog is open at a time, so a single
+// 2-slot array is sufficient.
+#[cfg(target_os = "macos")]
+static ADVANCED_FIELDS: std::sync::Mutex<[Option<*mut objc::runtime::Object>; 2]> =
+    std::sync::Mutex::new([None, None]);
+
+#[cfg(target_os = "macos")]
+/// The Advanced checkbox's action: reads the checkbox `state` (it flips its own
+/// state on click before the action fires) and shows the two hex fields when
+/// checked (`state == 1` / `NSOnState`) or hides them when unchecked. The field
+/// pointers come from [`ADVANCED_FIELDS`] (an extern fn cannot capture locals).
+/// Template: [`wi_copy_row`] (reads a STATIC + the sender).
+extern "C" fn mac_toggle_advanced(
+    _this: &objc::runtime::Object,
+    _sel: objc::runtime::Sel,
+    sender: *mut objc::runtime::Object,
+) {
+    use objc::runtime::{NO, YES};
+    use objc::{msg_send, sel, sel_impl};
+    // NSOnState = 1 ⇒ checked ⇒ show (setHidden:NO); else hide.
+    let state: isize = unsafe { msg_send![sender, state] };
+    let hide = if state == 1 { NO } else { YES };
+    if let Ok(fields) = ADVANCED_FIELDS.lock() {
+        for field_opt in fields.iter() {
+            if let Some(field) = field_opt {
+                if !(*field).is_null() {
+                    let _: () = unsafe { msg_send![*field, setHidden: hide] };
+                }
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
 fn show_macos_settings_dialog(
     config_path: &std::path::Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -1527,16 +1588,63 @@ fn show_macos_settings_dialog(
 }
 
 #[cfg(target_os = "macos")]
+/// Build and run the macOS Settings `NSAlert` (`spec/UI.md` §2.2). The legacy
+/// two-`NSTextField` hex surface is now relocated under an "Advanced / manual
+/// override" disclosure checkbox, and a live, self-populating **picker** of
+/// discovered devices (`classify_devices`, `spec/DEVICE_DISCOVERY.md` §5.1)
+/// is the new primary surface in the accessory view: one `NSButton` radio row
+/// per `ClassifiedDevice`, titled with `picker_row_text` (the ✓/✗ glyph +
+/// `product_name` + `0xVID:0xPID` + status). Selecting a radio row is the
+/// disambiguation: it writes that board's VID/PID into `config.toml` via the
+/// shared `render_config_body` renderer.
+///
+/// The zero-config case (one capable board, no VID/PID set) is preserved: no
+/// picker is shown and the header reads `Detected: <name>`.
+///
+/// # Platform-specific deviations (Mode A)
+/// - **No `[ Rescan ]` button.** Unlike Windows' modal `GetMessageW` loop,
+///   `runModal` BLOCKS the tray thread for the whole dialog lifetime, so there
+///   is no "dialog-open" window during which a board could be flashed and
+///   re-scanned. `classify_devices(true)` is called ONCE before building the
+///   accessory view.
+/// - **Manual vertical layout, not `NSStackView`.** The spec (§5.3) names
+///   `NSStackView`, but with the legacy `objc = 0.2.7` crate that needs Auto
+///   Layout constraints (fragile via raw `msg_send!`). The existing dialog
+///   already uses manual `setFrame` in a plain `NSView`; this extends that
+///   exact pattern. The §5.3 row SEMANTICS are fully honored.
+/// - **`NSRadioButton` (=4) is deprecated but functional.** Apple marks it in
+///   favor of `NSSwitchButton` + a coordinator; it remains fully supported on
+///   all current macOS. A safety net reads the FIRST `NSOnState` row on OK.
+///
+/// The dialog is synchronous (`runModal` blocks), so `chosen` (a radio pick →
+/// concrete `(u16,u16)`) and `manual` (the two typed fields → `Option<u16>`
+/// each) are plain locals — NO `DIALOG_RESULT` static is needed on macOS
+/// (unlike the Windows free `WndProc`). The Advanced toggle's `toggleAdvanced:`
+/// action is an `extern "C" fn` (registered on `RustMacSettingsTarget`) that
+/// cannot capture locals, so it reads the two field pointers from the
+/// [`ADVANCED_FIELDS`] static.
 fn show_settings_dialog_with_pool(
     config_path: &std::path::Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    use objc::runtime::{Class, Object};
-    use objc::{msg_send, sel, sel_impl};
+    use objc::runtime::{Class, Object, NO, YES};
+    use objc::{class, declare::ClassDecl, msg_send, sel, sel_impl};
 
     let current_config = match crate::core::parse_config(config_path) {
         Ok(config) => config,
         Err(_) => crate::core::Config::default(),
     };
+
+    // Classify the Tier-1 devices ONCE (runModal blocks, so there is no
+    // dialog-open window to re-scan within — no [Rescan] button on macOS).
+    let devices = crate::core::notifier::classify_devices(true);
+    let clean_auto = devices.len() == 1
+        && matches!(devices[0].kind, crate::core::notifier::DeviceKind::Capable { .. })
+        && current_config.vendor_id.is_none()
+        && current_config.product_id.is_none();
+    let has_capable = devices
+        .iter()
+        .any(|d| matches!(d.kind, crate::core::notifier::DeviceKind::Capable { .. }));
+    let show_picker = !devices.is_empty() && !clean_auto;
 
     unsafe {
         let alert_class = Class::get("NSAlert").ok_or("Failed to get NSAlert class")?;
@@ -1546,11 +1654,28 @@ fn show_settings_dialog_with_pool(
         }
 
         let title = create_nsstring("QMK Settings")?;
-        let message = create_nsstring(&format!(
-            "Current Configuration:\nVendor ID: {}\nProduct ID: {}\n\nEnter new hex values, or leave a field blank for auto-discovery:",
-            format_id_hex(current_config.vendor_id),
-            format_id_hex(current_config.product_id)
-        ))?;
+        // The message text shows the current format_id_hex (UI.md §2.2 contract).
+        let message_text = if devices.is_empty() {
+            format!(
+                "No QMK keyboards detected. Use Advanced to enter IDs manually.\n\nCurrent — Vendor ID: {} / Product ID: {}",
+                format_id_hex(current_config.vendor_id),
+                format_id_hex(current_config.product_id)
+            )
+        } else if clean_auto {
+            format!(
+                "Detected: {}. Auto-discovery is active.\n\nVendor ID: {} / Product ID: {}",
+                devices[0].product_name.as_deref().unwrap_or("(unnamed)"),
+                format_id_hex(current_config.vendor_id),
+                format_id_hex(current_config.product_id)
+            )
+        } else {
+            format!(
+                "Select a detected keyboard below (or use Advanced for manual entry).\n\nVendor ID: {} / Product ID: {}",
+                format_id_hex(current_config.vendor_id),
+                format_id_hex(current_config.product_id)
+            )
+        };
+        let message = create_nsstring(&message_text)?;
         let _: () = msg_send![alert, setMessageText: title];
         let _: () = msg_send![alert, setInformativeText: message];
 
@@ -1559,6 +1684,31 @@ fn show_settings_dialog_with_pool(
         let _: *mut Object = msg_send![alert, addButtonWithTitle: ok_button_title];
         let _: *mut Object = msg_send![alert, addButtonWithTitle: cancel_button_title];
 
+        // --- Register the Advanced toggle's target class (once). --------------
+        // Mirrors RustWindowInfoCopyTarget (wi_copy_row template). The
+        // toggleAdvanced: action reads the checkbox state + ADVANCED_FIELDS.
+        if Class::get("RustMacSettingsTarget").is_none() {
+            let superclass = Class::get("NSObject").ok_or("NSObject class not found")?;
+            let mut decl = ClassDecl::new("RustMacSettingsTarget", superclass)
+                .ok_or("failed to declare RustMacSettingsTarget")?;
+            decl.add_method(
+                sel!(toggleAdvanced:),
+                mac_toggle_advanced
+                    as extern "C" fn(
+                        &objc::runtime::Object,
+                        objc::runtime::Sel,
+                        *mut objc::runtime::Object,
+                    ),
+            );
+            decl.register();
+        }
+        let target: *mut Object = msg_send![
+            Class::get("RustMacSettingsTarget").ok_or("RustMacSettingsTarget missing")?,
+            new
+        ];
+
+        // --- The two relocated hex fields (now under the Advanced disclosure). --
+        // Bottom of the container (origin is bottom-left). Widened for visibility.
         let textfield_class = Class::get("NSTextField").ok_or("Failed to get NSTextField class")?;
 
         let vendor_field: *mut Object = msg_send![textfield_class, new];
@@ -1569,7 +1719,7 @@ fn show_settings_dialog_with_pool(
         let _: () = msg_send![vendor_field, setStringValue: vendor_value];
         let _: () = msg_send![vendor_field, setFrame: objc_types::NSRect {
             origin: objc_types::NSPoint { x: 0.0, y: 0.0 },
-            size: objc_types::NSSize { width: 100.0, height: 22.0 }
+            size: objc_types::NSSize { width: 300.0, height: 22.0 }
         }];
 
         let product_field: *mut Object = msg_send![textfield_class, new];
@@ -1580,9 +1730,96 @@ fn show_settings_dialog_with_pool(
         let _: () = msg_send![product_field, setStringValue: product_value];
         let _: () = msg_send![product_field, setFrame: objc_types::NSRect {
             origin: objc_types::NSPoint { x: 0.0, y: 30.0 },
-            size: objc_types::NSSize { width: 100.0, height: 22.0 }
+            size: objc_types::NSSize { width: 300.0, height: 22.0 }
         }];
 
+        // Carry the two field pointers to the extern toggle fn (G8).
+        *ADVANCED_FIELDS.lock().unwrap() = [Some(vendor_field), Some(product_field)];
+
+        // --- The Advanced checkbox (NSSwitchButton=3, a checkbox). -------------
+        // Default: unchecked + fields HIDDEN when capable boards exist (the
+        // picker is the primary surface); checked + fields SHOWN when there are
+        // no capable boards (so the user can type). G5/G6.
+        let adv_btn: *mut Object = msg_send![class!(NSButton), new];
+        if adv_btn.is_null() {
+            return Err("Failed to create Advanced checkbox".into());
+        }
+        let adv_title = create_nsstring("Advanced / manual override")?;
+        let _: () = msg_send![adv_btn, setTitle: adv_title];
+        let _: () = msg_send![adv_btn, setButtonType: 3u64]; // NSSwitchButton (checkbox)
+        let _: () = msg_send![adv_btn, setFrame: objc_types::NSRect {
+            origin: objc_types::NSPoint { x: 0.0, y: 60.0 },
+            size: objc_types::NSSize { width: 300.0, height: 22.0 }
+        }];
+        let _: () = msg_send![adv_btn, setTarget: target];
+        let _: () = msg_send![adv_btn, setAction: sel!(toggleAdvanced:)];
+        let init_state: isize = if has_capable { 0 } else { 1 };
+        let _: () = msg_send![adv_btn, setState: init_state];
+        let hide_fields = if has_capable { YES } else { NO };
+        let _: () = msg_send![vendor_field, setHidden: hide_fields];
+        let _: () = msg_send![product_field, setHidden: hide_fields];
+
+        // --- The device radio rows (ONLY in the picker case). ------------------
+        // NSRadioButton=4: siblings in the same superview auto-enforce mutual
+        // exclusivity (no NSMatrix needed). G4 (deprecated but functional).
+        let mut row_btns: Vec<*mut Object> = Vec::new();
+        let row_h: f64 = 22.0;
+        let rows_base_y: f64 = 88.0; // above the Advanced checkbox (60 + 22)
+        if show_picker {
+            for (i, d) in devices.iter().enumerate() {
+                let row: *mut Object = msg_send![class!(NSButton), new];
+                if row.is_null() {
+                    return Err("Failed to create picker radio row".into());
+                }
+                let lbl = create_nsstring(&picker_row_text(d))?;
+                let _: () = msg_send![row, setTitle: lbl];
+                let _: () = msg_send![row, setButtonType: 4u64]; // NSRadioButton
+                let _: () = msg_send![row, setTag: i as isize];
+                let _: () = msg_send![row, setFrame: objc_types::NSRect {
+                    origin: objc_types::NSPoint {
+                        x: 0.0,
+                        y: rows_base_y + (i as f64) * row_h,
+                    },
+                    size: objc_types::NSSize { width: 360.0, height: row_h }
+                }];
+                row_btns.push(row);
+            }
+        }
+
+        // --- The header label (read-only NSTextField) at the TOP. -------------
+        // Read-only-label idiom from the window-info dialog: setBezeled:NO /
+        // setDrawsBackground:NO / setEditable:NO / setSelectable:YES.
+        let header_text = if devices.is_empty() {
+            "No QMK keyboards detected.".to_string()
+        } else if clean_auto {
+            format!(
+                "Detected: {}",
+                devices[0].product_name.as_deref().unwrap_or("(unnamed)")
+            )
+        } else {
+            "Detected keyboard(s) — choose one:".to_string()
+        };
+        let header: *mut Object = msg_send![class!(NSTextField), new];
+        if header.is_null() {
+            return Err("Failed to create header label".into());
+        }
+        let h_ns = create_nsstring(&header_text)?;
+        let _: () = msg_send![header, setStringValue: h_ns];
+        let _: () = msg_send![header, setBezeled: NO];
+        let _: () = msg_send![header, setDrawsBackground: NO];
+        let _: () = msg_send![header, setEditable: NO];
+        let _: () = msg_send![header, setSelectable: YES];
+        let rows_count = if show_picker { devices.len() } else { 0 };
+        let header_y = rows_base_y + (rows_count as f64) * row_h + 4.0;
+        let _: () = msg_send![header, setFrame: objc_types::NSRect {
+            origin: objc_types::NSPoint { x: 0.0, y: header_y },
+            size: objc_types::NSSize { width: 360.0, height: 18.0 }
+        }];
+
+        // --- The container NSView (dynamic height; origin is bottom-left). -----
+        // The accessory view's frame determines the alert's content height, so
+        // it must be computed AFTER every subview's frame is known (G11).
+        let container_height = header_y + 18.0 + 8.0; // header + padding
         let view_class = Class::get("NSView").ok_or("Failed to get NSView class")?;
         let container_view: *mut Object = msg_send![view_class, new];
         if container_view.is_null() {
@@ -1590,33 +1827,51 @@ fn show_settings_dialog_with_pool(
         }
         let _: () = msg_send![container_view, setFrame: objc_types::NSRect {
             origin: objc_types::NSPoint { x: 0.0, y: 0.0 },
-            size: objc_types::NSSize { width: 200.0, height: 60.0 }
+            size: objc_types::NSSize { width: 360.0, height: container_height }
         }];
+        let _: () = msg_send![container_view, addSubview: header];
+        for row in &row_btns {
+            let _: () = msg_send![container_view, addSubview: *row];
+        }
+        let _: () = msg_send![container_view, addSubview: adv_btn];
         let _: () = msg_send![container_view, addSubview: vendor_field];
         let _: () = msg_send![container_view, addSubview: product_field];
         let _: () = msg_send![alert, setAccessoryView: container_view];
 
-        // 1000 = OK, 1001 = Cancel.
+        // 1000 = OK (NSAlertFirstButtonReturn), 1001 = Cancel.
         let response: isize = msg_send![alert, runModal];
 
         if response == 1000 {
+            // chosen: first NSOnState radio row → concrete (u16,u16) (G4 safety
+            // net — take-first guarantees a wrong VID/PID can never be picked).
+            let chosen: Option<(u16, u16)> = row_btns.iter().enumerate().find_map(|(i, _)| {
+                let s: isize = msg_send![*row_btns[i], state]; // NSOnState = 1
+                (s == 1).then(|| (devices[i].vendor_id, devices[i].product_id))
+            });
+            // manual: read both typed fields → parse_id_field each (G10: each
+            // Option<u16>; blank/"auto" ⇒ None ⇒ auto-discovery). The fields
+            // were prefilled with the open-time hex ⇒ "leave as-is" when the
+            // user changes nothing + no row picked.
             let vendor_nsstring: *mut Object = msg_send![vendor_field, stringValue];
             let product_nsstring: *mut Object = msg_send![product_field, stringValue];
-
             let vendor_str = nsstring_to_rust_string(vendor_nsstring)?;
             let product_str = nsstring_to_rust_string(product_nsstring)?;
 
             match (parse_id_field(&vendor_str), parse_id_field(&product_str)) {
-                (Ok(vendor_id), Ok(product_id)) => {
+                (Ok(vid), Ok(pid)) => {
                     // PRESERVE every non-VID/PID field
                     // (usage_page/usage/debounce_ms/poll_interval_ms): overlay
-                    // the dialog's VID/PID onto the config parsed at dialog-open
-                    // time and serialize the full struct. Previously this rendered
-                    // a VID/PID-only body and silently reset the user's other
-                    // fields on every save.
+                    // the dialog's result onto the config parsed at dialog-open
+                    // time. chosen takes precedence over manual (G10); manual
+                    // applies only when no radio row was selected.
                     let mut merged = current_config;
-                    merged.vendor_id = vendor_id;
-                    merged.product_id = product_id;
+                    if let Some((v, p)) = chosen {
+                        merged.vendor_id = Some(v);
+                        merged.product_id = Some(p);
+                    } else {
+                        merged.vendor_id = vid;
+                        merged.product_id = pid;
+                    }
                     let config_content = crate::core::render_config_body(&merged);
                     crate::core::atomic_write(config_path, &config_content)?;
                 }
@@ -2751,6 +3006,48 @@ mod tests {
     // (`spec/DEVICE_DISCOVERY.md` §5.1 / §3). The Win32 dialog itself spawns a
     // real message loop and is NOT unit-testable; only this string builder is.
     #[cfg(target_os = "windows")]
+    #[test]
+    fn test_picker_row_text_glyphs() {
+        use crate::core::notifier::{ClassifiedDevice, DeviceKind};
+
+        let capable = ClassifiedDevice {
+            path: String::new(),
+            vendor_id: 0xFEED,
+            product_id: 0x0000,
+            product_name: Some("Dactyl".into()),
+            usage_page: 0xFF60,
+            usage: 0x61,
+            kind: DeviceKind::Capable {
+                proto_ver: 2,
+                feature_flags: 1,
+                callback_count: 0,
+                board_rules_present: false,
+            },
+        };
+        let notqmk = ClassifiedDevice {
+            kind: DeviceKind::NotQmkNotifier,
+            vendor_id: 0x3434,
+            product_id: 0x0123,
+            product_name: Some("Keychron".into()),
+            ..capable.clone()
+        };
+
+        let cap_row = picker_row_text(&capable);
+        let nq_row = picker_row_text(&notqmk);
+
+        assert!(
+            cap_row.starts_with('\u{2713}'),
+            "capable row starts with ✓: {cap_row}"
+        );
+        assert!(cap_row.contains("0xFEED:0x0000") && cap_row.contains("qmk_notifier"));
+        assert!(
+            nq_row.starts_with('\u{2717}'),
+            "notqmk row starts with ✗: {nq_row}"
+        );
+        assert!(nq_row.contains("0x3434:0x0123") && nq_row.contains("QMK board, no module"));
+    }
+
+    #[cfg(target_os = "macos")]
     #[test]
     fn test_picker_row_text_glyphs() {
         use crate::core::notifier::{ClassifiedDevice, DeviceKind};
