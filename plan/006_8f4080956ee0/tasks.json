@@ -4,21 +4,21 @@
       "type": "Phase",
       "id": "P1",
       "title": "Verify the capability-keyed lifecycle delta is complete",
-      "status": "Planned",
+      "status": "Researching",
       "description": "This delta (session 6) is a specification clarification of the capability-keyed discovery/status lifecycle that was ALREADY SHIPPED during session 5 in commit d240b27 ('Key handshake lifecycle on capable-board presence, not Tier-1'). There is no new feature work. The phase's sole objective is to verify the already-shipped implementation satisfies the v6 spec, the quality gates are green, and there is zero spec/code drift. If verification surfaces an unexpected gap, fix it in place; otherwise the delta closes as verified-complete.",
       "milestones": [
         {
           "type": "Milestone",
           "id": "P1.M1",
           "title": "Verify code/spec/tests in sync and quality gates green",
-          "status": "Planned",
+          "status": "Researching",
           "description": "Confirm the already-shipped PresenceTracker / warm-feed / capable-keyed lifecycle implementation matches the v6 spec wording, all quality gates pass, the 6 diff hunks have corresponding spec passages, and the documented caveats (proto-v1 picker, warm-feed scope, trayless startup, stable-bus no-reprobe) have backing behavior in the code.",
           "tasks": [
             {
               "type": "Task",
               "id": "P1.M1.T1",
               "title": "Verify the already-shipped delta: gates + drift + caveat-backing",
-              "status": "Researching",
+              "status": "Complete",
               "description": "Three-part verification of the capability-keyed lifecycle delta: (1) run the project quality gates and confirm green, (2) confirm zero spec drift between the four spec files and the v6 snapshot, (3) read-only audit confirming each documented caveat has matching code behavior. No code changes are expected — this is verification of already-shipped work (commit d240b27).",
               "subtasks": [
                 {
@@ -68,7 +68,7 @@
                   "type": "Subtask",
                   "id": "P1.M1.T1.S3",
                   "title": "Confirm documented caveats have backing behavior (read-only code audit)",
-                  "status": "Researching",
+                  "status": "Complete",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M1.T1.S1"
@@ -94,14 +94,14 @@
               "type": "Task",
               "id": "P1.M1.T2",
               "title": "Sync changeset-level documentation",
-              "status": "Planned",
+              "status": "Researching",
               "description": "Final sweep to confirm that no changeset-level documentation (README.md, docs/*.md, docs/llms_full.txt) is stale relative to the capability-keyed lifecycle delta. Per the delta PRD §4, these files were regenerated in commit 293f565 and are NOT expected to need changes — this lifecycle refinement is an internal correctness/edge-case fix, not a user-facing capability change. This task exists to verify that assertion; if no drift is found, it is a no-op confirmation.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M1.T2.S1",
                   "title": "Verify README.md and docs/ overview files are not stale relative to the capability-keyed lifecycle refinement",
-                  "status": "Planned",
+                  "status": "Researching",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M1.T1.S1",
