@@ -100,8 +100,12 @@ sudo install -m644 packaging/linux/udev/69-qmkonnect-rawhid.rules \
 sudo udevadm control --reload && sudo udevadm trigger
 ```
 
-   Only set `vendor_id`/`product_id` to disambiguate among multiple QMK
-   keyboards; then generate the matching rule (root-aware, works under sudo):
+   You rarely set `vendor_id`/`product_id` by hand: the **Settings →
+   discovered-device picker** lists each connected QMK board (with a
+   ✓/✗ qmk_notifier-capable marker) and writes the IDs for you when several
+   boards are present. Set them manually only to disambiguate among
+   multiple QMK keyboards, then generate the matching rule (root-aware,
+   works under sudo):
 
 ```bash
 qmkonnect -c          # writes a commented-out default config (edit as needed)
@@ -210,7 +214,14 @@ After installation, verify QMKonnect is working (this only confirms the desktop
 app talks to the keyboard — your **firmware** must also have qmk_notifier set up,
 see [QMK Integration]({{ site.baseurl }}/qmk-integration)):
 
-1. **Check if running**:
+1. **Check the tray/menu-bar icon** — it shows one of three device states:
+   - **● Device Connected** — a qmk_notifier-capable board is present (you're set).
+   - **⚠ QMK board found — no qmk_notifier module (flash it)** — a QMK board
+     is attached but isn't running qmk_notifier; flash it (see the
+     [QMK Integration Guide]({{ site.baseurl }}/qmk-integration)).
+   - **○ No Device Connected** — no QMK board detected.
+
+   Platform quick-checks that the process is running:
    - Windows: Look for the system tray icon
    - Linux: `systemctl --user status qmkonnect`
    - macOS: Check Activity Monitor

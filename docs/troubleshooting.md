@@ -102,6 +102,14 @@ systemctl --user status qmkonnect
 
 **Symptoms**: QMKonnect runs but doesn't communicate with keyboard, layers don't switch
 
+> **Read the tray/menu-bar status first — it's three-state.** **● Device
+> Connected** means a qmk_notifier-capable board is present. **⚠ QMK board
+> found — no qmk_notifier module (flash it)** means a QMK board is attached
+> but isn't running qmk_notifier — **flash qmk_notifier** (see
+> [QMK Integration]({{ site.baseurl }}/qmk-integration)); this is the most
+> common cause of "detected but nothing happens." **○ No Device
+> Connected** means no QMK Raw-HID board was found at all.
+
 **Quick Diagnosis**:
 ```bash
 # Linux - test keyboard connection
@@ -127,7 +135,10 @@ system_profiler SPUSBDataType | grep -A 10 -B 10 -i keyboard
 **Solutions**:
 
 1. **Verify keyboard configuration**:
-   - Check vendor_id and product_id in config
+   - Use the **Settings → discovered-device picker** to confirm which board
+     QMKonnect sees (each row shows ✓ qmk_notifier-capable or ✗ QMK board,
+     no module); set `vendor_id`/`product_id` manually only to disambiguate
+     among multiple boards.
    - Ensure Raw HID is enabled in QMK firmware
    - Confirm qmk_notifier module is included
 
@@ -431,13 +442,19 @@ See the [installation guide]({{ site.baseurl }}/installation/#macos) for the ful
 
 ### Wrong Keyboard IDs
 
+> You rarely need to find IDs by hand — the **Settings → discovered-device
+> picker** lists connected boards and writes the IDs for you, and
+> `qmkonnect --list-devices` prints every board's VID:PID and qmk_notifier
+> capability (`kind` column). The methods below are only for the rare
+> manual case.
+
 **Find correct IDs**:
 
 #### Using QMK Configuration
 ```c
-// Check your QMK config.h
-#define VENDOR_ID    0xFEED
-#define PRODUCT_ID   0x0000
+// Check your QMK config.h — your board's USB IDs live here:
+#define VENDOR_ID    0x????   // your board's USB vendor ID
+#define PRODUCT_ID   0x????   // your board's USB product ID
 ```
 
 #### Using System Tools

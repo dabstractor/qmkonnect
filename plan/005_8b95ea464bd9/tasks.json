@@ -297,21 +297,21 @@
       "type": "Phase",
       "id": "P4",
       "title": "Config/CLI cleanup + Mode-A documentation",
-      "status": "Planned",
+      "status": "Researching",
       "description": "Small finishing work: the 0xFEED template cleanup (D3), the --list-devices kind column (D4), user-facing doc updates, and the changeset-level documentation sweep.",
       "milestones": [
         {
           "type": "Milestone",
           "id": "P4.M1",
           "title": "0xFEED cleanup, --list-devices kind column, Mode-A docs",
-          "status": "Researching",
+          "status": "Complete",
           "description": "Replace 0xFEED literals in config templates, add the kind column to --list-devices, and sync user-facing docs.",
           "tasks": [
             {
               "type": "Task",
               "id": "P4.M1.T1",
               "title": "0xFEED -> 0x???? template + --list-devices kind column + Mode-A doc sync",
-              "status": "Researching",
+              "status": "Complete",
               "description": "Clean up the 0xFEED config template, add the capability kind column to --list-devices, and update user-facing documentation.",
               "subtasks": [
                 {
@@ -339,7 +339,7 @@
                   "type": "Subtask",
                   "id": "P4.M1.T1.S2",
                   "title": "Mode-A user-facing doc sync for the picker / Advanced / three-state status",
-                  "status": "Researching",
+                  "status": "Complete",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M1.T1.S1",
@@ -370,21 +370,21 @@
           "type": "Milestone",
           "id": "P4.M2",
           "title": "Changeset-level documentation (Mode B final sweep)",
-          "status": "Planned",
+          "status": "Researching",
           "description": "Final changeset-level documentation sweep: audit README.md and top-level overviews for F13/F14, regenerate docs/llms_full.txt.",
           "tasks": [
             {
               "type": "Task",
               "id": "P4.M2.T1",
               "title": "Sync README.md + cross-cutting overviews for F13/F14 + regenerate docs/llms_full.txt",
-              "status": "Planned",
+              "status": "Researching",
               "description": "Audit README.md and top-level overviews; update if they describe discovery/VID-PID/status. Regenerate the concatenated llms_full.txt. Runs LAST — depends on all implementing subtasks.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P4.M2.T1.S1",
                   "title": "Audit README.md and top-level overviews; regenerate docs/llms_full.txt",
-                  "status": "Planned",
+                  "status": "Researching",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M1.T1.S1",
