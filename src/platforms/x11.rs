@@ -64,14 +64,7 @@ impl X11Monitor {
         for line in prop_stdout.lines() {
             if line.starts_with("WM_CLASS") {
                 if let Some(rest) = line.split_once('=').map(|(_, r)| r) {
-                    // WM_CLASS(STRING) = "instance", "Class"
-                    let quoted: Vec<&str> = rest.split('"').filter(|s| !s.is_empty()).collect();
-                    // Prefer the class (second element), fall back to instance.
-                    app_class = quoted
-                        .get(1)
-                        .or_else(|| quoted.first())
-                        .map(|s| s.to_string())
-                        .unwrap_or_default();
+                    app_class = parse_wm_class(rest).unwrap_or_default();
                 }
             } else if line.starts_with("_NET_WM_NAME") {
                 if let Some(rest) = line.split_once('=').map(|(_, r)| r) {
@@ -82,6 +75,27 @@ impl X11Monitor {
 
         Ok(Some(WindowInfo::new(app_class, title)))
     }
+}
+
+/// Parse the **class** out of the `WM_CLASS` property's `= …` remainder.
+///
+/// `xprop` prints `WM_CLASS(STRING) = "instance", "Class"`. After
+/// [`split_once('=')`](str::split_once) the caller passes
+/// `rest = ' "instance", "Class"'`. Splitting on `,` (not `"`) means a leading
+/// space or the `, ` separator can't shift the field index; then trim + strip the
+/// quotes. Prefers the **class** (2nd field) and falls back to the **instance**
+/// (1st field) for degenerate single-field output. Returns `None` when no non-empty
+/// field is present.
+fn parse_wm_class(rest: &str) -> Option<String> {
+    let parts: Vec<&str> = rest
+        .split(',')
+        .map(|s| s.trim().trim_matches('"'))
+        .filter(|s| !s.is_empty())
+        .collect();
+    parts
+        .get(1)
+        .or_else(|| parts.first())
+        .map(|s| s.to_string())
 }
 
 impl WindowMonitor for X11Monitor {
@@ -180,5 +194,49 @@ impl WindowMonitor for X11Monitor {
         }
         self.running.store(false, Ordering::SeqCst);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_wm_class_returns_class_not_instance() {
+        // xprop prints: WM_CLASS(STRING) = "instance", "Class"
+        // `rest` is the '= '-suffixed remainder passed to parse_wm_class.
+        // Regression: the OLD split-on-quote returned "firefox" (the instance).
+        assert_eq!(
+            parse_wm_class(r#" "firefox", "Firefox""#),
+            Some("Firefox".to_string())
+        );
+
+        // End-to-end: extract `rest` exactly as the call site does, then parse.
+        let line = r#"WM_CLASS(STRING) = "firefox", "Firefox""#;
+        let rest = line.split_once('=').map(|(_, r)| r).unwrap();
+        assert_eq!(parse_wm_class(rest), Some("Firefox".to_string()));
+
+        // Multi-word class (instance/class differ in casing + spacing).
+        assert_eq!(
+            parse_wm_class(r#" "google-chrome", "Google Chrome""#),
+            Some("Google Chrome".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_wm_class_single_field_falls_back_to_first() {
+        // Degenerate: only one quoted field. Falls back to the first (and only).
+        assert_eq!(
+            parse_wm_class(r#" "Navigator""#),
+            Some("Navigator".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_wm_class_empty_or_whitespace_is_none() {
+        // Empty / whitespace-only / only-empty-quotes ⇒ no non-empty field ⇒ None.
+        assert_eq!(parse_wm_class(""), None);
+        assert_eq!(parse_wm_class("   "), None);
+        assert_eq!(parse_wm_class(r#" "", """#), None);
     }
 }
