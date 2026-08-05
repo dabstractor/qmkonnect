@@ -303,7 +303,9 @@ fn should_ignore_window(window_info: &WindowInfo) -> bool {
     }
 
     // Ignore very short titles that are likely not real applications
-    if window_info.title.len() < 2 && !window_info.title.is_empty() {
+    // (chars().count() = Unicode scalar count, so a 1-char emoji (4 bytes) is
+    // ignored just like a 1-char ASCII title — Bug 5 / PRD ID 5).
+    if window_info.title.chars().count() < 2 && !window_info.title.is_empty() {
         return true;
     }
 
@@ -526,4 +528,53 @@ pub fn create_config_dir() -> Result<PathBuf, Box<dyn Error>> {
     std::fs::create_dir_all(&config_dir)?;
 
     Ok(config_dir)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::types::WindowInfo;
+
+    // Helper: build a WindowInfo from &str class + &str title.
+    fn wi(class: &str, title: &str) -> WindowInfo {
+        WindowInfo::new(class.to_string(), title.to_string())
+    }
+
+    #[test]
+    fn test_ignore_empty_title_non_allowed_class() {
+        // (a) empty title + non-allowed class => ignored (empty-title rule, step 2)
+        assert!(should_ignore_window(&wi("SomeApp", "")));
+    }
+
+    #[test]
+    fn test_keep_empty_title_allowed_class() {
+        // (b) empty title + allowed class (Chrome_WidgetWin_1) => kept
+        assert!(!should_ignore_window(&wi("Chrome_WidgetWin_1", "")));
+    }
+
+    #[test]
+    fn test_ignore_one_char_ascii_title() {
+        // (c) 1-char ASCII ("x", 1 byte) => ignored (short-title rule, 1 char < 2)
+        assert!(should_ignore_window(&wi("SomeApp", "x")));
+    }
+
+    #[test]
+    fn test_ignore_one_char_emoji_title() {
+        // (d) 1-char emoji ("😀", 4 bytes) => ignored AFTER the fix (1 char < 2).
+        //     BEFORE the fix this was KEPT (len()=4 >= 2). THIS IS THE REGRESSION CASE.
+        assert!(should_ignore_window(&wi("SomeApp", "😀")));
+    }
+
+    #[test]
+    fn test_keep_two_char_title() {
+        // (e) 2-char title ("ab") => kept (chars().count()=2, not < 2)
+        assert!(!should_ignore_window(&wi("SomeApp", "ab")));
+    }
+
+    #[test]
+    fn test_ignore_internal_class_name() {
+        // (f) internal class (Shell_TrayWnd) => ignored via blocklist (step 1),
+        //     regardless of title.
+        assert!(should_ignore_window(&wi("Shell_TrayWnd", "Taskbar")));
+    }
 }
