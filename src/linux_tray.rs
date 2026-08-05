@@ -679,21 +679,208 @@ mod gtk_dialog {
     }
 }
 
-/// Settings dialog: `zenity --forms` collecting Vendor/Product IDs, validated as
-/// hex and written to `config.toml` on save — parity with the macOS/Windows
-/// Settings entry.
+/// One picker row's three `zenity --list` columns: the live `product_name` (or
+/// `(unnamed)` when the HID descriptor carries none), the `0xVID:0xPID` in
+/// uppercase (for parity with the spec example), and the capability glyph +
+/// status. Built from a [`ClassifiedDevice`] per `spec/DEVICE_DISCOVERY.md`
+/// §5.1 / §3 (the ✓/✗ + "qmk_notifier" / "QMK board, no module" semantics).
+/// Pure; unit-tested.
+fn picker_columns(
+    d: &crate::core::notifier::ClassifiedDevice,
+) -> (String, String, String) {
+    use crate::core::notifier::DeviceKind;
+    let (glyph, status) = match d.kind {
+        DeviceKind::Capable { .. } => ("\u{2713}", "qmk_notifier"), // ✓
+        DeviceKind::NotQmkNotifier => ("\u{2717}", "QMK board, no module"), // ✗
+    };
+    let name = d.product_name.as_deref().unwrap_or("(unnamed)").to_string();
+    let vidpid = format!("0x{:04X}:0x{:04X}", d.vendor_id, d.product_id);
+    let cap = format!("{glyph} {status}");
+    (name, vidpid, cap)
+}
+
+/// Parse the `zenity --list --print-column=2` stdout (`0xFEED:0x0000`) back to a
+/// concrete `(u16, u16)`. Returns `None` on any malformed input (no colon,
+/// non-hex, or a missing half). Reuses [`parse_id`] for each half — since an
+/// empty/`auto` half yields `None` there, a half-missing selection (e.g.
+/// `"feed:"`) also resolves to `None` here. Pure; unit-tested.
+fn parse_vidpid(s: &str) -> Option<(u16, u16)> {
+    let mut it = s.trim().splitn(2, ':');
+    let vid = parse_id(it.next()?).ok()??; // ?? : Result→Option, Option<u16>→u16
+    let pid = parse_id(it.next()?).ok()??;
+    Some((vid, pid))
+}
+
+/// Persist VID/PID, apply the udev device rule (pkexec), and notify the user.
+/// Extracted verbatim from the former inline tail of [`show_settings_dialog_linux`]
+/// so the picker path and the manual `--forms` path share identical save
+/// behavior (including the [`ApplyOutcome`] notify detail). The
+/// [`apply_device_rule`]/pkexec flow is unchanged (both `None` ⇒ no rule; at
+/// least one `Some` ⇒ install the VID/PID fallback rule privileged).
+fn save_and_notify(vendor_id: Option<u16>, product_id: Option<u16>) {
+    let vid_str = vendor_id
+        .map(|v| format!("0x{v:04x}"))
+        .unwrap_or_else(|| "auto".to_string());
+    let pid_str = product_id
+        .map(|p| format!("0x{p:04x}"))
+        .unwrap_or_else(|| "auto".to_string());
+    match write_config(vendor_id, product_id) {
+        Ok(path) => {
+            let outcome = apply_device_rule(vendor_id, product_id);
+            let detail = match outcome {
+                ApplyOutcome::AutoDiscovery => {
+                    "Auto-discovery in effect (any standard QMK keyboard).".to_string()
+                }
+                ApplyOutcome::Applied => "Device rule applied.".to_string(),
+                ApplyOutcome::NeedsManual(how) => how,
+            };
+            notify(
+                "QMKonnect — settings saved",
+                &format!(
+                    "vendor_id = {vid_str}, product_id = {pid_str}\n{detail}\n{}",
+                    path.display()
+                ),
+            );
+        }
+        Err(e) => {
+            eprintln!("Settings: failed to write config: {}", e);
+            notify("QMKonnect — could not save", &e.to_string());
+        }
+    }
+}
+
+/// Run the discovered-device picker as a `zenity --list` dialog (three columns:
+/// Device / VID:PID / Capability) and return the selected board's
+/// `(vid, pid)` parsed from the printed column-2 cell.
+///
+/// Returns `None` on cancel/close (zenity exit 1) OR on an OK with no selection
+/// (exit 0 + empty stdout) — both fall through to the `--forms` Advanced path in
+/// [`show_settings_dialog_linux`]. No notification is fired here: a missing
+/// zenity would make both dialogs fail, and the `--forms` (which follows) has its
+/// own zenity-missing notify that covers the case.
+fn run_device_picker(
+    devices: &[crate::core::notifier::ClassifiedDevice],
+) -> Option<(u16, u16)> {
+    // Build argv: flags first, then the 3 column headers, then N×3 values.
+    // Each value is pushed as its own arg element (Rust's Command does NOT go
+    // through a shell, so the ✓ glyph + spaces are fine — no quoting).
+    let mut args: Vec<String> = vec![
+        "--list".into(),
+        "--title=QMK Settings".into(),
+        "--print-column=2".into(), // print only the VID:PID cell of the chosen row
+        "--hide-header".into(),    // 1-3 rows ⇒ headers add noise
+        "--width=520".into(),
+        "--text=Select a detected keyboard (or Cancel for manual entry):".into(),
+        "--column=Device".into(),
+        "--column=VID:PID".into(),
+        "--column=Capability".into(),
+    ];
+    for d in devices {
+        let (name, vidpid, cap) = picker_columns(d);
+        args.push(name);
+        args.push(vidpid);
+        args.push(cap);
+    }
+    let output = Command::new("zenity")
+        .args(args.iter().map(String::as_str))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output();
+    let out = match output {
+        Ok(o) if o.status.success() => o, // G4: success gate
+        _ => return None,                 // cancel/close/non-zero ⇒ no pick
+    };
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    if stdout.trim().is_empty() {
+        return None; // G4: OK-with-no-selection ⇒ fall through to --forms
+    }
+    parse_vidpid(&stdout) // None if malformed (defensive)
+}
+
+/// Settings dialog: a discovered-device picker (`zenity --list`) shown *before*
+/// the existing VID/PID `zenity --forms` (the Advanced / manual override), per
+/// `spec/DEVICE_DISCOVERY.md` §5 (the Discovered-Device Picker) and the Linux
+/// `--forms` contract in `spec/UI.md` §2.3 / §2.4.
+///
+/// The two dialogs run **sequentially** (separate `Command::output()` calls):
+/// the picker first; if a row is selected, its board's `(vid, pid)` is written
+/// via [`save_and_notify`] and the `--forms` is **skipped** (chosen-first
+/// precedence). If the user cancels the picker or selects nothing, the `--forms`
+/// opens as the Advanced / manual override. The three cases (`spec/DEVICE_DISCOVERY.md`
+/// §5.1):
+///
+///   * **empty** (0 devices): picker skipped; `--forms` text
+///     "No QMK keyboards detected. Enter IDs manually below."
+///   * **clean-auto** (1 capable board + no VID/PID configured): picker skipped
+///     to preserve the zero-config promise — auto-discovery already targets the
+///     single board, so nothing is written. `--forms` text "Detected: \u{3c}name>.
+///     Auto-discovery is active."
+///   * **picker** (≥2 boards, or 1 non-capable board, or 1 capable board with a
+///     VID/PID already set): the `zenity --list` is shown.
+///
+/// **Mode-A deviations, documented (`spec/DEVICE_DISCOVERY.md` §5.3):**
+///   * **No `[Rescan]` button.** Unlike the Windows message loop or the macOS
+///     `runModal`, the two zenity dialogs are sequential synchronous blocks —
+///     there is no "open dialog" window to click a button within.
+///     `classify_devices(true)` is called once per invocation; re-opening
+///     Settings refreshes (after the 5 s cache TTL, the probe re-runs).
+///   * **The `--list` tiles on pure tiling WMs** (Sway/i3/hyprland): `--list` is
+///     a normal toplevel, unlike `--forms` which floats. This is an accepted
+///     tradeoff — the device count is tiny (1–3 keyboards), so a short tiled
+///     list is still usable, and `--list` provides the exact single-select →
+///     print-selection semantics needed. The window-info dialog
+///     ([`show_window_info_linux`]) avoids tiling via a heavyweight native GTK
+///     popup, but that plumbing is unjustified for a 3-row device list.
 ///
 /// The monitor + device-status poll re-read config on every notification / poll,
 /// so a save takes effect within ~3 s with no restart needed.
 fn show_settings_dialog_linux() {
-    // Pre-fill the header with the current configured values so the user knows
-    // what they're changing. (zenity --forms entries can't be pre-populated, so
-    // the current values are shown in the dialog text.)
-    let (cur_vid, cur_pid) = current_config_hex();
+    use crate::core::notifier::{classify_devices, DeviceKind};
+
+    // Classify once per open (reads the warm 5 s-TTL cache ⇒ ~free; re-open after
+    // TTL = fresh probe). G5/D5: do NOT clear the cache on open (parity with the
+    // macOS/Windows siblings).
+    let devices = classify_devices(true);
+    let (cur_vid, cur_pid) = current_config_vidpid();
+
+    // CASE B (clean-auto): exactly one capable board AND no VID/PID configured.
+    // The picker is skipped — auto-discovery already targets the single board, so
+    // there is nothing to choose and nothing to write (zero-config promise, §5.1).
+    let clean_auto = devices.len() == 1
+        && matches!(devices[0].kind, DeviceKind::Capable { .. })
+        && cur_vid.is_none()
+        && cur_pid.is_none();
+    // The picker is shown only when devices were found AND it's not clean-auto.
+    let picker = !devices.is_empty() && !clean_auto;
+
+    // CASE C: run the picker. A real selection short-circuits straight to the
+    // save path and skips the --forms (chosen-first precedence, D4).
+    if picker {
+        if let Some((v, p)) = run_device_picker(&devices) {
+            save_and_notify(Some(v), Some(p));
+            return; // SKIP the --forms (the disambiguation is done)
+        }
+        // else: cancel / no-selection ⇒ fall through to the --forms (Advanced).
+    }
+
+    // The --forms (Advanced / manual override), reached by empty / clean-auto /
+    // picker-fallthrough. The --text reflects the case (G14) so the user
+    // understands what they're seeing; the current values are shown in all three.
+    let (cur_vid_h, cur_pid_h) = current_config_hex();
+    let prefix = if devices.is_empty() {
+        "No QMK keyboards detected. Enter IDs manually below.".to_string()
+    } else if clean_auto {
+        format!(
+            "Detected: {}. Auto-discovery is active.",
+            devices[0].product_name.as_deref().unwrap_or("(unnamed)")
+        )
+    } else {
+        "Advanced / manual override — enter hex VID/PID.".to_string()
+    };
     let text = format!(
-        "QMK keyboard VID/PID\n\
-         Current: vendor_id = 0x{cur_vid}   product_id = 0x{cur_pid}\n\
-         Enter new hex values (the 0x prefix is optional):"
+        "{prefix}\n\
+         Current: vendor_id = 0x{cur_vid_h}   product_id = 0x{cur_pid_h}\n\
+         Enter hex values (the 0x prefix is optional; blank = auto-discovery):"
     );
 
     let output = Command::new("zenity")
@@ -738,39 +925,8 @@ fn show_settings_dialog_linux() {
         }
     };
 
-    let vid_str = vid
-        .map(|v| format!("0x{v:04x}"))
-        .unwrap_or_else(|| "auto".to_string());
-    let pid_str = pid
-        .map(|p| format!("0x{p:04x}"))
-        .unwrap_or_else(|| "auto".to_string());
-
-    match write_config(vid, pid) {
-        Ok(path) => {
-            // Apply the device rule. Both-unset needs no rule (the static
-            // usage-page rule covers any 0xFF60/0x61 device); at least one set
-            // -> install the on-demand VID/PID fallback rule privileged.
-            let outcome = apply_device_rule(vid, pid);
-            let detail = match outcome {
-                ApplyOutcome::AutoDiscovery => {
-                    "Auto-discovery in effect (any standard QMK keyboard).".to_string()
-                }
-                ApplyOutcome::Applied => "Device rule applied.".to_string(),
-                ApplyOutcome::NeedsManual(how) => how,
-            };
-            notify(
-                "QMKonnect — settings saved",
-                &format!(
-                    "vendor_id = {vid_str}, product_id = {pid_str}\n{detail}\n{}",
-                    path.display()
-                ),
-            );
-        }
-        Err(e) => {
-            eprintln!("Settings: failed to write config: {}", e);
-            notify("QMKonnect — could not save", &e.to_string());
-        }
-    }
+    // G10: identical behavior to the pre-refactor inline tail (now extracted).
+    save_and_notify(vid, pid);
 }
 
 /// Outcome of applying the device rule from the Settings dialog.
@@ -834,19 +990,30 @@ fn apply_device_rule(vendor_id: Option<u16>, product_id: Option<u16>) -> ApplyOu
 }
 
 /// Read the currently-configured VID/PID as lowercased 4-digit hex strings
-/// (without `0x`), or `"auto"` when unset (auto-discovery).
+/// (without `0x`), or `"auto"` when unset (auto-discovery). Derives from
+/// [`current_config_vidpid`] so there is a single config-read.
 fn current_config_hex() -> (String, String) {
-    let (v, p) = crate::platforms::get_config_paths()
-        .into_iter()
-        .find(|p| p.exists())
-        .and_then(|p| crate::core::parse_config(&p).ok())
-        .map(|cfg| (cfg.vendor_id, cfg.product_id))
-        .unwrap_or((None, None));
+    let (v, p) = current_config_vidpid();
     let fmt = |id: Option<u16>| match id {
         Some(x) => format!("{x:04x}"),
         None => "auto".to_string(),
     };
     (fmt(v), fmt(p))
+}
+
+/// The currently-configured VID/PID as raw `Option<u16>` values (the clean-auto
+/// check in [`show_settings_dialog_linux`] needs the real Options, not the
+/// display strings from [`current_config_hex`]). Reads the first existing config
+/// candidate via `crate::platforms::get_config_paths()` — the established
+/// pattern shared with [`write_config`]. Returns `(None, None)` when no config
+/// exists yet (fresh install) ⇒ auto-discovery.
+fn current_config_vidpid() -> (Option<u16>, Option<u16>) {
+    crate::platforms::get_config_paths()
+        .into_iter()
+        .find(|p| p.exists())
+        .and_then(|p| crate::core::parse_config(&p).ok())
+        .map(|cfg| (cfg.vendor_id, cfg.product_id))
+        .unwrap_or((None, None))
 }
 
 /// Persist VID/PID to the config file, preserving every other field. `None`
@@ -1076,5 +1243,77 @@ mod tests {
                 (icon.width as usize) * (icon.height as usize) * 4
             );
         }
+    }
+
+    #[test]
+    fn test_picker_columns() {
+        // spec/DEVICE_DISCOVERY.md §5.1 / §3: ✓ qmk_notifier vs ✗ "QMK board,
+        // no module"; name or "(unnamed)"; VID:PID in uppercase.
+        use crate::core::notifier::{ClassifiedDevice, DeviceKind};
+        let capable = ClassifiedDevice {
+            path: String::new(),
+            vendor_id: 0xFEED,
+            product_id: 0x0000,
+            product_name: Some("Dactyl".into()),
+            usage_page: 0xFF60,
+            usage: 0x61,
+            kind: DeviceKind::Capable {
+                proto_ver: 2,
+                feature_flags: 1,
+                callback_count: 0,
+                board_rules_present: false,
+            },
+        };
+        let (n, vp, c) = picker_columns(&capable);
+        assert_eq!(n, "Dactyl");
+        assert_eq!(vp, "0xFEED:0x0000");
+        assert!(
+            c.starts_with('\u{2713}') && c.contains("qmk_notifier"),
+            "cap: {c}"
+        );
+
+        // NotQmkNotifier variant (different VID/PID + name).
+        let notqmk = ClassifiedDevice {
+            kind: DeviceKind::NotQmkNotifier,
+            vendor_id: 0x3434,
+            product_id: 0x0123,
+            product_name: Some("Keychron".into()),
+            ..capable.clone()
+        };
+        let (n2, vp2, c2) = picker_columns(&notqmk);
+        assert_eq!(n2, "Keychron");
+        assert_eq!(vp2, "0x3434:0x0123");
+        assert!(
+            c2.starts_with('\u{2717}') && c2.contains("QMK board, no module"),
+            "cap: {c2}"
+        );
+
+        // Unnamed board (product_name is None).
+        let unnamed = ClassifiedDevice {
+            product_name: None,
+            kind: DeviceKind::NotQmkNotifier,
+            vendor_id: 0x3434,
+            product_id: 0x0123,
+            ..capable.clone()
+        };
+        let (n3, vp3, _c3) = picker_columns(&unnamed);
+        assert_eq!(n3, "(unnamed)");
+        assert_eq!(vp3, "0x3434:0x0123");
+    }
+
+    #[test]
+    fn test_parse_vidpid() {
+        // Valid selections parse back to concrete (vid, pid).
+        assert_eq!(parse_vidpid("0xFEED:0x0000"), Some((0xFEED, 0x0000)));
+        assert_eq!(parse_vidpid("feed:0x123"), Some((0xFEED, 0x0123)));
+        assert_eq!(parse_vidpid("  0xFEED:0x0000  "), Some((0xFEED, 0x0000))); // trimmed
+        // Malformed / empty / half-missing selections → None (fall through).
+        assert_eq!(parse_vidpid(""), None);
+        assert_eq!(parse_vidpid("feed"), None); // no colon
+        assert_eq!(parse_vidpid("feed:"), None); // missing pid
+        assert_eq!(parse_vidpid(":123"), None); // missing vid
+        assert_eq!(parse_vidpid("garbage:x"), None); // non-hex vid
+        // splitn(2): the pid half carries a stray '|' → parse_id rejects it.
+        assert_eq!(parse_vidpid("0xFEED:0x0000|extra"), None);
     }
 }
