@@ -114,7 +114,7 @@
               "type": "Task",
               "id": "P1.M2.T1",
               "title": "Reset handshake state when VID/PID changes in Settings (all platforms)",
-              "status": "Researching",
+              "status": "Ready",
               "description": "When multiple capable boards are present and the user switches VID/PID in Settings, no plug/unplug event fires, so the PresenceTracker Gain/Loss loop never re-handshakes. The stale CALLBACK_NAMES map from the old board persists for the new board. Fix: call reset_handshake_state() + perform_handshake() in each platform's save path when VID/PID actually changes.",
               "subtasks": [
                 {
@@ -151,7 +151,7 @@
                   "type": "Subtask",
                   "id": "P1.M2.T1.S3",
                   "title": "Add reset_handshake_state() + perform_handshake() to Linux tray save path (linux_tray.rs)",
-                  "status": "Researching",
+                  "status": "Ready",
                   "story_points": 1,
                   "dependencies": [],
                   "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See plan/006_8f4080956ee0/bugfix/001_558dab5d68a5/architecture/bug_findings.md §Bug 4. The Linux save path is `fn save_and_notify(vendor_id: Option<u16>, product_id: Option<u16>)` at src/linux_tray.rs L718. It calls write_config(vendor_id, product_id) (L725) then apply_device_rule. `verbose` is NOT in scope here (save_and_notify takes only vid/pid). The existing helper `fn current_vidpid() -> Option<(u16, u16)>` at L988-1012 reads the current config's VID/PID.\n2. INPUT: The new vendor_id/product_id passed to save_and_notify, and the pre-save VID/PID from current_vidpid() called BEFORE write_config.\n3. LOGIC: At the top of the `Ok(path) => { ... }` arm (after write_config succeeds, L726), add: read old VID/PID via `let old = current_vidpid();` (NOTE: call this BEFORE write_config or its result is already stale — actually write_config already wrote, so snapshot BEFORE write_config at the top of save_and_notify). Compare old vs new. If changed: `crate::core::notifier::reset_handshake_state(); crate::core::notifier::perform_handshake(false);` (pass false for verbose since it's not in scope; alternatively add a `verbose: bool` param to save_and_notify and update its two call sites at L856 and L925).\n4. OUTPUT: Same as P1.M2.T1.S1/S2 — stale name map cleared and rebuilt for the new board on Linux.\n5. DOCS: none — internal handshake lifecycle change.",
