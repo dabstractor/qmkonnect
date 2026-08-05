@@ -4,7 +4,7 @@
       "type": "Phase",
       "id": "P1",
       "title": "Bug Fix Release — Identifier, Autostart, Handshake & Heuristic Defects",
-      "status": "Planned",
+      "status": "Researching",
       "description": "Fix five verified defects: Hyprland dialog identifier mismatch (Major), X11 WM_CLASS parser off-by-one (Major), unquoted Windows autostart path (Major), VID/PID change not resetting handshake (Minor), and Windows title-length heuristic using byte length instead of char count (Minor). All fixes are surgical one-liners or small-block changes grounded in confirmed codebase research (see plan/006_8f4080956ee0/bugfix/001_558dab5d68a5/architecture/).",
       "milestones": [
         {
@@ -107,7 +107,7 @@
           "type": "Milestone",
           "id": "P1.M2",
           "title": "Minor Bug Fixes — Handshake Reset & Title Heuristic",
-          "status": "Planned",
+          "status": "Researching",
           "description": "Fix the two Minor-severity defects (PRD IDs 3, 5): VID/PID change in Settings not resetting handshake state (multi-board case), and Windows should_ignore_window title-length heuristic counting bytes instead of characters.",
           "tasks": [
             {
@@ -192,14 +192,14 @@
               "type": "Task",
               "id": "P1.M2.T3",
               "title": "Sync changeset-level documentation",
-              "status": "Planned",
+              "status": "Researching",
               "description": "Final documentation sweep to verify that docs/troubleshooting.md, docs/configuration.md, and README.md remain accurate after the identifier-consistency fixes (Hyprland initial_class, X11 class), the autostart quoting fix, and the heuristic fix. Per SOW §5 Mode B, this task runs LAST and depends on all implementing subtasks.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M2.T3.S1",
                   "title": "Verify and update docs/troubleshooting.md window-class guidance",
-                  "status": "Researching",
+                  "status": "Complete",
                   "story_points": 0.5,
                   "dependencies": [
                     "P1.M1.T1.S1",
@@ -215,7 +215,7 @@
                   "type": "Subtask",
                   "id": "P1.M2.T3.S2",
                   "title": "Verify README.md and docs remain accurate for autostart and heuristic changes",
-                  "status": "Planned",
+                  "status": "Researching",
                   "story_points": 0.5,
                   "dependencies": [
                     "P1.M1.T3.S1",

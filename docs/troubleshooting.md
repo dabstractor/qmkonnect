@@ -573,7 +573,11 @@ above is always printed.)
    ```bash
    qmkonnect -v | grep -i "window\|sending"     # the class\x1Dtitle string sent
    ```
-   (or use the tray's "Show Window Information"). A `*chrome*` rule won't match a
+   (or use the tray's "Show Window Information"). That value is exactly what your
+   pattern is matched against, so trust it over a native tool — on Hyprland
+   QMKonnect uses the window's `initial_class` (which can differ from the `class`
+   field `hyprctl` prints), and on X11 it uses the **class** (the second field of
+   `xprop WM_CLASS`, not the instance). A `*chrome*` rule won't match a
    class reported as `Google Chrome` — adjust the pattern or use a `[class, title]`
    array.
 4. **Edit took effect?** `rules.toml` **is** re-parsed on every window focus
