@@ -968,6 +968,14 @@ fn show_settings_dialog(config_path: &std::path::Path) -> Result<(), Box<dyn std
             // typed hex pair (each None ⇒ auto-discovery). When neither is set
             // the user clicked OK without changing anything, so we keep the
             // open-time config.
+            //
+            // Bug 4 (PRD ID 3): snapshot the VID/PID BEFORE the move below.
+            // `current_config` is moved into `merged` on the next line (Config is
+            // Clone, not Copy), so capture these Copy Option<u16> fields now to
+            // diff against the post-save values and decide whether the handshake
+            // must be reset for the newly-selected board.
+            let old_vid = current_config.vendor_id;
+            let old_pid = current_config.product_id;
             let mut merged = current_config;
             if let Some((v, p)) = dr.chosen {
                 merged.vendor_id = Some(v);
@@ -979,6 +987,21 @@ fn show_settings_dialog(config_path: &std::path::Path) -> Result<(), Box<dyn std
             let config_content = crate::core::render_config_body(&merged);
 
             crate::core::atomic_write(config_path, &config_content)?;
+
+            // Bug 4 (PRD ID 3): if the VID/PID changed, reset + re-handshake for
+            // the newly-selected board so CALLBACK_NAMES (name→id map) is rebuilt
+            // for it instead of continuing to use the old board's map until a
+            // replug. reset_handshake_state() clears HOST_CAPABLE / BOARD_HAS_RULES
+            // / CALLBACK_NAMES / HAS_HANDSHAKED; perform_handshake then re-runs
+            // (its HAS_HANDSHAKED guard was just cleared) and reads config.toml
+            // fresh (configured_filter), so the just-written VID/PID selects the
+            // new board. `false` = non-verbose (verbose is not in scope here; see
+            // bug_findings.md §132 — do NOT thread it through handle_settings_click,
+            // which is shared with the macOS path).
+            if merged.vendor_id != old_vid || merged.product_id != old_pid {
+                crate::core::notifier::reset_handshake_state();
+                crate::core::notifier::perform_handshake(false);
+            }
 
             // Configuration saved successfully - no success dialog needed
             // The QMK connection is established fresh for each notification,
