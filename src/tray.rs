@@ -294,6 +294,7 @@ fn handle_open_at_login_click(item: &tray_icon::menu::CheckMenuItem) {
     item.set_checked(crate::autostart::is_enabled());
 }
 
+#[allow(unused_variables, clippy::vec_init_then_push)]
 pub fn setup_tray(verbose: bool) {
     // Use the standard tray-icon implementation for all platforms
     // The dock icon hiding is handled by Info.plist LSUIElement=true

@@ -416,6 +416,89 @@ const MAX_HOST_CALLBACKS: u8 = 64;
 /// stall hard.
 const CALLBACK_SWEEP_DEADLINE: Duration = Duration::from_secs(5);
 
+/// Maximum number of attempts for a single [`RunCommand::QueryCallback`] in
+/// [`query_callback_with_retry`] (Finding #1). A transient mis-read can surface
+/// the reply as a generic `Ack` instead of a `CallbackName`; a single retry on
+/// that specific index clears the overwhelming majority of such transients
+/// without re-running the whole sweep. The per-iteration lock is released
+/// between attempts so a window notification can still interleave.
+const QUERY_CALLBACK_MAX_ATTEMPTS: usize = 2;
+
+/// Query one callback index, retrying once on a transient mis-parse.
+///
+/// Returns `Some((name, index))` when a `CallbackName` reply (with a name) is
+/// decoded; `None` otherwise (no name, an unexpected reply after all retries,
+/// or an I/O error). Each attempt re-acquires `notifier` for itself and releases
+/// it before returning/yielding, mirroring the sweep's per-iteration lock
+/// discipline (#4) so a window-notification send can interleave between
+/// attempts.
+///
+/// This is qmkonnect-side hardening for Finding #1: the root cause of the
+/// transient mis-parse lives outside this repo (firmware timing or the
+/// `qmk-notifier` crate's bounded read), but retrying the single affected index
+/// clears it without re-running the whole sweep, and (combined with the
+/// empty-map warning in the caller) prevents a session-long silent no-op of
+/// host-rule callback toggles.
+fn query_callback_with_retry(
+    notifier: &Arc<Mutex<Box<dyn Notifier>>>,
+    index: u8,
+    filter: &DeviceFilter,
+    verbose: bool,
+) -> Option<(String, u8)> {
+    for attempt in 0..QUERY_CALLBACK_MAX_ATTEMPTS {
+        let n = notifier.lock().unwrap_or_else(|e| e.into_inner());
+        let reply = n.send_command(qmk_notifier::RunCommand::QueryCallback(index), filter);
+        drop(n); // release NOTIFIER before any retry / the sweep's yield
+        match reply {
+            Ok(qmk_notifier::CommandResponse::CallbackName {
+                index: idx,
+                name: Some(name),
+            }) => return Some((name, idx)),
+            Ok(qmk_notifier::CommandResponse::CallbackName { name: None, .. }) => {
+                if verbose {
+                    eprintln!(
+                        "[{}ms] perform_handshake: callback {} has no name — skipped",
+                        crate::core::now_ms(),
+                        index
+                    );
+                }
+                return None;
+            }
+            Ok(other) => {
+                // Transient mis-parse: the firmware (or the crate's bounded read)
+                // surfaced a generic Ack where a CallbackName was expected. Retry
+                // once on this index; if it still mis-parses, log + give up.
+                if attempt + 1 < QUERY_CALLBACK_MAX_ATTEMPTS {
+                    if verbose {
+                        eprintln!(
+                            "[{}ms] perform_handshake: callback {} unexpected reply {:?} — retrying",
+                            crate::core::now_ms(),
+                            index,
+                            other
+                        );
+                    }
+                    thread::yield_now();
+                    continue;
+                }
+                if verbose {
+                    eprintln!(
+                        "[{}ms] perform_handshake: callback {} unexpected reply {:?}",
+                        crate::core::now_ms(),
+                        index,
+                        other
+                    );
+                }
+                return None;
+            }
+            Err(e) => {
+                eprintln!("Warning: QUERY_CALLBACK({}) failed: {}", index, e);
+                return None;
+            }
+        }
+    }
+    None
+}
+
 /// Run the host-rules capability handshake with explicit [`HandshakeOptions`].
 ///
 /// This is the full implementation; [`perform_handshake`] is a thin wrapper
@@ -437,7 +520,7 @@ pub fn perform_handshake_with(verbose: bool, opts: HandshakeOptions) {
 
     let filter = configured_filter();
     let notifier = get_notifier();
-    let n = notifier.lock().unwrap();
+    let n = notifier.lock().unwrap_or_else(|e| e.into_inner());
 
     match n.send_command(qmk_notifier::RunCommand::QueryInfo, &filter) {
         Ok(qmk_notifier::CommandResponse::Info {
@@ -502,48 +585,33 @@ pub fn perform_handshake_with(verbose: bool, opts: HandshakeOptions) {
                 }
                 // Re-acquire NOTIFIER for THIS iteration only — a window notification can now
                 // interleave between any two iterations.
-                let n = notifier.lock().unwrap();
-                match n.send_command(qmk_notifier::RunCommand::QueryCallback(i), &filter) {
-                    Ok(qmk_notifier::CommandResponse::CallbackName {
-                        index,
-                        name: Some(name),
-                    }) => {
-                        local.insert(name, index); // echo the firmware's index for robustness
-                    }
-                    Ok(qmk_notifier::CommandResponse::CallbackName { name: None, .. }) => {
-                        if verbose {
-                            eprintln!(
-                                "[{}ms] perform_handshake: callback {} has no name — skipped",
-                                crate::core::now_ms(),
-                                i
-                            );
-                        }
-                    }
-                    Ok(other) => {
-                        if verbose {
-                            eprintln!(
-                                "[{}ms] perform_handshake: callback {} unexpected reply {:?}",
-                                crate::core::now_ms(),
-                                i,
-                                other
-                            );
-                        }
-                    }
-                    Err(e) => {
-                        eprintln!("Warning: QUERY_CALLBACK({}) failed: {}", i, e);
-                    }
-                }
-                drop(n); // release NOTIFIER before the next iteration (per-iteration release)
-                         // #4: yield so a window-notification waiter (`notify_qmk`'s immediate send or
-                         // `debounce_worker`'s flush — both BLOCKING on NOTIFIER) actually gets to acquire
-                         // the lock before we re-lock for the next iteration. Without this, std::sync::Mutex's
-                         // unfair barging re-acquires in ~ns and starves the woken waiter for the whole sweep,
-                         // defeating the per-iteration release. sched_yield is ~1µs and a no-op when nothing
-                         // else is runnable (N<=64 iterations => <=~64µs/handshake, negligible).
+                let mapped = query_callback_with_retry(&notifier, i, &filter, verbose);
+                if let Some((name, index)) = mapped {
+                    local.insert(name, index);
+                } // None: logged inside; transient mis-read retried there
+                  // #4: yield so a window-notification waiter (`notify_qmk`'s immediate send or
+                  // `debounce_worker`'s flush — both BLOCKING on NOTIFIER) actually gets to acquire
+                  // the lock before we re-lock for the next iteration. Without this, std::sync::Mutex's
+                  // unfair barging re-acquires in ~ns and starves the woken waiter for the whole sweep,
+                  // defeating the per-iteration release. sched_yield is ~1µs and a no-op when nothing
+                  // else is runnable (N<=64 iterations => <=~64µs/handshake, negligible).
                 thread::yield_now();
             }
+            // Finding #1: a transient mis-read of one QUERY_CALLBACK reply can leave the
+            // map empty despite a nonzero firmware `callback_count`, silently no-op'ing
+            // every host-rule callback toggle for the whole session (the handshake is
+            // deduped per board boot). Surface that as a non-verbose warning so the user
+            // isn't left guessing why their `vim_lazy` rule did nothing.
+            if callback_count > 0 && local.is_empty() {
+                eprintln!(
+                    "Warning: firmware reported {} callbacks but none could be mapped \
+                     — host-rule callback toggles (enable/disable) will be no-ops this session. \
+                     Reconnect the keyboard to retry the handshake.",
+                    callback_count
+                );
+            }
             {
-                let mut names = CALLBACK_NAMES.lock().unwrap();
+                let mut names = CALLBACK_NAMES.lock().unwrap_or_else(|e| e.into_inner());
                 names.clear();
                 names.extend(local);
             }
@@ -574,7 +642,10 @@ pub fn perform_handshake_with(verbose: bool, opts: HandshakeOptions) {
                 eprintln!(
                     "[{}ms] perform_handshake: complete — capable ({} callbacks mapped)",
                     crate::core::now_ms(),
-                    CALLBACK_NAMES.lock().unwrap().len()
+                    CALLBACK_NAMES
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .len()
                 );
             }
         }
@@ -588,7 +659,10 @@ pub fn perform_handshake_with(verbose: bool, opts: HandshakeOptions) {
         Ok(qmk_notifier::CommandResponse::Timeout) => {
             drop(n);
             HOST_CAPABLE.store(false, Ordering::SeqCst);
-            CALLBACK_NAMES.lock().unwrap().clear();
+            CALLBACK_NAMES
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clear();
             HAS_HANDSHAKED.store(false, Ordering::SeqCst); // transient — allow retry
                                                            // Warm the per-path cache (best-effort no-op under MockNotifier).
             warm_cache_from_handshake(DeviceKind::NotQmkNotifier);
@@ -602,7 +676,10 @@ pub fn perform_handshake_with(verbose: bool, opts: HandshakeOptions) {
         Ok(other) => {
             drop(n);
             HOST_CAPABLE.store(false, Ordering::SeqCst);
-            CALLBACK_NAMES.lock().unwrap().clear();
+            CALLBACK_NAMES
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clear();
             // Warm the per-path cache (best-effort no-op under MockNotifier).
             warm_cache_from_handshake(DeviceKind::NotQmkNotifier);
             if verbose {
@@ -616,7 +693,10 @@ pub fn perform_handshake_with(verbose: bool, opts: HandshakeOptions) {
         Err(e) => {
             drop(n);
             HOST_CAPABLE.store(false, Ordering::SeqCst);
-            CALLBACK_NAMES.lock().unwrap().clear();
+            CALLBACK_NAMES
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clear();
             // LOW-1: a device error means QUERY_INFO never landed on the
             // firmware — release the dedup token so the next poll/reconnect
             // retries the handshake against the capable board.
@@ -668,7 +748,10 @@ fn validate_rules_callback_names(verbose: bool) {
             return;
         }
     };
-    let known = CALLBACK_NAMES.lock().unwrap().clone();
+    let known = CALLBACK_NAMES
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
     let unknown = unknown_callback_names(&rules, &known);
     for name in &unknown {
         eprintln!(
@@ -714,7 +797,10 @@ pub fn host_capable() -> bool {
 /// into [`crate::core::rules::evaluate`]; P5.M1's `--list-callbacks` prints it.
 /// Empty when not capable.
 pub fn callback_names() -> HashMap<String, u8> {
-    CALLBACK_NAMES.lock().unwrap().clone()
+    CALLBACK_NAMES
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
 }
 
 /// Clear all handshake state (capability flag, callback map, dedup guard).
@@ -722,10 +808,16 @@ pub fn callback_names() -> HashMap<String, u8> {
 /// Called by P4.M2.T1.S2 on a real device transition (`is_device_connected()`
 /// false→true) so the next [`perform_handshake`] re-runs, and by the handshake
 /// tests for isolation.
+// Linux has no background presence probe (macOS/Windows only), so this is only
+// reached from those runners + tests; allow dead code on Linux.
+#[cfg_attr(not(any(target_os = "macos", target_os = "windows")), allow(dead_code))]
 pub fn reset_handshake_state() {
     HOST_CAPABLE.store(false, Ordering::SeqCst);
     BOARD_HAS_RULES.store(false, Ordering::SeqCst);
-    CALLBACK_NAMES.lock().unwrap().clear();
+    CALLBACK_NAMES
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clear();
     HAS_HANDSHAKED.store(false, Ordering::SeqCst);
 }
 
@@ -1043,8 +1135,9 @@ fn enumerate_candidates() -> Vec<Candidate> {
 /// scope), mirroring the callback sweep's per-iteration re-acquire
 /// (`perform_handshake_with` @~446) so a concurrent `notify_qmk` / debounce
 /// flush can interleave between candidates. Holding one lock across all
-/// candidates would starve the notification path. `.lock().unwrap()` matches
-/// `perform_handshake_with` — a poisoned `NOTIFIER` is a hard failure.
+/// candidates would starve the notification path. `.lock().unwrap_or_else(|e|
+/// e.into_inner())` matches `perform_handshake_with`'s poison-recovery idiom
+/// (PRD §10).
 #[allow(dead_code)]
 fn classify_candidates(candidates: Vec<Candidate>, verbose: bool) -> Vec<ClassifiedDevice> {
     let notifier = get_notifier();
@@ -1179,6 +1272,7 @@ fn warm_cache_from_handshake(kind: DeviceKind) {
 /// threads (`tray` on macOS/Windows, `linux_tray` on Linux) and
 /// the startup path so the three call sites stay in lockstep.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(any(target_os = "macos", target_os = "windows")), allow(dead_code))]
 pub enum HandshakeAction {
     /// No transition, or `None → false` at startup: nothing to do.
     None,
@@ -1205,6 +1299,7 @@ pub enum HandshakeAction {
 /// | `Some(true)`    | `true`  | `None`  | (no change)
 /// | `Some(false)`   | `false` | `None`  | (no change)
 /// | `Some(true)`    | `false` | `Loss`  | (real disconnect)
+#[cfg_attr(not(any(target_os = "macos", target_os = "windows")), allow(dead_code))]
 pub fn handshake_action(prev: Option<bool>, now: bool) -> HandshakeAction {
     match (prev, now) {
         (Some(true), false) => HandshakeAction::Loss, // real disconnect
@@ -1232,6 +1327,7 @@ pub fn handshake_action(prev: Option<bool>, now: bool) -> HandshakeAction {
 /// [`is_device_connected`], just collecting the paths instead of folding to a
 /// bool). Used by [`PresenceTracker`] to detect a bus change (plug/unplug) so it
 /// re-probes capable presence only then.
+#[cfg_attr(not(any(target_os = "macos", target_os = "windows")), allow(dead_code))]
 pub fn tier1_paths() -> Vec<String> {
     enumerate_candidates().into_iter().map(|c| c.path).collect()
 }
@@ -1248,6 +1344,7 @@ pub fn tier1_paths() -> Vec<String> {
 ///   last known flag is reused (a board cannot change firmware without a
 ///   replug, which changes the path set).
 /// * `!tier1_present` ⇒ capable is definitively `false` regardless (no board).
+#[cfg_attr(not(any(target_os = "macos", target_os = "windows")), allow(dead_code))]
 fn presence_tick_decision(
     last_capable: bool,
     paths_changed: bool,
@@ -1289,11 +1386,13 @@ fn presence_tick_decision(
 /// `NoModule`; `Gain` ⇒ [`perform_handshake`] ⇒ `HOST_CAPABLE=true` ⇒
 /// `Connected` (after the sub-second handshake; the brief `NoModule` window is
 /// the documented transient caveat).
+#[cfg_attr(not(any(target_os = "macos", target_os = "windows")), allow(dead_code))]
 pub struct PresenceTracker {
     last_paths: Vec<String>,
     last_capable: bool,
 }
 
+#[cfg_attr(not(any(target_os = "macos", target_os = "windows")), allow(dead_code))]
 impl PresenceTracker {
     /// Seed from the live bus + the startup-handshake result. Construct on the
     /// poll thread right after the runner's startup handshake so `last_capable`
@@ -1555,7 +1654,7 @@ fn debounce_worker() {
             let filter = configured_filter();
             let ctx = host_context_for_window(&window_info, verbose);
             let notifier = get_notifier();
-            let notifier = notifier.lock().unwrap();
+            let notifier = notifier.lock().unwrap_or_else(|e| e.into_inner());
             let _res =
                 dispatch_window_send(&**notifier, &filter, &message, ctx, "debounced", verbose);
             if let Err(e) = _res {
@@ -1623,7 +1722,7 @@ pub fn notify_qmk(
         let filter = configured_filter();
         let ctx = host_context_for_window(window_info, verbose);
         let notifier = get_notifier();
-        let notifier = notifier.lock().unwrap();
+        let notifier = notifier.lock().unwrap_or_else(|e| e.into_inner());
         let _res = dispatch_window_send(&**notifier, &filter, &message, ctx, "immediate", verbose);
         _res?;
     } else if verbose {
@@ -3374,10 +3473,71 @@ disable = ["known_b", "phantom"]
             .iter()
             .filter(|c| matches!(c, qmk_notifier::RunCommand::QueryCallback(_)))
             .count();
-        assert_eq!(
-            query_callbacks, MAX_HOST_CALLBACKS as usize,
-            "sweep must clamp to MAX_HOST_CALLBACKS, not trust callback_count"
+        // #4 clamps the sweep to MAX_HOST_CALLBACKS indices; Finding #1 then
+        // retries each transient-misparse index up to QUERY_CALLBACK_MAX_ATTEMPTS
+        // (the mock's default `Ack` is exactly such a transient, so every index
+        // retries once). The sweep still visits at most MAX_HOST_CALLBACKS
+        // distinct indices — the retry only re-queries a single index, never
+        // grows the sweep past the cap.
+        assert!(
+            query_callbacks <= (MAX_HOST_CALLBACKS as usize) * QUERY_CALLBACK_MAX_ATTEMPTS,
+            "sweep+retry must stay bounded by MAX_HOST_CALLBACKS * QUERY_CALLBACK_MAX_ATTEMPTS, got {}",
+            query_callbacks
         );
+        let distinct_indices = calls
+            .iter()
+            .filter_map(|c| match c {
+                qmk_notifier::RunCommand::QueryCallback(i) => Some(*i),
+                _ => None,
+            })
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            distinct_indices.len(),
+            MAX_HOST_CALLBACKS as usize,
+            "sweep must clamp to MAX_HOST_CALLBACKS distinct indices, not trust callback_count"
+        );
+    }
+
+    /// Finding #1: a transient mis-parse of a `QUERY_CALLBACK` reply (the
+    /// firmware/crate surfaces a generic `Ack` where a `CallbackName` was
+    /// expected) is retried once on that single index, recovering the name
+    /// without re-running the whole sweep. This pins the qmkonnect-side
+    /// hardening for the real-hardware transient from the validation report
+    /// (1-in-~20 occurrence that otherwise left `CALLBACK_NAMES` empty for the
+    /// session).
+    #[test]
+    fn test_handshake_sweep_retries_transient_callback_misparse() {
+        reset_test_state();
+        reset_handshake_state();
+        set_notifier(Box::new(MockNotifier::new()));
+        MockNotifier::set_mock_responses(vec![
+            qmk_notifier::CommandResponse::Info {
+                proto_ver: 2,
+                feature_flags: 0x01,
+                callback_count: 1,
+                board_rules_present: true,
+            },
+            qmk_notifier::CommandResponse::Ack { ok: true }, // SET_OS
+            // First QUERY_CALLBACK(0) transiently mis-parses as a generic Ack
+            // (the exact signature from the real-hardware validation run):
+            qmk_notifier::CommandResponse::Ack { ok: true },
+            // Retry clears it — the firmware answers properly:
+            qmk_notifier::CommandResponse::CallbackName {
+                index: 0,
+                name: Some("vim_lazy".into()),
+            },
+        ]);
+        perform_handshake(false);
+        assert!(host_capable());
+        // The name WAS mapped despite the transient (without the retry this
+        // session would silently no-op every `vim_lazy` host-rule toggle).
+        assert_eq!(callback_names().get("vim_lazy"), Some(&0));
+        // Exactly two QUERY_CALLBACK(0) round-trips went out: initial + retry.
+        let cb0_calls = MockNotifier::get_send_command_calls()
+            .iter()
+            .filter(|c| matches!(c, qmk_notifier::RunCommand::QueryCallback(0)))
+            .count();
+        assert_eq!(cb0_calls, QUERY_CALLBACK_MAX_ATTEMPTS);
     }
 
     /// #4: a realistic (small) `callback_count` sweeps that exact count — the

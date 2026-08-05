@@ -78,6 +78,10 @@ pub fn get_config_paths() -> Vec<std::path::PathBuf> {
 // Implemented for the tray-bearing platforms (macOS / Windows) and for the
 // Linux/Hyprland build (so the SNI tray's "Show Window Information" item has
 // data to surface); returns an empty list everywhere else.
+#[cfg_attr(
+    not(any(target_os = "macos", target_os = "windows", feature = "linux-tray")),
+    allow(dead_code)
+)]
 pub fn list_foreground_windows() -> Vec<(String, String)> {
     #[cfg(target_os = "macos")]
     return macos::list_foreground_windows();

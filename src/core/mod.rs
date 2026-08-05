@@ -257,6 +257,7 @@ pub fn render_default_config_template() -> String {
 /// this function — guaranteeing the user's `usage_page`/`usage`/`debounce_ms`/
 /// `poll_interval_ms` survive a VID/PID edit (previously they were silently
 /// reset to defaults because the save path rendered a VID/PID-only body).
+#[cfg_attr(not(any(target_os = "macos", target_os = "windows")), allow(dead_code))]
 pub fn render_config_body(config: &Config) -> String {
     let vid_line = match config.vendor_id {
         Some(v) => format!("vendor_id  = 0x{v:04x}"),
