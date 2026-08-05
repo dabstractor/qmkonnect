@@ -1,0 +1,405 @@
+{
+  "backlog": [
+    {
+      "type": "Phase",
+      "id": "P1",
+      "title": "Truthful three-state device status (the F13 headline)",
+      "status": "Planned",
+      "description": "Deliver the user-visible point of F13: a pure-VIA board no longer shows a false-green 'Connected'. Derive a three-state DeviceStatus from the existing is_device_connected() + host_capable() and render it in both tray surfaces. This phase has NO dependency on classify_devices().",
+      "milestones": [
+        {
+          "type": "Milestone",
+          "id": "P1.M1",
+          "title": "Three-state status resolver + both tray surfaces",
+          "status": "Planned",
+          "description": "Add a DeviceStatus resolver deriving from existing state, and wire three-state rendering into macOS/Windows (tray.rs) and Linux (linux_tray.rs) tray surfaces.",
+          "tasks": [
+            {
+              "type": "Task",
+              "id": "P1.M1.T1",
+              "title": "Add a DeviceStatus resolver and wire three-state rendering into macOS/Windows + Linux trays",
+              "status": "Planned",
+              "description": "Add DeviceStatus enum + device_status() resolver to notifier.rs, then change both tray surfaces from two-state to three-state, including the Linux one-shot notify-send on Disconnected->NoModule.",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P1.M1.T1.S1",
+                  "title": "Add DeviceStatus (three-state) to src/core/notifier.rs and a device_status() resolver",
+                  "status": "Planned",
+                  "story_points": 2,
+                  "dependencies": [],
+                  "prd_selectors": [
+                    "h2.34",
+                    "h3.15",
+                    "h2.3",
+                    "h3.29",
+                    "h3.74"
+                  ],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See plan/005_8b95ea464bd9/architecture/notifier_mechanisms.md. is_device_connected() at notifier.rs:216 is pure Tier-1 enumerate (never opens). host_capable() at notifier.rs:689 reads HOST_CAPABLE AtomicBool (line 270), set true by perform_handshake_with at line 558 on a Gain, reset false by reset_handshake_state() at line 706 on a Loss. The status-poll threads (tray.rs:380-406, linux_tray.rs:259-301) already drive handshake_action and keep host_capable() correct on every transition. The simpler enum form { Connected, NoModule, Disconnected } is preferred for P1 (per-board count defers to P3's classify_devices). Spec table: DEVICE_DISCOVERY.md section 3.\n2. INPUT: src/core/notifier.rs (is_device_connected at line 216, host_capable at line 689, HOST_CAPABLE at line 270).\n3. LOGIC: Add pub enum DeviceStatus { Connected, NoModule, Disconnected }. Add pub fn device_status() -> DeviceStatus deriving per the three-state table: Disconnected = !is_device_connected(); NoModule = is_device_connected() && !host_capable(); Connected = is_device_connected() && host_capable(). Do NOT add per-path pinging here. Keep is_device_connected() unchanged (still used by write-path/broadcast decision and picker Tier-1 pass).\n4. OUTPUT: DeviceStatus + device_status() in notifier.rs with unit tests for the three derivations (including the is_device_connected && !host_capable -> NoModule case). No UI change yet (S2/S3 consume this).\n5. DOCS: [Mode A] Update the device_status()/DeviceStatus doc-comment to cite DEVICE_DISCOVERY.md section 3 and explain derivation from existing state (so a future reader doesn't assume a per-path ping)."
+                },
+                {
+                  "type": "Subtask",
+                  "id": "P1.M1.T1.S2",
+                  "title": "Render three-state status in src/tray.rs (macOS/Windows)",
+                  "status": "Planned",
+                  "story_points": 2,
+                  "dependencies": ["P1.M1.T1.S1"],
+                  "prd_selectors": [
+                    "h2.34",
+                    "h3.74",
+                    "h2.3",
+                    "h3.29",
+                    "h2.50"
+                  ],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See plan/005_8b95ea464bd9/architecture/tray_surfaces.md. UserEvent::DeviceStatus(bool) is at tray.rs:41. device_status_text(connected: bool) is at tray.rs:660. The status-poll thread is at tray.rs:380-406 (3s interval, seeds last with startup_device_was_connected(), sends UserEvent::DeviceStatus only on transition). The event-loop arm is at tray.rs:507-510 (calls device_status_i.set_text). First-paint creates MenuItem at tray.rs:312-319 with device_status_text(is_device_connected()) and enabled=false (disabled label). The handshake_action/perform_handshake/reset lifecycle stays keyed on the Tier-1 is_device_connected() transition at lines 390-401 — do NOT gate it on the three-state value. Spec: UI.md section 4 three-state table.\n2. INPUT: DeviceStatus + device_status() from P1.M1.T1.S1. spec/UI.md section 4. spec/DEVICE_DISCOVERY.md section 3.\n3. LOGIC: Change UserEvent::DeviceStatus(bool) -> UserEvent::DeviceStatus(DeviceStatus). Rewrite device_status_text as fn device_status_text(DeviceStatus) -> String with three branches: (U+25CF solid dot) 'Device Connected' / (U+26A0 warning) 'No module' / (U+25CB hollow circle) 'Disconnected'. The poll thread calls device_status() instead of is_device_connected() for the event payload, but KEEPS is_device_connected() for the handshake lifecycle gating (Gain/Loss at lines 390-401). First-paint at line 316 calls device_status(). The 'No module' warning glyph must remain a disabled MenuItem (parity with today's false arg at line 316).\n4. OUTPUT: macOS/Windows tray line 2 is three-state. Single-threaded cargo test --bin qmkonnect -- --test-threads=1 passes (per AGENTS.md).\n5. DOCS: [Mode A] The device_status_text doc-comment cites UI.md section 4."
+                },
+                {
+                  "type": "Subtask",
+                  "id": "P1.M1.T1.S3",
+                  "title": "Render three-state status in src/linux_tray.rs + the Disconnected->No-module one-shot notify-send",
+                  "status": "Planned",
+                  "story_points": 2,
+                  "dependencies": ["P1.M1.T1.S1"],
+                  "prd_selectors": [
+                    "h2.34",
+                    "h3.74",
+                    "h2.3",
+                    "h3.29",
+                    "h2.50",
+                    "h3.103"
+                  ],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See plan/005_8b95ea464bd9/architecture/tray_surfaces.md. QmkTray.device_connected: bool is at linux_tray.rs:68. Status-line build is inlined at linux_tray.rs:144-152 (same glyphs as tray.rs). Icon-dim-on-disconnect is at linux_tray.rs:156-169 (dim_icon scales alpha to ~35% via DIM_ALPHA=90 at line 923). Poll thread at linux_tray.rs:259-301 (1s interval, updates via poll_handle.update). The notify helper linux_tray::notify(summary, body) is at linux_tray.rs:846-859 (shells out to notify-send with --app-name=QMKonnect --icon=input-keyboard). notify-rust is deliberately avoided (nested tokio runtime panics in ksni's handler thread, spec section 7.3). The once-guard pattern to mirror is RULES_INVALID_NOTIFIED at notifier.rs:299 (AtomicBool::swap(true, SeqCst) to fire once, store(false, SeqCst) to re-arm). The parity test at linux_tray.rs:948 (status_text_uses_parity_glyphs) must be updated for the new three-state strings. handshake lifecycle stays keyed on the Tier-1 transition at lines 276-288.\n2. INPUT: DeviceStatus from P1.M1.T1.S1.\n3. LOGIC: Replace device_connected: bool with a DeviceStatus field on QmkTray. Menu line branches on three states: warning glyph full-alpha for NoModule; hollow circle dimmed for Disconnected; solid circle full-alpha for Connected. Icon-alpha: full-alpha for Connected AND NoModule (device IS present, just not capable); dimmed for Disconnected. The poll thread tracks the previous DeviceStatus and, on a Disconnected->NoModule transition ONLY, fires a one-shot notify-send (guarded so it fires once per entry into NoModule, not every tick — use a new AtomicBool once-guard modeled on RULES_INVALID_NOTIFIED). The handshake lifecycle stays keyed on the Tier-1 is_device_connected() transition. Update the parity test at linux_tray.rs:948.\n4. OUTPUT: Linux SNI tray is three-state; the one-shot notification fires exactly once on the transition. cargo test + cargo clippy --all-targets -- -D warnings clean.\n5. DOCS: [Mode A] The QmkTray status doc-comment cites DEVICE_DISCOVERY.md section 3 + the one-shot rationale."
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "Phase",
+      "id": "P2",
+      "title": "VIA coexistence guarantee (R-COEX, F14)",
+      "status": "Planned",
+      "description": "Make the already-true shared-open behavior an asserted, documented invariant (the load-bearing guarantee that the always-on QMKonnect never locks out VIA). Includes the research-gated write-narrowing decision (expected: defer).",
+      "milestones": [
+        {
+          "type": "Milestone",
+          "id": "P2.M1",
+          "title": "Shared-open invariant: comments + tests",
+          "status": "Planned",
+          "description": "Assert R-COEX: non-seize opens, bounded reads, first-byte-0x81 emission. Document the invariant in code comments and add tests that assert the emission path.",
+          "tasks": [
+            {
+              "type": "Task",
+              "id": "P2.M1.T1",
+              "title": "Assert R-COEX: non-seize opens, bounded reads, first-byte-0x81 emission",
+              "status": "Planned",
+              "description": "Add R-COEX invariant comments at the open/send sites and invariant tests asserting every constructed report's first payload byte is 0x81.",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P2.M1.T1.S1",
+                  "title": "Add R-COEX invariant comments at the open sites + invariant tests",
+                  "status": "Planned",
+                  "story_points": 2,
+                  "dependencies": [],
+                  "prd_selectors": [
+                    "h2.37",
+                    "h3.45",
+                    "h3.46",
+                    "h3.47",
+                    "h3.48",
+                    "h3.49",
+                    "h3.50",
+                    "h3.30",
+                    "h2.23",
+                    "h2.4",
+                    "h3.20"
+                  ],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See plan/005_8b95ea464bd9/architecture/external_deps.md. QMKonnect links hidapi=2.6 (unified to 2.6.6 in Cargo.lock). The crate opens via info.open_device(api) at core.rs:754 — hidapi's DEFAULT non-seize open (FILE_SHARE_READ|WRITE Windows, kIOHIDOptionsTypeNone macOS, plain hidraw open Linux). The app does NOT call any seize path; hidapi exposes none. IN_DRAIN_MAX=32 is in the CRATE (core.rs:131), NOT in notifier.rs — the read discipline (pre/post-send bounded drains) is entirely crate-side. The app's send path: QmkNotifier::send_command at notifier.rs:799 builds RunParameters and calls qmk_notifier::run(params). QmkNotifier::notify at notifier.rs:756 builds RunParameters with SendMessage and calls qmk_notifier::run(params). The app's first emitted payload byte is always 0x81 (the magic header). The crate's RunCommand variants (SendMessage, QueryInfo, QueryCallback, SetOs, ApplyHostContext) all construct 0x81-prefixed reports. There is NO per-path send or seize option exposed by the crate.\n2. INPUT: src/core/notifier.rs (the QmkNotifier::send_command at line 799 / notify at line 756 transport boundary), spec/DEVICE_DISCOVERY.md section 6, spec/ARCHITECTURE.md section 10 (#10).\n3. LOGIC: (a) Add a 'R-COEX — must preserve' doc-comment at the send_command/transport boundary in notifier.rs (near line 799 or the QmkNotifier impl block) stating three rules: never introduce a seize/exclusive open; never a perpetual blocking read; the first payload byte is always 0x81. Add // R-COEX: inline markers at any code that touches the open/send path. (b) Add unit tests asserting that every constructed report's first payload byte is 0x81: construct the SendMessage/ApplyHostContext/QueryInfo framing via the crate's RunCommand and RunParameters, call the app-side builders, and assert the first byte. Where a behavior can't be unit-tested without HID hardware (the non-seize open itself, the bounded-drain discipline), add an inline invariant comment + a // R-COEX: marker.\n4. OUTPUT: notifier.rs invariant comments + the 0x81-emission test passing. No runtime behavior change (this phase asserts what's already true).\n5. DOCS: [Mode A] The invariant comments ARE the Mode-A doc for this phase (they live in code). No docs/*.md change beyond what P4 covers."
+                },
+                {
+                  "type": "Subtask",
+                  "id": "P2.M1.T1.S2",
+                  "title": "Confirm the write-narrowing decision: defer (review the architecture decision record)",
+                  "status": "Planned",
+                  "story_points": 1,
+                  "dependencies": ["P2.M1.T1.S1"],
+                  "prd_selectors": [
+                    "h2.35",
+                    "h3.39",
+                    "h3.40",
+                    "h3.41",
+                    "h3.29",
+                    "h2.27"
+                  ],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See plan/005_8b95ea464bd9/architecture/write_narrowing_decision.md (pre-completed during architecture research). The crate's MatchKey (core.rs:641) is PRIVATE, filter-keyed {vid?, pid?, usage_page, usage} — NOT path-keyed. open_matching_devices opens ALL devices matching the filter. There is NO per-path send API and NO seize option. Multi-board write-narrowing cannot be done app-side without a coordinated crate API addition. It is harmless today: VIA firmware ignores 0x81-prefixed input.\n2. INPUT: crate core.rs (MatchKey at line 641, open_matching_devices at line 723), spec/DEVICE_DISCOVERY.md section 4/section 8, spec/PROTOCOL.md section 3.5.\n3. LOGIC: Review the decision record at plan/005_8b95ea464bd9/architecture/write_narrowing_decision.md. Confirm the DEFER decision is correct: narrowing needs a coordinated crate API addition, out of scope for this one-repo delta, and harmless today. If research reveals a clean app-only mechanism not identified during architecture research, update the decision record and add a follow-on subtask.\n4. OUTPUT: Confirmed decision record in plan/005_8b95ea464bd9/architecture/. If DEFER (expected), no code change and P2 closes with S1 only.\n5. DOCS: [Mode A] none (research record confirmation only)."
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "Phase",
+      "id": "P3",
+      "title": "Discovered-device Settings picker (the elaborate F13 piece)",
+      "status": "Planned",
+      "description": "The new primary Settings surface (D1 section 5): a live, self-populating list of 0xFF60 devices with capability markers, plus an Advanced/manual override disclosure that relocates the existing VID/PID hex fields. Depends on a real classify_devices() (per-candidate ping).",
+      "milestones": [
+        {
+          "type": "Milestone",
+          "id": "P3.M1",
+          "title": "classify_devices() + cache, and the per-candidate classification mechanism",
+          "status": "Planned",
+          "description": "Implement the DeviceKind/ClassifiedDevice types, the CLASSIFICATION_CACHE with TTL, and the classify_devices() function that enumerates Tier-1 candidates and classifies each via QUERY_INFO.",
+          "tasks": [
+            {
+              "type": "Task",
+              "id": "P3.M1.T1",
+              "title": "Implement classify_devices() with a TTL cache, resolving the per-device ping mechanism",
+              "status": "Planned",
+              "description": "Add the classification types, cache infrastructure, and the classify_devices() function. Split into types+cache (S1) and implementation+tests (S2) to respect the 2 SP subtask cap.",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P3.M1.T1.S1",
+                  "title": "Add DeviceKind / ClassifiedDevice types + CLASSIFICATION_CACHE infrastructure to src/core/notifier.rs",
+                  "status": "Planned",
+                  "story_points": 1,
+                  "dependencies": [],
+                  "prd_selectors": [
+                    "h2.33",
+                    "h3.35",
+                    "h3.36",
+                    "h3.37",
+                    "h3.38",
+                    "h2.34",
+                    "h2.35"
+                  ],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See plan/005_8b95ea464bd9/architecture/notifier_mechanisms.md and external_deps.md. The crate's CommandResponse::Info{proto_ver:2, feature_flags, callback_count, board_rules_present} variant is the capable classifier (lib.rs). classify_devices will enumerate via hidapi::HidApi::new() (same as is_device_connected at notifier.rs:216 and list_devices at notifier.rs:129), then for each candidate send QUERY_INFO via send_command(RunCommand::QueryInfo, &filter). The existing perform_handshake at notifier.rs:348 already sends QUERY_INFO and sets HOST_CAPABLE — that IS the Tier-2 probe for the global status. CLASSIFICATION_CACHE should be a Mutex<HashMap<String,(DeviceKind,Instant)>> keyed by device path, with CLASSIFICATION_TTL default 5s. The crate's MatchKey (core.rs:641) is filter-keyed NOT path-keyed, so per-candidate classification requires narrowing the filter to the candidate's vid/pid (the only mechanism available app-side).\n2. INPUT: src/core/notifier.rs (existing types, DeviceFilter at line 83, configured_filter at line 95, send_command path via Notifier trait at line 56).\n3. LOGIC: Add pub enum DeviceKind { Capable { proto_ver: u8, feature_flags: u8, callback_count: u8, board_rules_present: bool }, NotQmkNotifier }. Add pub struct ClassifiedDevice { path: String, vendor_id: u16, product_id: u16, product_name: Option<String>, usage_page: u16, usage: u16, kind: DeviceKind }. Add const CLASSIFICATION_TTL: Duration = Duration::from_secs(5). Add static CLASSIFICATION_CACHE: Lazy<Mutex<HashMap<String, (DeviceKind, std::time::Instant)>>> keyed by path. Add helper fn classification_cache_get(path) / fn classification_cache_insert(path, kind) / fn classification_cache_clear(). No classify_devices() logic yet (that's S2).\n4. OUTPUT: DeviceKind, ClassifiedDevice, CLASSIFICATION_CACHE + helpers in notifier.rs. Compiles. No logic yet.\n5. DOCS: [Mode A] DeviceKind/ClassifiedDevice/CLASSIFICATION_CACHE doc-comments cite DEVICE_DISCOVERY.md section 2."
+                },
+                {
+                  "type": "Subtask",
+                  "id": "P3.M1.T1.S2",
+                  "title": "Implement classify_devices() logic + unit tests with mock HID layer",
+                  "status": "Planned",
+                  "story_points": 2,
+                  "dependencies": ["P3.M1.T1.S1"],
+                  "prd_selectors": [
+                    "h2.33",
+                    "h3.37",
+                    "h3.38",
+                    "h3.39",
+                    "h2.39",
+                    "h2.40"
+                  ],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See plan/005_8b95ea464bd9/architecture/notifier_mechanisms.md and external_deps.md. list_devices() at notifier.rs:129 enumerates via hidapi::HidApi. The handshake (perform_handshake_with at line 421) sends QUERY_INFO via n.send_command(RunCommand::QueryInfo, &filter) at line 436 and matches CommandResponse::Info{proto_ver:2} for capable. send_command takes a DeviceFilter (vid/pid/page/usage), not a path, and the crate opens ALL matches. Per-candidate ping mechanism: narrow the filter to the candidate's vid/pid (only viable when vid/pid is unique on the bus — document this limitation). The MockNotifier at notifier.rs:1278 records calls and returns queued CommandResponse values; set_notifier at line 903 injects the mock. Mock setup pattern: reset_test_state(); reset_handshake_state(); set_notifier(Box::new(MockNotifier::new())); set_mock_responses(vec![...]). Tests MUST run single-threaded (--test-threads=1).\n2. INPUT: DeviceKind/ClassifiedDevice/CLASSIFICATION_CACHE from P3.M1.T1.S1.\n3. LOGIC: Implement pub fn classify_devices(verbose: bool) -> Vec<ClassifiedDevice>: enumerate Tier-1 candidates via HidApi::new() (usage_page==0xFF60 && usage==0x61 + optional vid/pid). For each candidate: check CLASSIFICATION_CACHE for a fresh entry (within TTL); if cached, use it; otherwise, narrow a DeviceFilter to the candidate's vid/pid and call get_notifier().lock().send_command(RunCommand::QueryInfo, &narrowed_filter). Match the CommandResponse: Info{proto_ver:2} -> Capable{...}; Timeout/Legacy/anything-else -> NotQmkNotifier. Insert result into CLASSIFICATION_CACHE. Also feed the cache from the existing perform_handshake path (so the status path stays single-ping-per-appearance). Invalidate cache entries on device disappearance (path no longer in enumerate). Document the multi-same-vid/pid limitation in a comment. No board is harmed (VIA ignores magic).\n4. OUTPUT: classify_devices() + cache integration in notifier.rs, with unit tests over the MockNotifier (capable/legacy/timeout -> correct DeviceKind; cache hit/miss/TTL). The mock infra may need a small extension to return per-device responses — extend MOCK_RESPONSES to be FIFO-queued per send_command call (already is).\n5. DOCS: [Mode A] classify_devices doc-comment cites DEVICE_DISCOVERY.md section 2 and records the per-candidate mechanism chosen (filter-narrow-by-vid/pid) + its limitation."
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "Milestone",
+          "id": "P3.M2",
+          "title": "Three-platform picker + Advanced disclosure",
+          "status": "Planned",
+          "description": "Build the discovered-device picker on all three platforms (Windows Win32, macOS NSAlert, Linux zenity), plus the Advanced/manual override disclosure that relocates the VID/PID hex fields.",
+          "tasks": [
+            {
+              "type": "Task",
+              "id": "P3.M2.T1",
+              "title": "Discovered-device picker on Windows (Win32), macOS (NSAlert), and Linux (zenity)",
+              "status": "Planned",
+              "description": "Add the discovered-device picker UI to each platform's settings dialog, plus the Advanced disclosure. Each subtask is platform-isolated but depends on classify_devices() from P3.M1.",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P3.M2.T1.S1",
+                  "title": "Windows Win32 picker (LISTBOX) + Advanced group box in src/tray.rs",
+                  "status": "Planned",
+                  "story_points": 2,
+                  "dependencies": ["P3.M1.T1.S2"],
+                  "prd_selectors": [
+                    "h2.36",
+                    "h3.42",
+                    "h3.43",
+                    "h3.44",
+                    "h3.78",
+                    "h3.79",
+                    "h3.82",
+                    "h2.51"
+                  ],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See plan/005_8b95ea464bd9/architecture/tray_surfaces.md. show_settings_dialog is at tray.rs:753. DIALOG_RESULT: Mutex<Option<(Option<u16>,Option<u16>)>> is at tray.rs:51. Control IDs: 1001 (VID EDIT), 1002 (PID EDIT), 1003 (OK), 1004 (Cancel). create_dialog_controls at tray.rs:873 registers WNDCLASSW and creates controls. settings_dialog_proc (WndProc) at tray.rs:1031 handles WM_COMMAND for 1003/1004. parse_id_field at tray.rs:67 parses hex. The save path overlays VID/PID onto current_config then calls render_config_body + atomic_write. New control IDs must avoid the 1001-1004 range AND the window-info dialog's range (comment at tray.rs:1468).\n2. INPUT: classify_devices() from P3.M1.T1.S2, spec/DEVICE_DISCOVERY.md section 5.\n3. LOGIC: Add a LISTBOX (or ListView) of discovered devices above the VID/PID fields in create_dialog_controls; populate from classify_devices() with rows showing product_name + vid:pid + capability glyph. Assign new control IDs (e.g., 1010 for the LISTBOX, 1011 for Rescan button). Single-capable-board-no-vid/pid case: hide the list, show a static 'Detected: <name>' line (WC_STATICW). [Rescan] button (1011): clears CLASSIFICATION_CACHE via classification_cache_clear() and re-runs classify_devices(). Relocate the two EDIT controls (1001/1002) under a group box 'Advanced / manual override' (WC_BUTTONW with BS_GROUPBOX style). Extend DIALOG_RESULT to struct { chosen: Option<(u16,u16)>, manual: Option<(Option<u16>,Option<u16>)> }. Update settings_dialog_proc to handle the new controls. The save path applies chosen first (via render_config_body), else manual, else leaves VID/PID as-is. Keep parse_id_field shared.\n4. OUTPUT: Windows Settings dialog has the picker + Advanced disclosure; selecting a row writes that board's vid/pid.\n5. DOCS: [Mode A] The dialog doc-comment cites DEVICE_DISCOVERY.md section 5."
+                },
+                {
+                  "type": "Subtask",
+                  "id": "P3.M2.T1.S2",
+                  "title": "macOS NSAlert picker (NSStackView of rows) + Advanced toggle in src/tray.rs",
+                  "status": "Planned",
+                  "story_points": 2,
+                  "dependencies": ["P3.M1.T1.S2"],
+                  "prd_selectors": [
+                    "h2.36",
+                    "h3.42",
+                    "h3.43",
+                    "h3.44",
+                    "h3.78",
+                    "h3.80",
+                    "h3.82",
+                    "h2.51"
+                  ],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See plan/005_8b95ea464bd9/architecture/tray_surfaces.md. show_macos_settings_dialog is at tray.rs:1162 (wraps in NSAutoreleasePool). show_settings_dialog_with_pool at tray.rs:1186 builds NSAlert + accessory NSView with two NSTextFields (vendor_field at NSRect y=0, product_field at y=30, both 100x22). Container NSView is 200x60. runModal returns 1000 for OK, 1001 for Cancel. The objc_types::{NSPoint, NSSize, NSRect} C structs are at tray.rs:13-34. format_id_hex at tray.rs:60 is the inverse for display. parse_id_field at tray.rs:67 shared.\n2. INPUT: classify_devices() from P3.M1.T1.S2, spec/DEVICE_DISCOVERY.md section 5.\n3. LOGIC: Build the discovered-device rows (label = product_name + vid:pid + capability glyph) as NSTextField labels in an NSStackView (or vertically-arranged NSView) above the existing text fields. Selection writes the chosen vid/pid. Single-capable case: static 'Detected:' line instead of the stack. Add an 'Advanced' NSButton (checkbox style) that toggles visibility of the two NSTextField pair (hidden by default if capable boards exist, shown if none or user clicks). Extend the dialog result handling: chosen first (from row selection), else manual (from text fields), else as-is. parse_id_field shared. Adjust container NSView dimensions to accommodate the stack view.\n4. OUTPUT: macOS Settings dialog has the picker + Advanced toggle.\n5. DOCS: [Mode A] Dialog doc-comment cites DEVICE_DISCOVERY.md section 5."
+                },
+                {
+                  "type": "Subtask",
+                  "id": "P3.M2.T1.S3",
+                  "title": "Linux zenity --list picker + Advanced --forms in src/linux_tray.rs",
+                  "status": "Planned",
+                  "story_points": 1,
+                  "dependencies": ["P3.M1.T1.S2"],
+                  "prd_selectors": [
+                    "h2.36",
+                    "h3.42",
+                    "h3.43",
+                    "h3.44",
+                    "h3.78",
+                    "h3.81",
+                    "h3.82",
+                    "h2.51"
+                  ],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See plan/005_8b95ea464bd9/architecture/tray_surfaces.md. show_settings_dialog_linux is at linux_tray.rs:635. Uses zenity --forms with --add-entry for VID and PID. current_config_hex at line 785 reads current values. write_config at line 806 overlays VID/PID onto parsed config then render_config_body + atomic_write. apply_device_rule at line 727 installs udev rule via pkexec (returns ApplyOutcome::AutoDiscovery/Applied/NeedsManual). parse_id at linux_tray.rs:830 is the Linux copy of parse_id_field. notify helper at linux_tray.rs:846 shells out to notify-send. zenity --forms is used (not --list) because content modes would tile on tiling compositors. However, for the picker we need zenity --list which shows a proper selection dialog — this can work as a separate invocation BEFORE the --forms dialog (the picker is a separate dialog, not combined).\n2. INPUT: classify_devices() from P3.M1.T1.S2, spec/DEVICE_DISCOVERY.md section 5.\n3. LOGIC: Before the existing --forms dialog, run a zenity --list (columns: Device, VID:PID, Capability) populated from classify_devices(). If the user selects a row, extract the vid/pid and proceed to write_config with those values (skip the manual --forms entry). If the user cancels the --list or it returns no selection, fall through to the existing --forms as the 'Advanced / manual override'. Handle the single-capable case: if exactly one capable device and no VID/PID set, show 'Detected: <name>' and auto-select. Keep apply_device_rule/pkexec flow unchanged. Extend the result handling: chosen first (from --list), else manual (from --forms), else as-is.\n4. OUTPUT: Linux Settings has the picker + Advanced.\n5. DOCS: [Mode A] Dialog doc-comment cites DEVICE_DISCOVERY.md section 5."
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "Phase",
+      "id": "P4",
+      "title": "Config/CLI cleanup + Mode-A documentation",
+      "status": "Planned",
+      "description": "Small finishing work: the 0xFEED template cleanup (D3), the --list-devices kind column (D4), user-facing doc updates, and the changeset-level documentation sweep.",
+      "milestones": [
+        {
+          "type": "Milestone",
+          "id": "P4.M1",
+          "title": "0xFEED cleanup, --list-devices kind column, Mode-A docs",
+          "status": "Planned",
+          "description": "Replace 0xFEED literals in config templates, add the kind column to --list-devices, and sync user-facing docs.",
+          "tasks": [
+            {
+              "type": "Task",
+              "id": "P4.M1.T1",
+              "title": "0xFEED -> 0x???? template + --list-devices kind column + Mode-A doc sync",
+              "status": "Planned",
+              "description": "Clean up the 0xFEED config template, add the capability kind column to --list-devices, and update user-facing documentation.",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P4.M1.T1.S1",
+                  "title": "Config template 0xFEED cleanup + --list-devices kind column",
+                  "status": "Planned",
+                  "story_points": 1,
+                  "dependencies": ["P3.M1.T1.S2"],
+                  "prd_selectors": [
+                    "h2.38",
+                    "h3.51",
+                    "h3.52",
+                    "h2.39",
+                    "h2.66",
+                    "h3.105",
+                    "h3.107",
+                    "h2.29"
+                  ],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See plan/005_8b95ea464bd9/architecture/config_cli.md. render_default_config_template at src/core/mod.rs:218 renders '# vendor_id = 0xfeed   # unset: auto-discovery' / '# product_id = 0x0000' at lines 238-239. CRITICAL: render_config_body at mod.rs:255 ALSO renders the same 0xfeed/0x0000 literals in its None match arms (lines ~263-266) — BOTH renderers must be updated. list_devices() at notifier.rs:129 prints vid:pid page:usage product only. --list-devices is dispatched at main.rs:115-119. The kind column requires classify_devices() from P3.M1.T1.S2. Spec targets: DEVICE_DISCOVERY.md section 7.2 (template -> 0x????) and section 8 (--list-devices kind column). CONFIG.md section 2 has the 0xFEED cleanup note.\n2. INPUT: classify_devices() from P3.M1.T1.S2 (for the kind column), spec/DEVICE_DISCOVERY.md section 7.2/section 8, spec/CONFIG.md section 2.\n3. LOGIC: (a) In render_default_config_template (mod.rs:218), replace the 0xfeed/0x0000 literals at lines 238-239 with 0x???? and the comment 'unset: auto-discover any QMK keyboard (recommended)'. (b) In render_config_body (mod.rs:255), replace the same 0xfeed/0x0000 literals in the None match arms with 0x???? and matching comment. (c) In list_devices() (notifier.rs:129), after the Tier-1 enumerate, run classify_devices() once and print an added kind column (e.g., 'qmk_notifier' for Capable, 'qmk-only' for NotQmkNotifier). Guard so --list-devices against no devices/no capable board still prints cleanly. Update any test asserting the old template text.\n4. OUTPUT: Seeded config has no literal 0xfeed; --list-devices shows capability. cargo test --bin qmkonnect -- --test-threads=1 clean.\n5. DOCS: [Mode A] The template comment IS the user-facing doc here; no separate docs/*.md edit for the literal."
+                },
+                {
+                  "type": "Subtask",
+                  "id": "P4.M1.T1.S2",
+                  "title": "Mode-A user-facing doc sync for the picker / Advanced / three-state status",
+                  "status": "Planned",
+                  "story_points": 1,
+                  "dependencies": [
+                    "P1.M1.T1.S1",
+                    "P1.M1.T1.S2",
+                    "P1.M1.T1.S3",
+                    "P3.M2.T1.S1",
+                    "P3.M2.T1.S2",
+                    "P3.M2.T1.S3"
+                  ],
+                  "prd_selectors": [
+                    "h2.38",
+                    "h3.51",
+                    "h3.52",
+                    "h2.34",
+                    "h2.36",
+                    "h2.66",
+                    "h3.105",
+                    "h2.68",
+                    "h3.107"
+                  ],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See plan/005_8b95ea464bd9/architecture/config_cli.md. docs/configuration.md documents VID/PID fields with 0xfeed examples at lines 71-72 and 182-183 — needs the same cleanup as P4.M1.T1.S1. docs/installation.md mentions VID/PID at line 103 and --list-devices at line 170. docs/troubleshooting.md mentions VID/PID at lines 130, 156-157. No user-facing doc yet describes the three-state status or the picker (they're new). The canonical source is spec/DEVICE_DISCOVERY.md sections 3/5.\n2. INPUT: spec/DEVICE_DISCOVERY.md sections 3/5, spec/CONFIG.md sections 1.1/2.\n3. LOGIC: In docs/configuration.md: reframe vendor_id/product_id as an Advanced override (the picker writes them), and replace any 0xfeed example with 0x????. In docs/installation.md and docs/troubleshooting.md: mention the three-state status ('No module' -> flash qmk_notifier) and the discovered-device Settings picker where VID/PID discovery is discussed. Keep edits minimal and mirror spec wording. Verify grep -rn '0xfeed|0xFEED' docs/ src/ returns zero hits (excluding docs/vendor/).\n4. OUTPUT: docs/configuration.md, docs/installation.md, docs/troubleshooting.md consistent with F13/F14. Zero 0xfeed literal hits.\n5. DOCS: [Mode A] This IS the Mode-A doc work."
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "Milestone",
+          "id": "P4.M2",
+          "title": "Changeset-level documentation (Mode B final sweep)",
+          "status": "Planned",
+          "description": "Final changeset-level documentation sweep: audit README.md and top-level overviews for F13/F14, regenerate docs/llms_full.txt.",
+          "tasks": [
+            {
+              "type": "Task",
+              "id": "P4.M2.T1",
+              "title": "Sync README.md + cross-cutting overviews for F13/F14 + regenerate docs/llms_full.txt",
+              "status": "Planned",
+              "description": "Audit README.md and top-level overviews; update if they describe discovery/VID-PID/status. Regenerate the concatenated llms_full.txt. Runs LAST — depends on all implementing subtasks.",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P4.M2.T1.S1",
+                  "title": "Audit README.md and top-level overviews; regenerate docs/llms_full.txt",
+                  "status": "Planned",
+                  "story_points": 1,
+                  "dependencies": [
+                    "P1.M1.T1.S1",
+                    "P1.M1.T1.S2",
+                    "P1.M1.T1.S3",
+                    "P2.M1.T1.S1",
+                    "P3.M1.T1.S1",
+                    "P3.M1.T1.S2",
+                    "P3.M2.T1.S1",
+                    "P3.M2.T1.S2",
+                    "P3.M2.T1.S3",
+                    "P4.M1.T1.S1",
+                    "P4.M1.T1.S2"
+                  ],
+                  "prd_selectors": [
+                    "h2.0",
+                    "h2.1",
+                    "h2.3",
+                    "h2.32",
+                    "h2.34",
+                    "h2.37",
+                    "h2.38",
+                    "h2.40"
+                  ],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See plan/005_8b95ea464bd9/architecture/config_cli.md. README.md has qmkonnect --list-devices at line 209 and 0xfeed config examples at lines 232-233 and 305-308. No 'status' (menu/indicator) mentions yet. docs/index.md and docs/usage.md may have one-line discovery/VID-PID blurbs. spec/ companions (ARCHITECTURE.md, PROTOCOL.md, UI.md, HOST_RULES.md, DEVICE_DISCOVERY.md) are ALREADY at target wording (they ARE the spec this delta implements) — verify, don't rewrite. docs/generate_llms_full.sh concatenates 8 files (README.md, docs/index.md, installation.md, qmk-integration.md, configuration.md, usage.md, examples.md, troubleshooting.md) into docs/llms_full.txt. It must be re-run after P4.M1 edits.\n2. INPUT: Completed P1 through P4.M1. spec/* (already correct).\n3. LOGIC: (a) grep -rn 'false-green|0xFF60|VIA|device.status|list-devices|vendor_id' README.md docs/index.md docs/usage.md — if any describes discovery/VID-PID/status, update to the two-tier + Advanced-override + three-state framing; if it's a version-agnostic one-liner, leave it. (b) Run bash docs/generate_llms_full.sh from the repo root. (c) Verify grep -rn 'classify_devices|DeviceStatus|No module' docs/llms_full.txt shows the regenerated content and the 0xfeed literal is gone.\n4. OUTPUT: README + overviews consistent with F13/F14 (or a no-op verification report with grep evidence); regenerated docs/llms_full.txt.\n5. DOCS: [Mode B] This IS the changeset-level sweep. Runs LAST (depends on P1 + P3 + P4.M1)."
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

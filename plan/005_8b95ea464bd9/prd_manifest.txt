@@ -1,0 +1,11 @@
+cbb38e74da6d spec/PRD.md
+b9541369b76c spec/ARCHITECTURE.md
+0867f832b018 spec/PROTOCOL.md
+4dbf48639f3d spec/DEVICE_DISCOVERY.md
+dd68802b2cea spec/PLATFORMS.md
+5a2091d875c3 spec/UI.md
+a31189be3413 spec/LINUX.md
+61ae358b0048 spec/CONFIG.md
+fce3c68f259e spec/PACKAGING.md
+cb8f20a69292 spec/FIRMWARE.md
+6a4a2c366e10 spec/HOST_RULES.md
