@@ -4,21 +4,21 @@
       "type": "Phase",
       "id": "P1",
       "title": "Truthful three-state device status (the F13 headline)",
-      "status": "Planned",
+      "status": "Researching",
       "description": "Deliver the user-visible point of F13: a pure-VIA board no longer shows a false-green 'Connected'. Derive a three-state DeviceStatus from the existing is_device_connected() + host_capable() and render it in both tray surfaces. This phase has NO dependency on classify_devices().",
       "milestones": [
         {
           "type": "Milestone",
           "id": "P1.M1",
           "title": "Three-state status resolver + both tray surfaces",
-          "status": "Planned",
+          "status": "Researching",
           "description": "Add a DeviceStatus resolver deriving from existing state, and wire three-state rendering into macOS/Windows (tray.rs) and Linux (linux_tray.rs) tray surfaces.",
           "tasks": [
             {
               "type": "Task",
               "id": "P1.M1.T1",
               "title": "Add a DeviceStatus resolver and wire three-state rendering into macOS/Windows + Linux trays",
-              "status": "Planned",
+              "status": "Researching",
               "description": "Add DeviceStatus enum + device_status() resolver to notifier.rs, then change both tray surfaces from two-state to three-state, including the Linux one-shot notify-send on Disconnected->NoModule.",
               "subtasks": [
                 {
@@ -41,7 +41,7 @@
                   "type": "Subtask",
                   "id": "P1.M1.T1.S2",
                   "title": "Render three-state status in src/tray.rs (macOS/Windows)",
-                  "status": "Researching",
+                  "status": "Ready",
                   "story_points": 2,
                   "dependencies": [
                     "P1.M1.T1.S1"
@@ -59,7 +59,7 @@
                   "type": "Subtask",
                   "id": "P1.M1.T1.S3",
                   "title": "Render three-state status in src/linux_tray.rs + the Disconnected->No-module one-shot notify-send",
-                  "status": "Planned",
+                  "status": "Researching",
                   "story_points": 2,
                   "dependencies": [
                     "P1.M1.T1.S1"
