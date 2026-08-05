@@ -722,8 +722,25 @@ fn save_and_notify(vendor_id: Option<u16>, product_id: Option<u16>) {
     let pid_str = product_id
         .map(|p| format!("0x{p:04x}"))
         .unwrap_or_else(|| "auto".to_string());
+
+    // Snapshot the PRE-save VID/PID before write_config overwrites config.toml.
+    // (None, None) on a fresh install (auto-discovery) is fine — it will differ
+    // from the new value and correctly trigger the reset on first config.
+    let (old_vid, old_pid) = current_config_vidpid();
+
     match write_config(vendor_id, product_id) {
         Ok(path) => {
+            // Bug 4 (PRD ID 3): if the VID/PID filter actually changed, reset the
+            // handshake state and re-run the handshake for the newly-selected board
+            // so CALLBACK_NAMES reflects it. reset clears HAS_HANDSHAKED (so the
+            // idempotent perform_handshake actually re-runs) and the stale name→id
+            // map; perform_handshake reads config.toml fresh and rebuilds the map.
+            // `false` = non-verbose (verbose is not in scope in save_and_notify).
+            if (vendor_id, product_id) != (old_vid, old_pid) {
+                crate::core::notifier::reset_handshake_state();
+                crate::core::notifier::perform_handshake(false);
+            }
+
             let outcome = apply_device_rule(vendor_id, product_id);
             let detail = match outcome {
                 ApplyOutcome::AutoDiscovery => {
