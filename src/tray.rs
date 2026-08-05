@@ -35,10 +35,13 @@ mod objc_types {
 
 enum UserEvent {
     MenuEvent(MenuEvent),
-    /// Latest device-presence probe result, delivered from the background
-    /// polling thread to refresh the macOS/Windows tray status line (line 2).
+    /// Latest three-state device-status probe result, delivered from the
+    /// background polling thread to refresh the macOS/Windows tray status line
+    /// (line 2). Three states per `spec/UI.md` §4 / `spec/DEVICE_DISCOVERY.md`
+    /// §3; the handshake lifecycle (Gain/Loss) is deliberately keyed on the
+    /// Tier-1 presence bool separately from this payload.
     #[cfg(any(target_os = "macos", target_os = "windows"))]
-    DeviceStatus(bool),
+    DeviceStatus(crate::core::notifier::DeviceStatus),
     /// Re-sync the macOS "Launch at Login" checkbox with the real SMAppService
     /// status, delivered after the deferred first-run register completes.
     #[cfg(target_os = "macos")]
@@ -313,8 +316,8 @@ pub fn setup_tray(verbose: bool) {
     // probe so the first paint is already correct.
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     let device_status_i = MenuItem::new(
-        device_status_text(crate::core::notifier::is_device_connected()),
-        false,
+        device_status_text(crate::core::notifier::device_status()),
+        false, // disabled (non-clickable label) — the "No module" warning stays a disabled item
         None,
     );
 
@@ -382,8 +385,16 @@ pub fn setup_tray(verbose: bool) {
     {
         let status_proxy = proxy.clone();
         std::thread::spawn(move || {
+            // Handshake tracker: keyed on the Tier-1 PRESENCE bool (unchanged).
             let mut last: Option<bool> =
                 Some(crate::core::notifier::startup_device_was_connected());
+            // UI-status tracker: keyed on the three-state DeviceStatus (NEW).
+            // Separate from `last` because the NoModule→Connected flip happens
+            // while the presence bool stays `true` (the handshake sets
+            // HOST_CAPABLE); a bool-keyed event would never fire for it. Seeded
+            // ⇒ no spurious first-tick event (first-paint already rendered it).
+            let mut last_status: Option<crate::core::notifier::DeviceStatus> =
+                Some(crate::core::notifier::device_status());
             loop {
                 let connected = crate::core::notifier::is_device_connected();
                 if last != Some(connected) {
@@ -401,7 +412,15 @@ pub fn setup_tray(verbose: bool) {
                         crate::core::notifier::HandshakeAction::None => {}
                     }
                     last = Some(connected);
-                    let _ = status_proxy.send_event(UserEvent::DeviceStatus(connected));
+                }
+                // ---- UI status: three-state, sent only on ITS transition. ----
+                // Computed AFTER the handshake block so a same-tick Gain +
+                // perform_handshake (which may set HOST_CAPABLE ⇒ Connected) is
+                // reflected in the payload now (within the 3s cadence).
+                let status = crate::core::notifier::device_status();
+                if last_status != Some(status) {
+                    let _ = status_proxy.send_event(UserEvent::DeviceStatus(status));
+                    last_status = Some(status);
                 }
                 std::thread::sleep(std::time::Duration::from_secs(3));
             }
@@ -503,10 +522,10 @@ pub fn setup_tray(verbose: bool) {
                 }
             }
 
-            // Background probe thread reports the latest device-presence check.
+            // Background probe thread reports the latest three-state device status.
             #[cfg(any(target_os = "macos", target_os = "windows"))]
-            Event::UserEvent(UserEvent::DeviceStatus(connected)) => {
-                device_status_i.set_text(device_status_text(connected));
+            Event::UserEvent(UserEvent::DeviceStatus(status)) => {
+                device_status_i.set_text(device_status_text(status));
             }
 
             // Deferred first-run register finished: refresh the checkbox from
@@ -653,17 +672,24 @@ fn zoom_in_about_20_percent(img: image::RgbaImage) -> image::RgbaImage {
     out
 }
 
-/// Label for the macOS/Windows device-status menu item (line 2). A solid dot
-/// means the configured QMK keyboard is present; a hollow dot means it is
-/// absent.
+/// Label for the macOS/Windows device-status menu item (line 2). Three states
+/// per `spec/UI.md` §4 / `spec/DEVICE_DISCOVERY.md` §3: a solid dot (≥1 capable
+/// board), a warning glyph (QMK board present but no qmk_notifier module), or a
+/// hollow dot (0 Tier-1 boards). The "No module" warning is the truthful F13
+/// value — see [`device_status`](crate::core::notifier::device_status) in
+/// `src/core/notifier.rs`.
 #[cfg(any(target_os = "macos", target_os = "windows"))]
-fn device_status_text(connected: bool) -> String {
-    if connected {
-        // U+25CF BLACK CIRCLE — solid dot.
-        "\u{25CF}  Device Connected".to_string()
-    } else {
-        // U+25CB WHITE CIRCLE — hollow dot.
-        "\u{25CB}  No Device Connected".to_string()
+fn device_status_text(status: crate::core::notifier::DeviceStatus) -> String {
+    use crate::core::notifier::DeviceStatus; // function-local use → terse arms, no cfg-import issue
+    match status {
+        // U+25CF BLACK CIRCLE — solid dot; ≥1 capable board.
+        DeviceStatus::Connected => "\u{25CF}  Device Connected".to_string(),
+        // U+26A0 WARNING SIGN — QMK board present, no qmk_notifier module.
+        DeviceStatus::NoModule => {
+            "\u{26A0}  QMK board found \u{2014} no qmk_notifier module (flash it)".to_string()
+        }
+        // U+25CB WHITE CIRCLE — hollow dot; 0 Tier-1 boards.
+        DeviceStatus::Disconnected => "\u{25CB}  No Device Connected".to_string(),
     }
 }
 
@@ -2377,4 +2403,29 @@ fn show_macos_window_info_dialog_inner() -> Result<(), Box<dyn std::error::Error
     }
 
     Ok(())
+}
+
+#[cfg(all(test, any(target_os = "macos", target_os = "windows")))]
+mod tests {
+    use super::device_status_text;
+    use crate::core::notifier::DeviceStatus;
+
+    #[test]
+    fn test_device_status_text_three_states() {
+        // The three exact tray strings per `spec/UI.md` §4 /
+        // `spec/DEVICE_DISCOVERY.md` §3: glyphs as \u{} escapes, two spaces
+        // after each glyph, and an em-dash (\u{2014}) in the No-module line.
+        assert_eq!(
+            device_status_text(DeviceStatus::Connected),
+            "\u{25CF}  Device Connected"
+        );
+        assert_eq!(
+            device_status_text(DeviceStatus::NoModule),
+            "\u{26A0}  QMK board found \u{2014} no qmk_notifier module (flash it)"
+        );
+        assert_eq!(
+            device_status_text(DeviceStatus::Disconnected),
+            "\u{25CB}  No Device Connected"
+        );
+    }
 }
