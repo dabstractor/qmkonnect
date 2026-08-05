@@ -35,11 +35,13 @@
 //! notifier keeps running trayless.
 #![cfg(all(target_os = "linux", feature = "linux-tray"))]
 
+use crate::core::notifier::DeviceStatus;
 use ksni::blocking::TrayMethods;
 use ksni::menu::StandardItem;
 use ksni::{Category, Icon, MenuItem, ToolTip};
 use std::io::Write;
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 /// Official QMKonnect icon rendered for a **dark** bar: the full-color mark with
@@ -60,12 +62,27 @@ const DEVICE_POLL_INTERVAL: Duration = Duration::from_secs(1);
 /// cheap HID enumeration.
 const COLOR_SCHEME_POLL_EVERY: u32 = 10;
 
+/// One-shot guard for the Disconnected→NoModule `notify-send`
+/// (`spec/DEVICE_DISCOVERY.md` §3). `swap(true)` fires the notification the first
+/// time a poll sees that transition; `store(false)` re-arms it when the device
+/// leaves NoModule — so the notification fires at most once per entry into
+/// NoModule, never on every 1s poll tick. Mirrors `RULES_INVALID_NOTIFIED`
+/// (`src/core/notifier.rs`).
+static NO_MODULE_NOTIFIED: AtomicBool = AtomicBool::new(false);
+
 /// The tray item. Mutable state is refreshed by a background thread which then
 /// tells ksni to re-serialize (icon + menu):
-///   * `device_connected` — the leading status line (parity with macOS line 2).
+///   * `device_status` — the leading status line. Three states per
+///     `spec/DEVICE_DISCOVERY.md` §3 (Connected / NoModule / Disconnected) —
+///     parity with the macOS/Windows line-1 text (`src/tray.rs`). On Linux the
+///     richer surface also dims the icon on Disconnected (full alpha for
+///     Connected AND NoModule — a board is present either way) and fires a
+///     one-shot `notify-send` on the Disconnected→NoModule transition (the
+///     "flash qmk_notifier" moment), guarded by [`NO_MODULE_NOTIFIED`] so it
+///     fires once per entry into NoModule and re-arms on exit.
 ///   * `dark_mode`        — which icon variant to serve (see module docs).
 pub struct QmkTray {
-    device_connected: bool,
+    device_status: DeviceStatus,
     dark_mode: bool,
 }
 
@@ -73,7 +90,7 @@ impl QmkTray {
     fn new() -> Self {
         Self {
             // Synchronous probes so the first paint is already correct.
-            device_connected: crate::core::notifier::is_device_connected(),
+            device_status: crate::core::notifier::device_status(),
             dark_mode: detect_dark_mode(),
         }
     }
@@ -92,10 +109,12 @@ impl ksni::Tray for QmkTray {
         // Reflected live by SNI hosts on hover (NewToolTip) — unlike the open
         // menu, which Waybar renders as a static snapshot. So the tooltip is a
         // realtime connection indicator.
-        let description = if self.device_connected {
-            "Window activity notifier — device connected"
-        } else {
-            "Window activity notifier — NO DEVICE CONNECTED"
+        let description = match self.device_status {
+            DeviceStatus::Connected => "Window activity notifier — device connected",
+            DeviceStatus::NoModule => {
+                "Window activity notifier — QMK board found, no qmk_notifier module"
+            }
+            DeviceStatus::Disconnected => "Window activity notifier — NO DEVICE CONNECTED",
         };
         ToolTip {
             icon_name: String::new(),
@@ -120,12 +139,15 @@ impl ksni::Tray for QmkTray {
         } else {
             TRAY_ICON_LIGHT_PNG
         };
-        // Fade the icon when the device is absent so the disconnect is visible
-        // in the bar in realtime. SNI hosts repaint the icon on `NewIcon`
-        // (unlike the open menu, which Waybar caches as a static snapshot).
+        // Fade the icon when NO device is present so the disconnect is visible
+        // in the bar in realtime. A board in NoModule is still *present* (just
+        // not capable), so it keeps full alpha; only Disconnected dims. The menu
+        // warning glyph (⚠) carries the "not capable" signal, not the icon.
+        // SNI hosts repaint the icon on `NewIcon` (unlike the open menu, which
+        // Waybar caches as a static snapshot).
         decode_icon(png)
             .map(|i| {
-                vec![if self.device_connected {
+                vec![if self.device_status != DeviceStatus::Disconnected {
                     i
                 } else {
                     dim_icon(i)
@@ -137,16 +159,11 @@ impl ksni::Tray for QmkTray {
     fn menu(&self) -> Vec<MenuItem<QmkTray>> {
         // Line 1: device-connection status (disabled, non-clickable) — the Linux
         // equivalent of the macOS tray's "line 2" (macOS leads with an About
-        // item). A solid dot = the configured keyboard is present; a hollow dot
-        // = it is absent. Backed by the platform-independent, read-only
-        // `is_device_connected()` enumeration (§6e).
-        let status = if self.device_connected {
-            // U+25CF BLACK CIRCLE — solid dot.
-            "\u{25CF}  Device Connected"
-        } else {
-            // U+25CB WHITE CIRCLE — hollow dot.
-            "\u{25CB}  No Device Connected"
-        };
+        // item). Three states per `spec/DEVICE_DISCOVERY.md` §3: solid dot =
+        // ≥1 capable board; warning glyph = QMK board present, no qmk_notifier
+        // module; hollow dot = no board. Backed by the platform-independent,
+        // read-only `device_status()` resolver (`src/core/notifier.rs`).
+        let status = device_status_text(self.device_status);
 
         let mut items = Vec::new();
 
@@ -158,16 +175,17 @@ impl ksni::Tray for QmkTray {
         }));
 
         // Invisible structural toggle (rendered as nothing: `visible: false`).
-        // Present only when connected, so the top-level item *count* differs
-        // between the connected and disconnected menus. That count change is
-        // what forces ksni to emit DBusMenu `LayoutUpdated` (see `update_menu`
-        // in ksni's service.rs) instead of only `ItemsPropertiesUpdated`.
-        // `LayoutUpdated` is the signal every host honors to re-fetch and
-        // redraw an *already-open* popup; `ItemsPropertiesUpdated` is an
-        // optional optimization some hosts (e.g. Quickshell) ignore for open
-        // menus. Both connect→disconnect and disconnect→connect change the
-        // count, so both force a live redraw — with no extra visible line.
-        if self.device_connected {
+        // Present only when a device is present (Connected OR NoModule — a board
+        // is there either way), so the top-level item *count* differs between
+        // the present and disconnected menus. That count change is what forces
+        // ksni to emit DBusMenu `LayoutUpdated` (see `update_menu` in ksni's
+        // service.rs) instead of only `ItemsPropertiesUpdated`. `LayoutUpdated`
+        // is the signal every host honors to re-fetch and redraw an
+        // *already-open* popup; `ItemsPropertiesUpdated` is an optional
+        // optimization some hosts (e.g. Quickshell) ignore for open menus.
+        // Both present↔disconnected transitions change the count, so both force
+        // a live redraw — with no extra visible line.
+        if self.device_status != DeviceStatus::Disconnected {
             items.push(MenuItem::Standard(StandardItem {
                 label: String::new(),
                 visible: false,
@@ -259,12 +277,24 @@ pub fn spawn(verbose: bool) -> Option<ksni::blocking::Handle<QmkTray>> {
     // via the Settings dialog are reflected within one poll interval.
     let poll_handle = handle.clone();
     std::thread::spawn(move || {
+        // DUAL tracker (mirrors src/tray.rs/S2):
+        //   * `last_device` (bool) keys the HANDSHAKE lifecycle — a Tier-1
+        //     *presence* event. DeviceStatus can flip NoModule<->Connected
+        //     while presence is unchanged (the handshake itself flips
+        //     host_capable), so the handshake MUST stay bool-keyed.
+        //   * `last_status` (DeviceStatus) keys the UI field + the one-shot
+        //     notify — the headline NoModule->Connected flip happens while the
+        //     bool stays `true`, so the UI update must key on `last_status`.
+        //     Seed = Some(...) avoids a spurious first-tick event (new() already
+        //     rendered the correct text/icon synchronously).
         let mut last_device: Option<bool> =
             Some(crate::core::notifier::startup_device_was_connected());
+        let mut last_status: Option<DeviceStatus> = Some(crate::core::notifier::device_status());
         let mut last_dark: Option<bool> = None;
         let mut tick: u32 = 0;
         loop {
             let connected = crate::core::notifier::is_device_connected();
+            let status = crate::core::notifier::device_status();
             let dark = if tick.is_multiple_of(COLOR_SCHEME_POLL_EVERY) {
                 detect_dark_mode()
             } else {
@@ -275,6 +305,7 @@ pub fn spawn(verbose: bool) -> Option<ksni::blocking::Handle<QmkTray>> {
             // Handshake lifecycle on a real device transition. Runs on THIS poll
             // thread — NEVER inside poll_handle.update, whose closure executes on
             // ksni's D-Bus thread (HID I/O there would wedge the tray icon).
+            // STAYS KEYED ON THE BOOL (Tier-1 presence event), not DeviceStatus.
             if last_device != Some(connected) {
                 match crate::core::notifier::handshake_action(last_device, connected) {
                     crate::core::notifier::HandshakeAction::Gain => {
@@ -285,13 +316,35 @@ pub fn spawn(verbose: bool) -> Option<ksni::blocking::Handle<QmkTray>> {
                     }
                     crate::core::notifier::HandshakeAction::None => {}
                 }
+                last_device = Some(connected);
             }
 
-            if last_device != Some(connected) || last_dark != Some(dark) {
-                last_device = Some(connected);
+            // One-shot `notify-send` on the Disconnected->NoModule transition
+            // ONLY (spec/DEVICE_DISCOVERY.md §3). Not on Connected->NoModule,
+            // not on every tick. NO_MODULE_NOTIFIED.swap(true) fires once per
+            // entry into NoModule; store(false) on leaving NoModule re-arms it.
+            if last_status == Some(DeviceStatus::Disconnected)
+                && status == DeviceStatus::NoModule
+                && !NO_MODULE_NOTIFIED.swap(true, Ordering::SeqCst)
+            {
+                notify(
+                    "QMK board found \u{2014} no qmk_notifier module",
+                    "This QMK board isn't running the qmk_notifier firmware QMKonnect talks to. \
+                     Flash it: docs/qmk-integration.md",
+                );
+            }
+            // Re-arm when leaving NoModule so a later re-entry notifies again.
+            if status != DeviceStatus::NoModule {
+                NO_MODULE_NOTIFIED.store(false, Ordering::SeqCst);
+            }
+
+            // Tray UI on a status OR dark transition (keyed on `last_status`,
+            // NOT the bool — the NoModule->Connected flip keeps the bool `true`).
+            if last_status != Some(status) || last_dark != Some(dark) {
+                last_status = Some(status);
                 last_dark = Some(dark);
                 let _ = poll_handle.update(|t: &mut QmkTray| {
-                    t.device_connected = connected;
+                    t.device_status = status;
                     t.dark_mode = dark;
                 });
             }
@@ -917,6 +970,23 @@ fn decode_icon(png: &[u8]) -> Option<Icon> {
     })
 }
 
+/// Label for the Linux SNI device-status menu item (line 1). Three states per
+/// `spec/UI.md` §4 / `spec/DEVICE_DISCOVERY.md` §3 — byte-identical to
+/// `src/tray.rs::device_status_text` (parity; the test
+/// `status_text_uses_parity_glyphs` pins it).
+fn device_status_text(status: DeviceStatus) -> String {
+    match status {
+        // U+25CF BLACK CIRCLE — ≥1 capable board.
+        DeviceStatus::Connected => "\u{25CF}  Device Connected".to_string(),
+        // U+26A0 WARNING SIGN — QMK board present, no qmk_notifier module.
+        DeviceStatus::NoModule => {
+            "\u{26A0}  QMK board found \u{2014} no qmk_notifier module (flash it)".to_string()
+        }
+        // U+25CB WHITE CIRCLE — 0 Tier-1 boards.
+        DeviceStatus::Disconnected => "\u{25CB}  No Device Connected".to_string(),
+    }
+}
+
 /// Fade an icon to ~35% opacity for the disconnected state. SNI pixmaps carry
 /// a separate alpha channel, so scaling alpha alone reads as "inactive" without
 /// changing the hue.
@@ -939,18 +1009,33 @@ mod tests {
 
     #[test]
     fn status_text_uses_parity_glyphs() {
-        // Solid dot for connected, hollow for absent — matches macOS line 2.
-        let on = "\u{25CF}  Device Connected";
-        let off = "\u{25CB}  No Device Connected";
-        assert!(on.starts_with('\u{25CF}'));
-        assert!(off.starts_with('\u{25CB}'));
+        // Three states per spec/DEVICE_DISCOVERY.md §3 / spec/UI.md §4.
+        // Byte-identical to src/tray.rs::device_status_text (the parity
+        // contract between the macOS/Windows and Linux SNI trays).
+        use crate::core::notifier::DeviceStatus;
+        assert!(device_status_text(DeviceStatus::Connected).starts_with('\u{25CF}'));
+        assert!(device_status_text(DeviceStatus::NoModule).starts_with('\u{26A0}'));
+        assert!(device_status_text(DeviceStatus::Disconnected).starts_with('\u{25CB}'));
+        // Full strings (pins the em-dash + wording byte-for-byte):
+        assert_eq!(
+            device_status_text(DeviceStatus::Connected),
+            "\u{25CF}  Device Connected"
+        );
+        assert_eq!(
+            device_status_text(DeviceStatus::NoModule),
+            "\u{26A0}  QMK board found \u{2014} no qmk_notifier module (flash it)"
+        );
+        assert_eq!(
+            device_status_text(DeviceStatus::Disconnected),
+            "\u{25CB}  No Device Connected"
+        );
     }
 
     #[test]
     fn new_tray_probes_initial_state() {
         // Initial state mirrors live (read-only) probes; both outcomes valid.
         let tray = QmkTray::new();
-        let _ = (tray.device_connected, tray.dark_mode);
+        let _ = (tray.device_status, tray.dark_mode);
     }
 
     #[test]
