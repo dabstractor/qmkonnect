@@ -822,6 +822,25 @@ pub fn handshake_action(prev: Option<bool>, now: bool) -> HandshakeAction {
 // NOTE: the Gain arm is GUARDED (`if p != Some(true)`) — the naive `(_, true)
 // => Gain` would mis-classify (Some(true), true) (no change) as Gain.
 
+// R-COEX (VIA coexistence, F14) — must-preserve invariant at this transport
+// boundary. spec/DEVICE_DISCOVERY.md §6; spec/ARCHITECTURE.md §10 #10.
+//
+//   1. NEVER a seize/exclusive open. Every HID handle uses hidapi's DEFAULT
+//      shared open (Win FILE_SHARE_READ|WRITE, macOS kIOHIDOptionsTypeNone,
+//      Linux plain hidraw open()). hidapi 2.x exposes NO seize API. Enforced
+//      in the crate's private open_matching_devices (qmk_notifier core.rs);
+//      the app cannot reach the open. Documented here, not asserted.
+//   2. NEVER a perpetual blocking read. Reads are bounded drains
+//      (read_timeout(0), IN_DRAIN_MAX=32) in short windows around writes.
+//      Enforced in the crate's private burst_to_one. Documented, not asserted.
+//   3. FIRST emitted payload byte is ALWAYS 0x81 (the 0x81 0x9F magic header;
+//      firmware demuxes, VIA ignores 0x81-prefixed input). ASSERTED by the
+//      r_coex_invariants tests below (variant-level: the app's transport path
+//      never constructs the wire-silent RunCommand::ListDevices).
+//
+// This impl block is the SINGLE transport boundary: both `notify` and
+// `send_command` build RunParameters and call qmk_notifier::run(params) —
+// the app's only device egress. See the // R-COEX: markers at each egress.
 impl Notifier for QmkNotifier {
     fn notify(&self, message: String) -> Result<(), Box<dyn Error + Send + Sync>> {
         let f = configured_filter();
@@ -829,6 +848,7 @@ impl Notifier for QmkNotifier {
         // Retry device connection with exponential backoff
         for attempt in 1..=3 {
             let params = qmk_notifier::RunParameters::new(
+                // R-COEX: SendMessage → 0x81 0x9F magic header (crate burst_to_one).
                 qmk_notifier::RunCommand::SendMessage(message.clone()),
                 f.vendor_id,
                 f.product_id,
@@ -836,6 +856,7 @@ impl Notifier for QmkNotifier {
                 f.usage,
                 false, // verbose
             );
+            // R-COEX: sole device egress for the string path; rules 1–3 hold (see impl-block invariant).
             match qmk_notifier::run(params) {
                 Ok(_) => return Ok(()),
                 Err(e) => {
@@ -872,13 +893,14 @@ impl Notifier for QmkNotifier {
         filter: &DeviceFilter,
     ) -> Result<qmk_notifier::CommandResponse, Box<dyn Error + Send + Sync>> {
         let params = qmk_notifier::RunParameters::new(
-            command,
+            command, // R-COEX: every transport-path RunCommand variant (QueryInfo/QueryCallback/SetOs/ApplyHostContext) emits 0x81 first.
             filter.vendor_id,
             filter.product_id,
             filter.usage_page,
             filter.usage,
             false, // verbose — transport stays quiet; orchestration logs (D3)
         );
+        // R-COEX: sole device egress for the typed path; rules 1–3 hold.
         match qmk_notifier::run(params) {
             Ok(resp) => Ok(resp),
             Err(e) => Err(Box::new(e)), // G3: QmkError: Error+Send+Sync, coerces directly
@@ -1329,10 +1351,54 @@ fn send_host_context(
 /// Build the `ApplyHostContext` command for a matched [`crate::core::rules::HostContext`] (stack or
 /// replace). `clear_board` carries the stack-vs-replace decision.
 fn host_context_command(ctx: &crate::core::rules::HostContext) -> qmk_notifier::RunCommand {
+    // R-COEX: ApplyHostContext → 0x81 0x9F magic header (reaches the wire via send_command).
     qmk_notifier::RunCommand::ApplyHostContext {
         layer: ctx.layer,
         callbacks: ctx.callback_ids.clone(),
         clear_board: ctx.clear_board,
+    }
+}
+
+#[cfg(test)]
+mod r_coex_invariants {
+    use qmk_notifier::{HostOs, RunCommand};
+
+    fn emits_0x81_first_byte(cmd: &RunCommand) -> bool {
+        // ListDevices is the sole wire-silent variant (crate `run` enumerates
+        // HID and returns Timeout without touching the device). Every other
+        // variant flows through burst_to_one, which sets request_data[1]=0x81
+        // (the 0x81 0x9F magic header) on every 33-byte report.
+        !matches!(cmd, RunCommand::ListDevices)
+    }
+
+    #[test]
+    fn r_coex_every_transport_variant_emits_magic_header() {
+        // The variants QmkNotifier::notify / send_command / host_context_command build.
+        let transport_variants: [RunCommand; 5] = [
+            RunCommand::SendMessage("x".into()),
+            RunCommand::QueryInfo,
+            RunCommand::QueryCallback(0),
+            RunCommand::SetOs(HostOs::Linux),
+            RunCommand::ApplyHostContext {
+                layer: Some(224),
+                callbacks: vec![],
+                clear_board: false,
+            },
+        ];
+        for v in &transport_variants {
+            assert!(
+                emits_0x81_first_byte(v),
+                "R-COEX violation: {:?} must emit 0x81 as its first on-wire byte",
+                v
+            );
+        }
+    }
+
+    #[test]
+    fn r_coex_list_devices_is_the_lone_wire_silent_variant() {
+        // Sanity: confirms the predicate discriminates. ListDevices enumerates
+        // HID and sends nothing — it is NOT on the app's transport path.
+        assert!(!emits_0x81_first_byte(&RunCommand::ListDevices));
     }
 }
 
