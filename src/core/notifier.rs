@@ -709,6 +709,76 @@ pub fn reset_handshake_state() {
     HAS_HANDSHAKED.store(false, Ordering::SeqCst);
 }
 
+/// Three-state device status for the tray/menu-bar status line
+/// (`spec/DEVICE_DISCOVERY.md` §3). Derived from the two booleans the existing
+/// poll-thread lifecycle already maintains — see [`device_status`].
+// Consumed by the S2/S3 tray poll threads (src/tray.rs / src/linux_tray.rs);
+// until those land, non-test builds flag this pub enum as unused.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeviceStatus {
+    /// ≥1 **capable** board present (`is_device_connected() && host_capable()`).
+    /// Tray: `● Device Connected`. Icon: solid `U+25CF`, full alpha.
+    Connected,
+    /// ≥1 Tier-1 board present, **0 capable** (`is_device_connected() &&
+    /// !host_capable()`). The truthful "flash qmk_notifier" state. Tray:
+    /// `⚠ QMK board found — no qmk_notifier module (flash it)`.
+    NoModule,
+    /// 0 Tier-1 boards present (`!is_device_connected()`). Tray:
+    /// `○ No Device Connected`. Icon: hollow `U+25CB`, dimmed.
+    Disconnected,
+}
+
+/// The device-status for the tray/menu-bar status line right now
+/// (`spec/DEVICE_DISCOVERY.md` §3, `ARCHITECTURE.md` §5.6).
+///
+/// Derives the three-state value from the two booleans the existing poll-thread
+/// lifecycle already maintains — it does **not** send any HID command or open any
+/// device (no per-path `QUERY_INFO` ping; that is P3's cache-backed
+/// `classify_devices()`):
+/// - [`is_device_connected()`] — pure Tier-1 enumeration (any `0xFF60`/`0x61`
+///   interface matching the configured filter; never opens/sends).
+/// - [`host_capable()`] — reads the [`HOST_CAPABLE`] `AtomicBool`, set `true` by
+///   the handshake on a capable `QUERY_INFO` reply and reset `false` on a device
+///   Loss / failure.
+///
+/// | Status        | Condition                              |
+/// |---------------|----------------------------------------|
+/// | `Disconnected`| `!is_device_connected()`               |
+/// | `NoModule`    | `is_device_connected() && !host_capable()` |
+/// | `Connected`   | `is_device_connected() && host_capable()`  |
+///
+/// **Transient caveat:** right after a device Gain, `host_capable()` is `false`
+/// until `perform_handshake` completes (sub-second); the line may briefly read
+/// `NoModule` before flipping to `Connected`. Acceptable per spec.
+///
+/// The pure truth table lives in [`classify_device_status`] so it is unit-testable
+/// without a real device (Tier-1 enumeration reflects actual hardware, which is
+/// absent in CI).
+// Consumed by the S2/S3 tray poll threads (src/tray.rs / src/linux_tray.rs);
+// until those land, non-test builds flag this pub fn as unused.
+#[allow(dead_code)]
+pub fn device_status() -> DeviceStatus {
+    classify_device_status(is_device_connected(), host_capable())
+}
+
+/// Pure three-state classifier — the testable truth table for [`device_status`].
+///
+/// Split out so the three derivations can be unit-tested deterministically:
+/// [`is_device_connected`] enumerates real HID hardware (always `false` in CI),
+/// so [`device_status`] itself can only naturally produce [`DeviceStatus::Disconnected`]
+/// in the test environment. This helper takes the two booleans directly.
+#[allow(dead_code)]
+fn classify_device_status(present: bool, capable: bool) -> DeviceStatus {
+    if !present {
+        DeviceStatus::Disconnected
+    } else if capable {
+        DeviceStatus::Connected
+    } else {
+        DeviceStatus::NoModule
+    }
+}
+
 /// What the host-rules handshake lifecycle should do for a device-status transition.
 ///
 /// Computed by [`handshake_action`] from the previous and current
@@ -2812,5 +2882,58 @@ disable = ["known_b", "phantom"]
             wait_for_count(1, Duration::from_millis(500)),
             "notify_qmk must still flush on an unpoisoned STATE after hardening"
         );
+    }
+
+    // ---- DeviceStatus three-state derivation (P1.M1.T1.S1) ----
+
+    #[test]
+    fn test_classify_device_status_truth_table() {
+        // All three rows of the §3 table, deterministically (no hardware needed).
+        use DeviceStatus::*;
+        // present=false dominates regardless of `capable`:
+        assert_eq!(classify_device_status(false, false), Disconnected);
+        assert_eq!(classify_device_status(false, true), Disconnected);
+        // present=true, not capable -> the headline NoModule state:
+        assert_eq!(classify_device_status(true, false), NoModule);
+        // present=true, capable -> Connected:
+        assert_eq!(classify_device_status(true, true), Connected);
+    }
+
+    #[test]
+    fn test_device_status_is_disconnected_in_ci_without_hardware() {
+        // device_status() wires is_device_connected() (Tier-1 enumerate) + host_capable().
+        // When NO Tier-1 board is present (the CI case — `is_device_connected()`
+        // enumerates real HID hardware, so it is false on clean CI runners), the
+        // result MUST be Disconnected even if a stale HOST_CAPABLE=true lingered
+        // (present=false dominates; a stale capability flag can never fabricate a
+        // false "NoModule"/"Connected"). That dominance is also proved directly +
+        // deterministically by test_classify_device_status_truth_table's
+        // classify_device_status(false, true) == Disconnected row, which does not
+        // depend on hardware. Here we assert the live device_status() path too, but
+        // ONLY when this machine genuinely has no matching board — a developer box
+        // may have a QMK board plugged in, in which case device_status() legitimately
+        // reads NoModule/Connected and the Disconnected assertion does not apply.
+        let present = is_device_connected();
+        if !present {
+            reset_handshake_state(); // HOST_CAPABLE = false
+            assert_eq!(device_status(), DeviceStatus::Disconnected);
+
+            HOST_CAPABLE.store(true, Ordering::SeqCst); // simulate a stale capable flag
+            assert_eq!(
+                device_status(),
+                DeviceStatus::Disconnected,
+                "no Tier-1 board present must dominate a stale HOST_CAPABLE"
+            );
+            reset_handshake_state(); // restore HOST_CAPABLE = false (isolation)
+        } else {
+            // A board is present on this machine — the Disconnected branch is not
+            // reachable here. Still confirm device_status() matches the helper for
+            // both HOST_CAPABLE values (the public fn delegates correctly).
+            reset_handshake_state();
+            assert_eq!(device_status(), classify_device_status(present, false));
+            HOST_CAPABLE.store(true, Ordering::SeqCst);
+            assert_eq!(device_status(), classify_device_status(present, true));
+            reset_handshake_state(); // restore HOST_CAPABLE = false (isolation)
+        }
     }
 }
