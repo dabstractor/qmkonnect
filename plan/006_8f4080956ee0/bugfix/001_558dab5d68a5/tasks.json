@@ -11,7 +11,7 @@
           "type": "Milestone",
           "id": "P1.M1",
           "title": "Major Bug Fixes — Identifier Correctness & Autostart Safety",
-          "status": "Planned",
+          "status": "Researching",
           "description": "Fix the three Major-severity defects (PRD IDs 1, 2, 4) that affect rule correctness on Hyprland/X11 and autostart reliability on Windows paths containing spaces.",
           "tasks": [
             {
@@ -66,14 +66,14 @@
               "type": "Task",
               "id": "P1.M1.T3",
               "title": "Quote Windows autostart path in both autostart.rs and the Inno installer",
-              "status": "Planned",
+              "status": "Researching",
               "description": "Both src/autostart.rs enable() and the Inno installer [Registry] section write the HKCU Run key value as an unquoted path. If the install path contains spaces (e.g., C:\\Users\\John Doe\\...), the Run key may fail to execute on login or become a security vector (unquoted path traversal).",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M1.T3.S1",
                   "title": "Quote the exe path in src/autostart.rs current_exe_wide()",
-                  "status": "Researching",
+                  "status": "Complete",
                   "story_points": 1,
                   "dependencies": [],
                   "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See plan/006_8f4080956ee0/bugfix/001_558dab5d68a5/architecture/bug_findings.md §Bug 3A. src/autostart.rs is entirely #[cfg(target_os = \"windows\")]. current_exe_wide() (L57) calls std::env::current_exe(), then encodes the OsStr as UTF-16 with a trailing NUL. enable() (L72) writes this buffer directly as REG_SZ data via RegSetValueExW (L103). is_enabled() (L38) checks value PRESENCE via RegGetValueW, not content — so quoting does NOT break the presence check.\n2. INPUT: The resolved exe path from std::env::current_exe().\n3. LOGIC: Modify current_exe_wide() (or the enable() call site) so the UTF-16 buffer encodes `\"<path>\"` — i.e., chain a leading `\"` (0x0022) before the path's encode_wide() iterator, then the path chars, then a trailing `\"` (0x0022), then the NUL (0x0000). The resulting REG_SZ data is e.g. `\"C:\\Users\\John Doe\\AppData\\Local\\Programs\\QMKonnect\\QMKonnect.exe\"`. Test: assert current_exe_wide() starts with 0x0022 and the char before the final NUL is 0x0022.\n4. OUTPUT: The HKCU Run key value is a quoted path. is_enabled() continues to work (presence-based). disable() is unaffected (it deletes the value).\n5. DOCS: none — internal quoting fix. docs/troubleshooting.md L265 shows a `reg query` command to check the entry, not the value format.",
@@ -88,7 +88,7 @@
                   "type": "Subtask",
                   "id": "P1.M1.T3.S2",
                   "title": "Quote the path in packaging/windows/inno/QMKonnect.iss [Registry] section",
-                  "status": "Planned",
+                  "status": "Researching",
                   "story_points": 0.5,
                   "dependencies": [],
                   "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See plan/006_8f4080956ee0/bugfix/001_558dab5d68a5/architecture/bug_findings.md §Bug 3B. The [Registry] section of packaging/windows/inno/QMKonnect.iss currently writes: `ValueData: \"{app}\\{#MyAppExeName}\"` (unquoted). {app} expands to the install dir (DefaultDirName = {localappdata}\\Programs\\QMKonnect), which can contain spaces if the username does.\n2. INPUT: Inno Setup constants {app} and {#MyAppExeName} (\"QMKonnect.exe\").\n3. LOGIC: In the [Registry] section line for the Run key, change ValueData to use Inno's `\"\"` escape for literal double-quotes: `ValueData: \"\"\"{app}\\{#MyAppExeName}\"\"\"`. Inno resolves `\"\"` to a single `\"` in the final registry value, producing `\"C:\\...\\QMKonnect.exe\"`. Keep ValueType: string, ValueName: \"QMKonnect\", and Flags: uninsdeletevalue unchanged. This MUST match P1.M1.T3.S1's quoting so the installer and the in-app toggle write the same format.\n4. OUTPUT: Fresh installs and upgrades via QMKonnect-Setup.exe write a quoted path to the HKCU Run key.\n5. DOCS: none — no user-facing surface change. The installer comment already documents the Run key contract.",

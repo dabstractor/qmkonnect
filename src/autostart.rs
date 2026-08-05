@@ -93,8 +93,11 @@ fn disable() {
     let _ = unsafe { RegCloseKey(hkey) };
 }
 
-/// `std::env::current_exe()` as a null-terminated UTF-16 buffer — the layout
-/// `REG_SZ` expects. Kept local rather than reusing `tray.rs`'s `to_wide_string`
+/// `std::env::current_exe()` as a **quoted**, null-terminated UTF-16 buffer — the
+/// layout the HKCU `Run` key's `REG_SZ` value expects. The path is wrapped in
+/// double-quotes (`"…"`, U+0022) so a path containing spaces (e.g.
+/// `C:\Users\John Doe\…`) resolves correctly at login and is not an unquoted-
+/// service-path vector. Kept local rather than reusing `tray.rs`'s `to_wide_string`
 /// so this module stays self-contained and the macOS branch merges cleanly.
 fn current_exe_wide() -> Vec<u16> {
     use std::ffi::OsStr;
@@ -103,8 +106,65 @@ fn current_exe_wide() -> Vec<u16> {
         Ok(p) => p,
         Err(_) => return vec![0],
     };
-    OsStr::new(&path)
-        .encode_wide()
+    // Wrap the path in double-quotes (U+0022) before the NUL terminator, so a path
+    // containing spaces (e.g. `C:\Users\John Doe\…`) is written to the HKCU `Run`
+    // key as a quoted REG_SZ that Windows resolves correctly at login — and is not
+    // an unquoted-service-path vector. Buffer layout: [0x0022, …path UTF-16…, 0x0022, 0x0000].
+    std::iter::once(0x0022)
+        .chain(OsStr::new(&path).encode_wide())
+        .chain(std::iter::once(0x0022))
         .chain(std::iter::once(0))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn current_exe_wide_is_quoted() {
+        // Bug 3A: the HKCU Run-key REG_SZ value must be a QUOTED path so a spaced
+        // install path resolves at login. Assert the buffer layout:
+        // [0x0022 …path… 0x0022 0x0000].
+        let buf = current_exe_wide();
+
+        assert!(!buf.is_empty(), "buffer must not be empty");
+        assert_eq!(
+            buf[0], 0x0022,
+            "REG_SZ path must START with a double-quote (0x0022)"
+        );
+        // At least [quote, one path unit, quote, NUL].
+        assert!(
+            buf.len() >= 4,
+            "buffer must be at least [0x0022, <char>, 0x0022, 0x0000]"
+        );
+        assert_eq!(
+            *buf.last().unwrap(),
+            0u16,
+            "buffer must END with a NUL terminator (0x0000)"
+        );
+        assert_eq!(
+            buf[buf.len() - 2],
+            0x0022,
+            "the char BEFORE the final NUL must be a double-quote (0x0022)"
+        );
+    }
+
+    #[test]
+    fn current_exe_wide_quotes_the_actual_exe_path() {
+        // Stronger round-trip: the quoted content (between the quotes) must equal
+        // std::env::current_exe() — i.e. the quotes wrap the REAL path, not garbage.
+        let buf = current_exe_wide();
+        // Drop the leading quote (buf[0]) and the trailing quote+NUL (last 2 units).
+        let inner = &buf[1..buf.len() - 2];
+        let decoded = String::from_utf16_lossy(inner);
+        let expected = std::env::current_exe()
+            .expect("current_exe must resolve under cargo test")
+            .to_string_lossy()
+            .into_owned();
+        assert_eq!(
+            decoded, expected,
+            "the quoted buffer must wrap the actual current_exe() path"
+        );
+    }
 }
