@@ -909,8 +909,7 @@ fn show_settings_dialog(config_path: &std::path::Path) -> Result<(), Box<dyn std
         // Capture the dialog-OPEN vid/pid so the [Rescan] arm can re-evaluate
         // the three picker cases without re-reading the config file — the user
         // is mid-edit, so the live edit fields are NOT authoritative.
-        *DIALOG_OPEN_VIDPID.lock().unwrap() =
-            (current_config.vendor_id, current_config.product_id);
+        *DIALOG_OPEN_VIDPID.lock().unwrap() = (current_config.vendor_id, current_config.product_id);
 
         // Create controls
         create_dialog_controls(hwnd, h_instance.into(), &current_config)?;
@@ -1105,9 +1104,8 @@ fn create_dialog_controls(
     use std::ptr;
     use windows::Win32::UI::Controls::{WC_BUTTONW, WC_EDITW, WC_LISTBOX, WC_STATICW};
     use windows::Win32::UI::WindowsAndMessaging::{
-        BS_GROUPBOX, CreateWindowExW, HMENU, LBS_HASSTRINGS, LBS_NOINTEGRALHEIGHT,
-        LBS_NOTIFY, SetDlgItemTextW, WINDOW_STYLE, WS_CHILD, WS_EX_CLIENTEDGE,
-        WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
+        CreateWindowExW, SetDlgItemTextW, BS_GROUPBOX, HMENU, LBS_HASSTRINGS, LBS_NOINTEGRALHEIGHT,
+        LBS_NOTIFY, WINDOW_STYLE, WS_CHILD, WS_EX_CLIENTEDGE, WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
     };
 
     unsafe {
@@ -1323,9 +1321,8 @@ unsafe extern "system" fn settings_dialog_proc(
     lparam: windows::Win32::Foundation::LPARAM,
 ) -> windows::Win32::Foundation::LRESULT {
     use windows::Win32::UI::WindowsAndMessaging::{
-        DefWindowProcW, DestroyWindow, GetDlgItem, GetDlgItemTextW, LB_ERR, LB_GETCURSEL,
-        MessageBoxW, PostQuitMessage, SendMessageW, MB_ICONERROR, MB_OK, WM_CLOSE, WM_COMMAND,
-        WM_DESTROY,
+        DefWindowProcW, DestroyWindow, GetDlgItem, GetDlgItemTextW, MessageBoxW, PostQuitMessage,
+        SendMessageW, LB_ERR, LB_GETCURSEL, MB_ICONERROR, MB_OK, WM_CLOSE, WM_COMMAND, WM_DESTROY,
     };
 
     match msg {
@@ -1638,7 +1635,10 @@ fn show_settings_dialog_with_pool(
     // dialog-open window to re-scan within — no [Rescan] button on macOS).
     let devices = crate::core::notifier::classify_devices(true);
     let clean_auto = devices.len() == 1
-        && matches!(devices[0].kind, crate::core::notifier::DeviceKind::Capable { .. })
+        && matches!(
+            devices[0].kind,
+            crate::core::notifier::DeviceKind::Capable { .. }
+        )
         && current_config.vendor_id.is_none()
         && current_config.product_id.is_none();
     let has_capable = devices

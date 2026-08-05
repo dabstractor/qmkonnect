@@ -4,7 +4,7 @@ version = "0.2.8"
 edition = "2021"
 authors = ["Mulletware"]
 description = "Cross-platform window activity notifier for QMK keyboards"
-readme = "Readme.md"
+readme = "README.md"
 license = "MIT"
 rust-version = "1.88"  # MSRV floor: image 0.25.x (see docs/installation.md)
 

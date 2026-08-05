@@ -685,9 +685,7 @@ mod gtk_dialog {
 /// status. Built from a [`ClassifiedDevice`] per `spec/DEVICE_DISCOVERY.md`
 /// §5.1 / §3 (the ✓/✗ + "qmk_notifier" / "QMK board, no module" semantics).
 /// Pure; unit-tested.
-fn picker_columns(
-    d: &crate::core::notifier::ClassifiedDevice,
-) -> (String, String, String) {
+fn picker_columns(d: &crate::core::notifier::ClassifiedDevice) -> (String, String, String) {
     use crate::core::notifier::DeviceKind;
     let (glyph, status) = match d.kind {
         DeviceKind::Capable { .. } => ("\u{2713}", "qmk_notifier"), // ✓
@@ -758,9 +756,7 @@ fn save_and_notify(vendor_id: Option<u16>, product_id: Option<u16>) {
 /// [`show_settings_dialog_linux`]. No notification is fired here: a missing
 /// zenity would make both dialogs fail, and the `--forms` (which follows) has its
 /// own zenity-missing notify that covers the case.
-fn run_device_picker(
-    devices: &[crate::core::notifier::ClassifiedDevice],
-) -> Option<(u16, u16)> {
+fn run_device_picker(devices: &[crate::core::notifier::ClassifiedDevice]) -> Option<(u16, u16)> {
     // Build argv: flags first, then the 3 column headers, then N×3 values.
     // Each value is pushed as its own arg element (Rust's Command does NOT go
     // through a shell, so the ✓ glyph + spaces are fine — no quoting).
@@ -1307,13 +1303,13 @@ mod tests {
         assert_eq!(parse_vidpid("0xFEED:0x0000"), Some((0xFEED, 0x0000)));
         assert_eq!(parse_vidpid("feed:0x123"), Some((0xFEED, 0x0123)));
         assert_eq!(parse_vidpid("  0xFEED:0x0000  "), Some((0xFEED, 0x0000))); // trimmed
-        // Malformed / empty / half-missing selections → None (fall through).
+                                                                               // Malformed / empty / half-missing selections → None (fall through).
         assert_eq!(parse_vidpid(""), None);
         assert_eq!(parse_vidpid("feed"), None); // no colon
         assert_eq!(parse_vidpid("feed:"), None); // missing pid
         assert_eq!(parse_vidpid(":123"), None); // missing vid
         assert_eq!(parse_vidpid("garbage:x"), None); // non-hex vid
-        // splitn(2): the pid half carries a stray '|' → parse_id rejects it.
+                                                     // splitn(2): the pid half carries a stray '|' → parse_id rejects it.
         assert_eq!(parse_vidpid("0xFEED:0x0000|extra"), None);
     }
 }

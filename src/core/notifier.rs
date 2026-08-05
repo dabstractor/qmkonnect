@@ -156,11 +156,10 @@ pub fn list_devices(verbose: bool) -> Result<(), Box<dyn Error>> {
     // cache). Keyed by the stable hidapi `path` (mirrors enumerate_candidates)
     // so each enumerated interface maps to its own classification. Returns [] on
     // any HID error ⇒ the kind column degrades to `-` everywhere (G5).
-    let kind_by_path: std::collections::HashMap<String, DeviceKind> =
-        classify_devices(verbose)
-            .into_iter()
-            .map(|c| (c.path, c.kind))
-            .collect();
+    let kind_by_path: std::collections::HashMap<String, DeviceKind> = classify_devices(verbose)
+        .into_iter()
+        .map(|c| (c.path, c.kind))
+        .collect();
 
     println!("Available HID devices (vendor:product  usage_page:usage  product  kind):");
     for d in api.device_list() {
@@ -624,7 +623,7 @@ pub fn perform_handshake_with(verbose: bool, opts: HandshakeOptions) {
             HOST_CAPABLE.store(false, Ordering::SeqCst);
             CALLBACK_NAMES.lock().unwrap().clear();
             HAS_HANDSHAKED.store(false, Ordering::SeqCst); // transient — allow retry
-            // Warm the per-path cache (best-effort no-op under MockNotifier).
+                                                           // Warm the per-path cache (best-effort no-op under MockNotifier).
             warm_cache_from_handshake(DeviceKind::NotQmkNotifier);
             if verbose {
                 eprintln!(
@@ -1821,8 +1820,8 @@ mod tests {
     // (the chosen per-candidate mechanism — the crate has no per-path send).
     // Records tuples, NOT `DeviceFilter`, so no `Clone`/`PartialEq` derive is
     // added to the production struct purely for test convenience.
-    static MOCK_SEND_COMMAND_FILTERS:
-        Lazy<StdMutex<Vec<(Option<u16>, Option<u16>, u16, u16)>>> =
+    type MockSendCommandFilter = (Option<u16>, Option<u16>, u16, u16);
+    static MOCK_SEND_COMMAND_FILTERS: Lazy<StdMutex<Vec<MockSendCommandFilter>>> =
         Lazy::new(|| StdMutex::new(Vec::new()));
     static MOCK_RESPONSES: Lazy<StdMutex<VecDeque<qmk_notifier::CommandResponse>>> =
         Lazy::new(|| StdMutex::new(VecDeque::new()));
@@ -1910,10 +1909,12 @@ mod tests {
                 .push(command.clone());
             // P3.M1.T1.S2: record the per-call filter tuple so the classify
             // tests can assert the per-candidate vid/pid narrowing.
-            MOCK_SEND_COMMAND_FILTERS
-                .lock()
-                .unwrap()
-                .push((filter.vendor_id, filter.product_id, filter.usage_page, filter.usage));
+            MOCK_SEND_COMMAND_FILTERS.lock().unwrap().push((
+                filter.vendor_id,
+                filter.product_id,
+                filter.usage_page,
+                filter.usage,
+            ));
             // P1.M3.T2.S1 (#4): optional artificial delay to widen the sweep window for the
             // per-iteration lock-release test (wall-clock sleep, so CI CPU slowdown can't shrink it).
             if let Some(d) = *MOCK_SEND_DELAY.lock().unwrap() {
@@ -3502,16 +3503,13 @@ disable = ["known_b", "phantom"]
         assert!(classification_cache_get("p-ttl").is_some());
         // Simulate expiry by rewriting the stored Instant to the past
         // (same-module test reaching into the private static is fine).
-        CLASSIFICATION_CACHE
-            .lock()
-            .unwrap()
-            .insert(
-                "p-ttl".to_string(),
-                (
-                    capable_sample(),
-                    Instant::now() - CLASSIFICATION_TTL - Duration::from_millis(1),
-                ),
-            );
+        CLASSIFICATION_CACHE.lock().unwrap().insert(
+            "p-ttl".to_string(),
+            (
+                capable_sample(),
+                Instant::now() - CLASSIFICATION_TTL - Duration::from_millis(1),
+            ),
+        );
         assert_eq!(classification_cache_get("p-ttl"), None);
     }
 
@@ -3533,7 +3531,10 @@ disable = ["known_b", "phantom"]
         // classification_cache_get's owned return).
         assert_eq!(cap_a.clone(), cap_b);
         // NotQmkNotifier unit variant PartialEq + Clone sanity.
-        assert_eq!(DeviceKind::NotQmkNotifier, DeviceKind::NotQmkNotifier.clone());
+        assert_eq!(
+            DeviceKind::NotQmkNotifier,
+            DeviceKind::NotQmkNotifier.clone()
+        );
         // The two variants are distinct.
         assert_ne!(cap_a, DeviceKind::NotQmkNotifier);
 
@@ -3698,7 +3699,10 @@ disable = ["known_b", "phantom"]
         // The filter was narrowed to this candidate's vid/pid (G4 mechanism).
         let filters = MockNotifier::get_send_command_filters();
         assert_eq!(filters.len(), 1);
-        assert_eq!(filters[0], (Some(0x1234u16), Some(0x5678u16), 0xFF60u16, 0x61u16));
+        assert_eq!(
+            filters[0],
+            (Some(0x1234u16), Some(0x5678u16), 0xFF60u16, 0x61u16)
+        );
     }
 
     #[test]
@@ -3743,9 +3747,18 @@ disable = ["known_b", "phantom"]
         assert_eq!(MockNotifier::get_send_command_calls().len(), 3);
         let filters = MockNotifier::get_send_command_filters();
         assert_eq!(filters.len(), 3);
-        assert_eq!(filters[0], (Some(0x1111u16), Some(0x2222u16), 0xFF60u16, 0x61u16));
-        assert_eq!(filters[1], (Some(0x3333u16), Some(0x4444u16), 0xFF60u16, 0x61u16));
-        assert_eq!(filters[2], (Some(0x5555u16), Some(0x6666u16), 0xFF60u16, 0x61u16));
+        assert_eq!(
+            filters[0],
+            (Some(0x1111u16), Some(0x2222u16), 0xFF60u16, 0x61u16)
+        );
+        assert_eq!(
+            filters[1],
+            (Some(0x3333u16), Some(0x4444u16), 0xFF60u16, 0x61u16)
+        );
+        assert_eq!(
+            filters[2],
+            (Some(0x5555u16), Some(0x6666u16), 0xFF60u16, 0x61u16)
+        );
     }
 
     #[test]

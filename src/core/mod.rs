@@ -104,15 +104,13 @@ pub fn configured_debounce_ms() -> u64 {
 /// so a relocated candidate never serves a stale entry from a different file.
 /// Shared by `configured_timing` + `configured_filter` so the per-send
 /// double-read is coalesced to one parse per mtime.
-static CONFIG_CACHE: Lazy<Mutex<Option<(PathBuf, SystemTime, u64, Config)>>> =
-    Lazy::new(|| Mutex::new(None));
+static CONFIG_CACHE: Lazy<ConfigCache<Config>> = Lazy::new(|| Mutex::new(None));
 
 /// mtime+size-keyed cache for the hot-config `rules.toml` read
 /// (`host_context_for_window`). Same contract as [`CONFIG_CACHE`].
 /// [`crate::core::rules::parse_rules`] stays uncached for its other callers
 /// (`validate_rules_callback_names`, `--validate-rules`, tests).
-static RULES_CACHE: Lazy<Mutex<Option<(PathBuf, SystemTime, u64, crate::core::rules::RuleSet)>>> =
-    Lazy::new(|| Mutex::new(None));
+static RULES_CACHE: Lazy<RulesCache> = Lazy::new(|| Mutex::new(None));
 
 // Test-only observables: incremented ONLY on a cache miss (the fall-through to
 // parse_config/parse_rules). Tests snapshot the delta to prove HIT/MISS —
@@ -122,6 +120,13 @@ static RULES_CACHE: Lazy<Mutex<Option<(PathBuf, SystemTime, u64, crate::core::ru
 static CONFIG_CACHE_MISSES: AtomicU64 = AtomicU64::new(0);
 #[cfg(test)]
 static RULES_CACHE_MISSES: AtomicU64 = AtomicU64::new(0);
+
+/// (resolved path, mtime, size) hot-config cache key + parsed value. Factored
+/// out to keep the `Lazy<Mutex<Option<…>>>` static types under clippy's
+/// `type_complexity` threshold (one `Mutex<Option<(…,T)>>` tuple per cache).
+type ConfigCache<T> = Mutex<Option<(PathBuf, SystemTime, u64, T)>>;
+/// [`CONFIG_CACHE`] for the `rules.toml` value type.
+type RulesCache = ConfigCache<crate::core::rules::RuleSet>;
 
 /// Hermetic, testable core: cache `config.toml` at `path` by
 /// (path, mtime, size). On a cache HIT returns the stored [`Config`] clone (no
@@ -255,11 +260,13 @@ pub fn render_default_config_template() -> String {
 pub fn render_config_body(config: &Config) -> String {
     let vid_line = match config.vendor_id {
         Some(v) => format!("vendor_id  = 0x{v:04x}"),
-        None => "# vendor_id  = 0x????   # unset: auto-discover any QMK keyboard (recommended)".to_string(),
+        None => "# vendor_id  = 0x????   # unset: auto-discover any QMK keyboard (recommended)"
+            .to_string(),
     };
     let pid_line = match config.product_id {
         Some(p) => format!("product_id = 0x{p:04x}"),
-        None => "# product_id = 0x????   # unset: auto-discover any QMK keyboard (recommended)".to_string(),
+        None => "# product_id = 0x????   # unset: auto-discover any QMK keyboard (recommended)"
+            .to_string(),
     };
     let usage_page_line = match config.usage_page {
         Some(u) => format!("usage_page = 0x{u:04x}"),
@@ -582,13 +589,25 @@ mod tests {
     fn template_has_no_0xfeed_literal() {
         // §9 gate: "the seeded template contains no literal 0xfeed."
         let seeded = render_default_config_template();
-        assert!(!seeded.contains("0xfeed"), "seeded template still has 0xfeed: {seeded:?}");
-        assert!(seeded.contains("0x????"), "seeded template missing the 0x???? hint: {seeded:?}");
+        assert!(
+            !seeded.contains("0xfeed"),
+            "seeded template still has 0xfeed: {seeded:?}"
+        );
+        assert!(
+            seeded.contains("0x????"),
+            "seeded template missing the 0x???? hint: {seeded:?}"
+        );
         // The save renderer's None body (Config::default() = all None) must ALSO
         // be clean — G1: both renderers.
         let saved = render_config_body(&Config::default());
-        assert!(!saved.contains("0xfeed"), "save-renderer None body still has 0xfeed: {saved:?}");
-        assert!(saved.contains("0x????"), "save-renderer None body missing 0x????: {saved:?}");
+        assert!(
+            !saved.contains("0xfeed"),
+            "save-renderer None body still has 0xfeed: {saved:?}"
+        );
+        assert!(
+            saved.contains("0x????"),
+            "save-renderer None body missing 0x????: {saved:?}"
+        );
     }
 
     #[test]
