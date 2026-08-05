@@ -123,20 +123,59 @@ fn config_parse_error_at(path: &Path) -> Option<(PathBuf, String)> {
     }
 }
 
-/// List all HID devices WITHOUT opening them — pure enumeration from the kernel
-/// device list, so it can never disturb the keyboard. Backs the `--list-devices`
-/// flag for VID/PID discovery (#17).
-pub fn list_devices() -> Result<(), Box<dyn Error>> {
+/// The `--list-devices` kind-column label for a classified Tier-1 device
+/// (`spec/DEVICE_DISCOVERY.md` §8): `qmk_notifier` for a capable board,
+/// `qmk-only` for a QMK raw-HID board that isn't running the qmk_notifier module.
+/// Pure; unit-tested (`kind_label_matches_spec`).
+fn kind_label(kind: &DeviceKind) -> &'static str {
+    match kind {
+        DeviceKind::Capable { .. } => "qmk_notifier",
+        DeviceKind::NotQmkNotifier => "qmk-only",
+    }
+}
+
+/// Print every HID device the kernel can see, WITHOUT opening any of them — the
+/// VID/PID discovery tool (`spec/DEVICE_DISCOVERY.md` §8 / `PROTOCOL.md` §6).
+/// Read-only enumeration (never seizes a device). Adds a **`kind`** column from a
+/// one-shot [`classify_devices`] pass: Tier-1 QMK raw-HID boards that answered
+/// the capability probe show `qmk_notifier` (capable) or `qmk-only` (QMK board,
+/// no qmk_notifier module); all other interfaces show `-`.
+///
+/// `classify_devices` runs against the *configured* filter, so when `vendor_id`/
+/// `product_id` are set, boards outside that filter are not classified and show
+/// `-` (the common no-VID/PID case classifies all Tier-1 boards). If the HID
+/// classification itself fails, the kind map is empty and every cell is `-` — no
+/// panic, no error (§7.2/§8).
+///
+/// `verbose` is forwarded to [`classify_devices`]: `-v` prints per-candidate probe
+/// diagnostics to **stderr** (the **stdout** table stays clean).
+pub fn list_devices(verbose: bool) -> Result<(), Box<dyn Error>> {
     let api = hidapi::HidApi::new()?;
-    println!("Available HID devices (vendor:product  usage_page:usage  product):");
+
+    // One-shot Tier-2 classification (cache-backed; pings only on a cold/stale
+    // cache). Keyed by the stable hidapi `path` (mirrors enumerate_candidates)
+    // so each enumerated interface maps to its own classification. Returns [] on
+    // any HID error ⇒ the kind column degrades to `-` everywhere (G5).
+    let kind_by_path: std::collections::HashMap<String, DeviceKind> =
+        classify_devices(verbose)
+            .into_iter()
+            .map(|c| (c.path, c.kind))
+            .collect();
+
+    println!("Available HID devices (vendor:product  usage_page:usage  product  kind):");
     for d in api.device_list() {
+        let kind = kind_by_path
+            .get(&d.path().to_string_lossy().to_string())
+            .map(kind_label)
+            .unwrap_or("-");
         println!(
-            "  {:#06x}:{:#06x}  {:#06x}:{:#06x}  {}",
+            "  {:#06x}:{:#06x}  {:#06x}:{:#06x}  {}  {}",
             d.vendor_id(),
             d.product_id(),
             d.usage_page(),
             d.usage(),
             d.product_string().unwrap_or(""),
+            kind,
         );
     }
     Ok(())
@@ -3400,6 +3439,20 @@ disable = ["known_b", "phantom"]
             callback_count: 4,
             board_rules_present: true,
         }
+    }
+
+    #[test]
+    fn kind_label_matches_spec() {
+        // §8 labels: Capable ⇒ "qmk_notifier", NotQmkNotifier ⇒ "qmk-only".
+        use super::{kind_label, DeviceKind};
+        let capable = DeviceKind::Capable {
+            proto_ver: 2,
+            feature_flags: 1,
+            callback_count: 0,
+            board_rules_present: false,
+        };
+        assert_eq!(kind_label(&capable), "qmk_notifier");
+        assert_eq!(kind_label(&DeviceKind::NotQmkNotifier), "qmk-only");
     }
 
     #[test]

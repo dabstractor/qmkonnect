@@ -112,7 +112,7 @@ fn run() -> Result<(), Box<dyn Error>> {
 
     // List connected HID devices (VID/PID discovery) — read-only enumeration.
     if args.iter().any(|arg| arg == "--list-devices") {
-        crate::core::notifier::list_devices()?;
+        crate::core::notifier::list_devices(verbose)?;
         return Ok(());
     }
 

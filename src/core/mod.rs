@@ -235,8 +235,8 @@ pub fn render_default_config_template() -> String {
      # 0 disables. Default 0.\n\
      # poll_interval_ms = 0\n\
      \n\
-     # vendor_id  = 0xfeed   # unset: auto-discovery\n\
-     # product_id = 0x0000   # unset: auto-discovery\n"
+     # vendor_id  = 0x????   # unset: auto-discover any QMK keyboard (recommended)\n\
+     # product_id = 0x????   # unset: auto-discover any QMK keyboard (recommended)\n"
         .to_string()
 }
 
@@ -255,11 +255,11 @@ pub fn render_default_config_template() -> String {
 pub fn render_config_body(config: &Config) -> String {
     let vid_line = match config.vendor_id {
         Some(v) => format!("vendor_id  = 0x{v:04x}"),
-        None => "# vendor_id  = 0xfeed   # unset: auto-discovery".to_string(),
+        None => "# vendor_id  = 0x????   # unset: auto-discover any QMK keyboard (recommended)".to_string(),
     };
     let pid_line = match config.product_id {
         Some(p) => format!("product_id = 0x{p:04x}"),
-        None => "# product_id = 0x0000   # unset: auto-discovery".to_string(),
+        None => "# product_id = 0x????   # unset: auto-discover any QMK keyboard (recommended)".to_string(),
     };
     let usage_page_line = match config.usage_page {
         Some(u) => format!("usage_page = 0x{u:04x}"),
@@ -576,6 +576,19 @@ mod tests {
         let cfg: Config = toml::from_str(&body).unwrap();
         assert_eq!(cfg.vendor_id, Some(0xfeed));
         assert_eq!(cfg.product_id, Some(0x1234));
+    }
+
+    #[test]
+    fn template_has_no_0xfeed_literal() {
+        // §9 gate: "the seeded template contains no literal 0xfeed."
+        let seeded = render_default_config_template();
+        assert!(!seeded.contains("0xfeed"), "seeded template still has 0xfeed: {seeded:?}");
+        assert!(seeded.contains("0x????"), "seeded template missing the 0x???? hint: {seeded:?}");
+        // The save renderer's None body (Config::default() = all None) must ALSO
+        // be clean — G1: both renderers.
+        let saved = render_config_body(&Config::default());
+        assert!(!saved.contains("0xfeed"), "save-renderer None body still has 0xfeed: {saved:?}");
+        assert!(saved.contains("0x????"), "save-renderer None body missing 0x????: {saved:?}");
     }
 
     #[test]

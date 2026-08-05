@@ -304,21 +304,21 @@
           "type": "Milestone",
           "id": "P4.M1",
           "title": "0xFEED cleanup, --list-devices kind column, Mode-A docs",
-          "status": "Planned",
+          "status": "Researching",
           "description": "Replace 0xFEED literals in config templates, add the kind column to --list-devices, and sync user-facing docs.",
           "tasks": [
             {
               "type": "Task",
               "id": "P4.M1.T1",
               "title": "0xFEED -> 0x???? template + --list-devices kind column + Mode-A doc sync",
-              "status": "Planned",
+              "status": "Researching",
               "description": "Clean up the 0xFEED config template, add the capability kind column to --list-devices, and update user-facing documentation.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P4.M1.T1.S1",
                   "title": "Config template 0xFEED cleanup + --list-devices kind column",
-                  "status": "Researching",
+                  "status": "Complete",
                   "story_points": 1,
                   "dependencies": [
                     "P3.M1.T1.S2"
@@ -339,7 +339,7 @@
                   "type": "Subtask",
                   "id": "P4.M1.T1.S2",
                   "title": "Mode-A user-facing doc sync for the picker / Advanced / three-state status",
-                  "status": "Planned",
+                  "status": "Researching",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M1.T1.S1",
