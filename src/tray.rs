@@ -429,33 +429,34 @@ pub fn setup_tray(verbose: bool) {
     {
         let status_proxy = proxy.clone();
         std::thread::spawn(move || {
-            // Handshake tracker: keyed on the Tier-1 PRESENCE bool (unchanged).
-            let mut last: Option<bool> =
-                Some(crate::core::notifier::startup_device_was_connected());
-            // UI-status tracker: keyed on the three-state DeviceStatus (NEW).
-            // Separate from `last` because the NoModule→Connected flip happens
-            // while the presence bool stays `true` (the handshake sets
-            // HOST_CAPABLE); a bool-keyed event would never fire for it. Seeded
-            // ⇒ no spurious first-tick event (first-paint already rendered it).
+            // Capable-board presence tracker (Finding #1): keys the handshake
+            // lifecycle on CAPABLE-board presence (not Tier-1 presence),
+            // re-probing only when the Tier-1 path set changes (a plug/unplug)
+            // so the hot loop never pings on a stable bus (Finding #3). A
+            // capable board unplugging while a non-capable Tier-1 board remains
+            // is now a real Loss (reset + re-arm); a different capable board
+            // replugging is a real Gain (re-handshake). See PresenceTracker.
+            let mut presence = crate::core::notifier::PresenceTracker::new();
+            // UI-status tracker: keyed on the three-state DeviceStatus (separate
+            // from the handshake lifecycle — the NoModule→Connected flip happens
+            // while capable presence is stable, driven by the handshake setting
+            // HOST_CAPABLE). Seeded ⇒ no spurious first-tick event (first-paint
+            // already rendered it).
             let mut last_status: Option<crate::core::notifier::DeviceStatus> =
                 Some(crate::core::notifier::device_status());
             loop {
-                let connected = crate::core::notifier::is_device_connected();
-                if last != Some(connected) {
-                    // Handshake lifecycle on THIS poll thread (non-blocking to the
-                    // UI event loop). Gain ⇒ perform_handshake (idempotent via
-                    // HAS_HANDSHAKED if the runner already handshooked at startup);
-                    // Loss ⇒ reset so the next gain re-runs.
-                    match crate::core::notifier::handshake_action(last, connected) {
-                        crate::core::notifier::HandshakeAction::Gain => {
-                            crate::core::notifier::perform_handshake(verbose);
-                        }
-                        crate::core::notifier::HandshakeAction::Loss => {
-                            crate::core::notifier::reset_handshake_state();
-                        }
-                        crate::core::notifier::HandshakeAction::None => {}
+                // Handshake lifecycle on THIS poll thread (non-blocking to the
+                // UI event loop). Gain ⇒ perform_handshake (idempotent via
+                // HAS_HANDSHAKED if the runner already handshooked at startup);
+                // Loss ⇒ reset so the next gain re-runs.
+                match presence.tick(verbose) {
+                    crate::core::notifier::HandshakeAction::Gain => {
+                        crate::core::notifier::perform_handshake(verbose);
                     }
-                    last = Some(connected);
+                    crate::core::notifier::HandshakeAction::Loss => {
+                        crate::core::notifier::reset_handshake_state();
+                    }
+                    crate::core::notifier::HandshakeAction::None => {}
                 }
                 // ---- UI status: three-state, sent only on ITS transition. ----
                 // Computed AFTER the handshake block so a same-tick Gain +

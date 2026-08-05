@@ -28,7 +28,6 @@ impl PlatformRunner for LinuxRunner {
         // If a device is already connected at startup, run the capability handshake
         // now (poll-thread reconnects are handled in linux_tray.rs / tray.rs).
         // Completes before the poll thread exists; idempotent via HAS_HANDSHAKED.
-        crate::core::notifier::record_startup_device_state();
         if crate::core::notifier::is_device_connected() {
             crate::core::notifier::perform_handshake(self.verbose);
         }

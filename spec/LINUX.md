@@ -208,6 +208,16 @@ The static udev rule's `SYSTEMD_USER_WANTS` starts the service on device arrival
 *if it's enabled*. The user can instead run `qmkonnect & disown` directly. The
 service is the recommended path for hotplug auto-start.
 
+> **Trayless (`--no-default-features`) build caveat.** The minimal
+> `runners/linux.rs` target has no SNI tray, hence **no poll thread**, so it runs
+> the capability handshake **once at startup and never again** — an unplug/
+> replug after startup is not re-handshaked (host rules will not resume without a
+> restart). This is acceptable for the documented trayless-service target
+> because `BindsTo=dev-qmkonnect_device.device` stops the unit on unplug and
+> `Restart=always` (re)starts it on replug, re-running the startup handshake.
+> The full `linux-tray` build does not have this limitation: its poll thread's
+> `PresenceTracker` re-handshakes on any capable-board transition.
+
 ---
 
 ## 7. SNI Tray (`src/linux_tray.rs`, feature `linux-tray`)
@@ -223,9 +233,11 @@ menu/icon/status details.
     when no SNI host is running. So: no bar at startup ⇒ the item waits silently
     and appears when one starts; no bar at all ⇒ runs headless forever; no
     session D-Bus ⇒ logs the error and runs trayless (returns `None`).
-- Poll thread: every **1 s** re-probe `is_device_connected()` (re-reads config
-  every call), every **10** ticks re-query the color-scheme portal; on a
-  transition call `handle.update(|t| { t.device_connected = …; t.dark_mode = …; })`
+- Poll thread: every **1 s** drive a `PresenceTracker` tick (re-probes
+  capable presence via the cache-backed `classify_devices` only when the Tier-1
+  path *set* changes — a plug/unplug — so the hot loop never pings on a stable
+  bus), every **10** ticks re-query the color-scheme portal; on a transition call
+  `handle.update(|t| { t.device_status = …; t.dark_mode = …; })`
   (ksni re-serializes menu + icon; SNI hosts repaint).
 
 ### 7.2 Color-scheme detection (`detect_dark_mode`)

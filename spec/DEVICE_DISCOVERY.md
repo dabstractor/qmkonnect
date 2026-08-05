@@ -78,9 +78,25 @@ match run(QueryInfo, &filter) {
 A board is **qmk_notifier-capable** iff the reply is `Info { proto_ver: 2, .. }`.
 Everything else — including a clean `Timeout` (the normal pure-VIA case: the VIA
 firmware's `raw_hid_receive` never answers magic-prefixed input, so no IN report
-arrives) — is classified `NotQmkNotifier`. **No board is ever harmed by the
-probe:** the magic header is what makes qmk_notifier coexist with other Raw HID
-modules (`FIRMWARE.md` §1), so VIA/Vial firmware silently ignores the probe.
+arrives) — is classified `NotQmkNotifier`. **No proto-v2 or pure-VIA board is
+harmed by the probe:** the magic header is what makes qmk_notifier coexist with
+other Raw HID modules (`FIRMWARE.md` §1), so VIA/Vial firmware silently ignores
+the probe, and proto-v2 firmware routes the typed command through its dispatch
+(no `process_full_message` side effect).
+
+> **Proto-v1 caveat (the one exception).** An older **proto-v1** qmk_notifier
+> flash — which has the `0x81 0x9F` string path but *not* the typed-command
+> dispatch — walks `QUERY_INFO` through the string path, which reassembles to an
+> empty message and `process_full_message("")` deactivates the active board layer
+> (recoverable on the next window focus). The host-rules *handshake* is deduped
+> (`has_been_queried` / `HAS_HANDSHAKED` — at most once per board boot, when
+> board state is fresh, so harmless). The per-candidate *picker* probe
+> (`classify_devices`, opened from Settings / `[Rescan]` / `--list-devices`) sits
+> outside that dedup, so on a proto-v1 board it can briefly reset the active
+> layer on each probe. The status-poll path does NOT ping on a stable bus (it
+> re-probes only on a physical plug/unplug — see `PresenceTracker`), so the
+> recurring every-few-seconds case does not arise. Proto-v1 is considered legacy;
+> the recovery is to reflash a current qmk_notifier build.
 
 ### 2.3 `classify_devices(verbose) -> Vec<ClassifiedDevice>`
 
@@ -136,6 +152,19 @@ callback-name sweep runs against a representative capable board (first by stable
 `path`); heterogeneous multi-board (different callback registries) is a v1
 limitation documented in §4.3.
 
+**Handshake → cache warm-feed scope.** To keep discovery at a single ping per
+appearance, the handshake warm-feeds its `QUERY_INFO` result into the
+per-path `CLASSIFICATION_CACHE` so the first `classify_devices` reads a TTL hit.
+Because the handshake is **broadcast** (filter-keyed, no per-path attribution),
+this warm-feed is **correct only when a single Tier-1 board is present**
+(broadcast == unicast); with ≥2 boards on the bus the handshake cannot tell
+which path replied, so it skips the warm-feed and leaves per-path
+classification to `classify_devices`'s vid/pid-narrowed probe (which CAN
+attribute when vid/pid differ). Without this scope guard, a mixed desk (a
+capable board + a pure-VIA board) would have *both* paths warm-stamped from the
+single reply and the picker would briefly show the VIA board `✓ qmk_notifier`
+until the TTL expired.
+
 ---
 
 ## 3. Device-Status Semantics (three states)
@@ -156,11 +185,18 @@ nothing. On Linux this also fires a one-shot `notify-send` on the
 Disconnected→No-module transition with the same message + a link to
 `docs/qmk-integration.md`.
 
-The status probe thread (`ARCHITECTURE.md` §5.6) is unchanged in cadence; it now
-calls `classify_devices` (cache-backed) instead of the boolean
-`is_device_connected`. Transitions (not every poll) drive the UI update, exactly
-as today. `is_device_connected()` is retained as a Tier-1-only predicate used by
-the device-presence snapshot and the broadcast write path (§4.2).
+The status probe thread (`ARCHITECTURE.md` §5.6) is unchanged in cadence. It is
+**capable-keyed** (not Tier-1-keyed): a `PresenceTracker` remembers the Tier-1
+*path set* and re-probes capable presence (via the cache-backed
+`classify_devices`) **only when the path set changes** — a physical plug/unplug
+— so the hot poll loop never pings on a stable bus. This is what makes the
+headline mixed multi-board case truthful: when a capable board is unplugged
+while a non-capable (VIA/Vial) Tier-1 board remains, Tier-1 presence stays
+`true` but the capable set empties ⇒ a real `Loss` (reset + re-arm), and the
+tray correctly flips to `No module`; replugging a *different* capable board is a
+real `Gain` (re-handshake, no restart). Transitions (not every poll) drive the
+UI update, exactly as today. `is_device_connected()` is retained as a Tier-1-only
+predicate used by the broadcast write path (§4.2).
 
 ---
 

@@ -615,8 +615,18 @@ context-only (replace); integration per `AGENTS.md`.
   `DEVICE_DISCOVERY.md` §4.
 - **R6 — Legacy handshake side effect — RESOLVED.** The firmware sets
   `has_been_queried` on the first `QUERY_INFO`, and host-rules are gated on
-  `proto_ver == 2`; the host handshakes at most once per board boot. Legacy
-  firmware never receives typed commands.
+  `proto_ver == 2`; the host handshakes at most once per board boot. Proto-v2
+  firmware never receives a string-path side effect (typed commands bypass
+  `process_full_message`). **Proto-v1 qmk_notifier firmware is the one legacy
+  exception:** it lacks typed-command dispatch, so a `QUERY_INFO` walks the
+  string path and `process_full_message("")` deactivates the active board layer
+  (recoverable on the next window focus). The deduped *handshake* (once per
+  boot, when board state is fresh) is harmless; the per-candidate *picker* probe
+  (`classify_devices` — Settings / `[Rescan]` / `--list-devices`) sits outside
+  that dedup, so on proto-v1 firmware it can briefly reset the layer per probe.
+  The status-poll path does not re-probe on a stable bus (see `PresenceTracker`,
+  `DEVICE_DISCOVERY.md` §3), so the recurring case does not arise. Reflash a
+  current qmk_notifier build to clear it.
 - **Q1 — `default_layer` / a "default" no-match mode.** Reserved in the schema
   but not wired (`on_no_match` is always `clear`). Add if a use case appears.
 - **Q2 — `disable` list semantics — RESOLVED.** `disable` = explicit exclusion

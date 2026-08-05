@@ -277,23 +277,38 @@ pub fn spawn(verbose: bool) -> Option<ksni::blocking::Handle<QmkTray>> {
     // via the Settings dialog are reflected within one poll interval.
     let poll_handle = handle.clone();
     std::thread::spawn(move || {
-        // DUAL tracker (mirrors src/tray.rs/S2):
-        //   * `last_device` (bool) keys the HANDSHAKE lifecycle — a Tier-1
-        //     *presence* event. DeviceStatus can flip NoModule<->Connected
-        //     while presence is unchanged (the handshake itself flips
-        //     host_capable), so the handshake MUST stay bool-keyed.
-        //   * `last_status` (DeviceStatus) keys the UI field + the one-shot
-        //     notify — the headline NoModule->Connected flip happens while the
-        //     bool stays `true`, so the UI update must key on `last_status`.
-        //     Seed = Some(...) avoids a spurious first-tick event (new() already
-        //     rendered the correct text/icon synchronously).
-        let mut last_device: Option<bool> =
-            Some(crate::core::notifier::startup_device_was_connected());
+        // Capable-board presence tracker (Finding #1): keys the handshake
+        //   lifecycle on CAPABLE-board presence (not Tier-1 presence),
+        //   re-probing only when the Tier-1 path set changes (a plug/unplug)
+        //   so the hot loop never pings on a stable bus (Finding #3). A
+        //   capable board unplugging while a non-capable Tier-1 board remains
+        //   is now a real Loss (reset + re-arm); a different capable board
+        //   replugging is a real Gain (re-handshake). See PresenceTracker.
+        //   Mirrors src/tray.rs (parity).
+        let mut presence = crate::core::notifier::PresenceTracker::new();
+        // UI-status tracker: keyed on the three-state DeviceStatus (separate
+        //   from the handshake lifecycle — the NoModule->Connected flip happens
+        //   while capable presence is stable, driven by the handshake setting
+        //   host_capable). Seed = Some(...) avoids a spurious first-tick event
+        //   (new() already rendered the correct text/icon synchronously).
         let mut last_status: Option<DeviceStatus> = Some(crate::core::notifier::device_status());
         let mut last_dark: Option<bool> = None;
         let mut tick: u32 = 0;
         loop {
-            let connected = crate::core::notifier::is_device_connected();
+            // Handshake lifecycle on a capable-board transition. Runs on THIS
+            // poll thread — NEVER inside poll_handle.update, whose closure
+            // executes on ksni's D-Bus thread (HID I/O there would wedge the
+            // tray icon).
+            match presence.tick(verbose) {
+                crate::core::notifier::HandshakeAction::Gain => {
+                    crate::core::notifier::perform_handshake(verbose);
+                }
+                crate::core::notifier::HandshakeAction::Loss => {
+                    crate::core::notifier::reset_handshake_state();
+                }
+                crate::core::notifier::HandshakeAction::None => {}
+            }
+
             let status = crate::core::notifier::device_status();
             let dark = if tick.is_multiple_of(COLOR_SCHEME_POLL_EVERY) {
                 detect_dark_mode()
@@ -301,23 +316,6 @@ pub fn spawn(verbose: bool) -> Option<ksni::blocking::Handle<QmkTray>> {
                 last_dark.unwrap_or(true)
             };
             tick = tick.wrapping_add(1);
-
-            // Handshake lifecycle on a real device transition. Runs on THIS poll
-            // thread — NEVER inside poll_handle.update, whose closure executes on
-            // ksni's D-Bus thread (HID I/O there would wedge the tray icon).
-            // STAYS KEYED ON THE BOOL (Tier-1 presence event), not DeviceStatus.
-            if last_device != Some(connected) {
-                match crate::core::notifier::handshake_action(last_device, connected) {
-                    crate::core::notifier::HandshakeAction::Gain => {
-                        crate::core::notifier::perform_handshake(verbose);
-                    }
-                    crate::core::notifier::HandshakeAction::Loss => {
-                        crate::core::notifier::reset_handshake_state();
-                    }
-                    crate::core::notifier::HandshakeAction::None => {}
-                }
-                last_device = Some(connected);
-            }
 
             // One-shot `notify-send` on the Disconnected->NoModule transition
             // ONLY (spec/DEVICE_DISCOVERY.md §3). Not on Connected->NoModule,
@@ -339,7 +337,9 @@ pub fn spawn(verbose: bool) -> Option<ksni::blocking::Handle<QmkTray>> {
             }
 
             // Tray UI on a status OR dark transition (keyed on `last_status`,
-            // NOT the bool — the NoModule->Connected flip keeps the bool `true`).
+            // the three-state value — the NoModule->Connected flip is driven by
+            // the handshake setting host_capable while capable presence is
+            // stable, so a capable-keyed event alone would never fire for it).
             if last_status != Some(status) || last_dark != Some(dark) {
                 last_status = Some(status);
                 last_dark = Some(dark);

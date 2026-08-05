@@ -4,7 +4,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::error::Error;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Condvar, Mutex, OnceLock};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -266,29 +266,6 @@ pub fn is_device_connected() -> bool {
     }
 }
 
-/// Capture the device-presence snapshot ONCE for the poll threads (P1.M3.T1.S1).
-///
-/// Called by each runner on the main thread, immediately before its
-/// `if is_device_connected() { perform_handshake() }` startup block. Stores
-/// the result in the set-once [`STARTUP_DEVICE_CONNECTED`]; the poll threads
-/// read it via [`startup_device_was_connected`] to seed their `last` tracker
-/// so a transient first-tick `false` (after a connected startup) is correctly
-/// classified as a `Loss` (resetting [`HAS_HANDSHAKED`]) instead of a no-op.
-/// A second call is a silent no-op (OnceLock::set returns Err, discarded).
-pub fn record_startup_device_state() {
-    let _ = STARTUP_DEVICE_CONNECTED.set(is_device_connected());
-}
-
-/// The device-presence value captured at startup by [`record_startup_device_state`]
-/// (P1.M3.T1.S1). Poll threads seed their `last: Option<bool>` with
-/// `Some(startup_device_was_connected())`. Defaults to `false` if
-/// [`record_startup_device_state`] has not been called yet (e.g. in unit tests
-/// before any record) — harmless: the poll thread then behaves as "absent at
-/// startup", identical to the pre-fix cold-start path.
-pub fn startup_device_was_connected() -> bool {
-    *STARTUP_DEVICE_CONNECTED.get().unwrap_or(&false)
-}
-
 // ============================================================================
 // Host-rules capability handshake (P4.M2.T1.S1, HOST_RULES.md §8(5))
 // ============================================================================
@@ -319,16 +296,6 @@ static CALLBACK_NAMES: Lazy<Mutex<HashMap<String, u8>>> = Lazy::new(|| Mutex::ne
 /// resets it (via [`reset_handshake_state`]) on a real device transition
 /// (`is_device_connected()` false→true) to re-trigger.
 static HAS_HANDSHAKED: AtomicBool = AtomicBool::new(false);
-
-/// The device-presence snapshot captured ONCE at startup by
-/// [`record_startup_device_state`], read by the poll threads to seed their
-/// `last` tracker (P1.M3.T1.S1 / Finding #5). Without it the poll thread
-/// starts at `None` and a transient first-tick `false` after a connected
-/// startup never records a `Loss`, so [`HAS_HANDSHAKED`] stays `true` and a
-/// reconnect skips the `SET_OS` re-send. `OnceLock` is set-once: the first
-/// runner to call [`record_startup_device_state`] wins; subsequent calls are
-/// no-ops (the poll threads only ever read).
-static STARTUP_DEVICE_CONNECTED: OnceLock<bool> = OnceLock::new();
 
 /// Dedup guard for the malformed-`rules.toml` desktop notification
 /// (HOST_RULES.md §7). Set the first time a parse failure is notified; cleared
@@ -792,8 +759,10 @@ pub enum DeviceStatus {
 /// - [`is_device_connected()`] — pure Tier-1 enumeration (any `0xFF60`/`0x61`
 ///   interface matching the configured filter; never opens/sends).
 /// - [`host_capable()`] — reads the [`HOST_CAPABLE`] `AtomicBool`, set `true` by
-///   the handshake on a capable `QUERY_INFO` reply and reset `false` on a device
-///   Loss / failure.
+///   the handshake on a capable `QUERY_INFO` reply and reset `false` on a
+///   capable-board Loss (the tray poll threads' [`PresenceTracker`] detects a
+///   capable board leaving even when a non-capable Tier-1 board remains — Finding
+///   #1) or a handshake failure.
 ///
 /// | Status        | Condition                              |
 /// |---------------|----------------------------------------|
@@ -1157,22 +1126,46 @@ pub fn classify_devices(verbose: bool) -> Vec<ClassifiedDevice> {
     classify_candidates(candidates, verbose)
 }
 
+/// Whether the broadcast handshake result can be safely warm-stamped into the
+/// per-path cache. True only when **at most one** Tier-1 board is present: the
+/// handshake is filter-keyed (broadcast — the crate has no per-path send), so
+/// its single `QUERY_INFO` reply can be attributed to a path ONLY when there is
+/// exactly one candidate (broadcast == unicast). With ≥2 boards on the bus — the
+/// headline F13 mixed case (a capable board + a pure-VIA board) — the handshake
+/// cannot tell which path replied, and stamping every enumerated path with the
+/// one result would mislabel the non-capable board `✓ qmk_notifier` in the
+/// discovered-device picker until [`CLASSIFICATION_TTL`] expires (Finding #2).
+/// Multi-board classification is therefore left to [`classify_devices`]'s
+/// per-candidate (vid/pid-narrowed) probe, which CAN attribute when vid/pid
+/// differ. Pure so the policy is unit-testable.
+fn handshake_warm_eligible(candidate_count: usize) -> bool {
+    candidate_count <= 1
+}
+
 /// Warm the per-path [`CLASSIFICATION_CACHE`] from the handshake result
 /// (best-effort, `spec/DEVICE_DISCOVERY.md` §2.4 — single-ping-per-appearance).
 ///
 /// `perform_handshake_with` already pings `QUERY_INFO` once per boot; without
 /// this cross-feed, [`classify_devices`] would re-ping on the first status call
-/// (2 pings per appearance). To keep it to 1, the handshake stamps its result
-/// into the per-path cache so `classify_devices` reads a warm cache (TTL hit ⇒
-/// no re-ping). Since the handshake is filter-keyed (no single path), this
-/// enumerates the present Tier-1 paths and stamps them all with `kind` —
-/// correct under the single-vid/pid-on-bus assumption (`DEVICE_DISCOVERY.md`
-/// §4.3): if multiple interfaces share vid/pid they all get the handshake's
-/// single result, which is acceptable because they are the same board model in
-/// the common case. No-op in tests (the handshake tests use `MockNotifier` with
-/// no real HID, so `enumerate_candidates` finds 0 Tier-1 devices).
+/// (2 pings per appearance). To keep it to 1 in the common (single-board) case,
+/// the handshake stamps its result into the per-path cache so `classify_devices`
+/// reads a warm cache (TTL hit ⇒ no re-ping).
+///
+/// **Scope guard ([`handshake_warm_eligible`], Finding #2):** the stamp happens
+/// ONLY when ≤1 Tier-1 board is present. The handshake is filter-keyed
+/// (broadcast, no per-path attribution); with ≥2 boards its single reply cannot
+/// be attributed to a specific path, so stamping every enumerated path would
+/// mislabel a co-present non-capable (VIA/Vial) board `✓ qmk_notifier` in the
+/// picker. Multi-board classification is left to [`classify_devices`]'s
+/// per-candidate vid/pid-narrowed probe. No-op in tests (the handshake tests use
+/// `MockNotifier` with no real HID, so `enumerate_candidates` finds 0 devices —
+/// 0 ≤ 1, but the loop body stamps nothing).
 fn warm_cache_from_handshake(kind: DeviceKind) {
-    for c in enumerate_candidates() {
+    let candidates = enumerate_candidates();
+    if !handshake_warm_eligible(candidates.len()) {
+        return;
+    }
+    for c in candidates {
         classification_cache_insert(&c.path, kind.clone());
     }
 }
@@ -1221,6 +1214,126 @@ pub fn handshake_action(prev: Option<bool>, now: bool) -> HandshakeAction {
 }
 // NOTE: the Gain arm is GUARDED (`if p != Some(true)`) — the naive `(_, true)
 // => Gain` would mis-classify (Some(true), true) (no change) as Gain.
+
+// ===== Capable-board presence lifecycle (Finding #1) =====
+// The poll threads used to key the handshake lifecycle on Tier-1 PRESENCE
+// (`is_device_connected()` — any `0xFF60` interface). That drops the
+// capable-board-lost signal in the headline F13 mixed multi-board case: when a
+// capable board is unplugged while a non-capable (VIA/Vial/legacy) board
+// remains, Tier-1 presence stays `true` ⇒ no `Loss` ⇒ `HOST_CAPABLE` goes
+// stale ⇒ the tray falsely shows "Connected" and a replug of a *different*
+// capable board never re-handshakes. The types below key the lifecycle on
+// CAPABLE-board presence instead, re-probing only when the Tier-1 path set
+// changes (so the hot poll loop never pings on a stable bus — Finding #3).
+
+/// Enumerate the present Tier-1 HID `path`s (the stable hidapi `path` of each
+/// `0xFF60`/`0x61` interface matching [`configured_filter`]). Cheap read-only
+/// enumeration — never opens a device or sends a report (identical machinery to
+/// [`is_device_connected`], just collecting the paths instead of folding to a
+/// bool). Used by [`PresenceTracker`] to detect a bus change (plug/unplug) so it
+/// re-probes capable presence only then.
+pub fn tier1_paths() -> Vec<String> {
+    enumerate_candidates().into_iter().map(|c| c.path).collect()
+}
+
+/// Pure core of [`PresenceTracker::tick`]: decide the handshake action + the new
+/// capable flag from a path-set change, the Tier-1 presence, and an optional
+/// fresh re-probe result. Split out so the transition logic is unit-testable
+/// without HID hardware (the HID-dependent steps — enumerating paths + the
+/// per-candidate re-probe — live in [`PresenceTracker::tick`]).
+///
+/// * `paths_changed` ⇒ the caller ran [`classify_devices`] and supplies its
+///   `any(Capable)` fold as `reprobed_capable`.
+/// * `!paths_changed` ⇒ the bus is stable; `reprobed_capable` is `None` and the
+///   last known flag is reused (a board cannot change firmware without a
+///   replug, which changes the path set).
+/// * `!tier1_present` ⇒ capable is definitively `false` regardless (no board).
+fn presence_tick_decision(
+    last_capable: bool,
+    paths_changed: bool,
+    tier1_present: bool,
+    reprobed_capable: Option<bool>,
+) -> (HandshakeAction, bool) {
+    let capable = if !tier1_present {
+        false
+    } else if paths_changed {
+        reprobed_capable.unwrap_or(false)
+    } else {
+        last_capable
+    };
+    (handshake_action(Some(last_capable), capable), capable)
+}
+
+/// Tracks capable-board presence across poll ticks for the tray poll threads
+/// (`src/tray.rs` macOS/Windows, `src/linux_tray.rs`). The poll thread calls
+/// [`tick`](Self::tick) each iteration and applies the returned
+/// [`HandshakeAction`] (`Gain` ⇒ [`perform_handshake`], `Loss` ⇒
+/// [`reset_handshake_state`]).
+///
+/// **Why capable-keyed, not Tier-1-keyed (Finding #1):** see the section note
+/// above — keying on [`is_device_connected`] drops the capable-board-lost signal
+/// in the mixed multi-board case (F13 / `DEVICE_DISCOVERY.md` §1). Keying on
+/// **capable-board** presence makes a capable-board unplug a real `Loss` (reset
+/// + re-arm) and a capable-board (re)plug a real `Gain` (re-handshake).
+///
+/// **Why path-set-gated re-probing (Finding #3):** recomputing capable presence
+/// every tick would ping each board on every [`CLASSIFICATION_TTL`] expiry
+/// (~5 s) — the proto-v1 board-layer reset side effect. Instead the capable set
+/// is re-probed (via the cache-backed [`classify_devices`]) ONLY when the Tier-1
+/// path *set* changes — a physical plug/unplug — so the hot poll loop never
+/// pings on a stable bus. Between changes capable presence is stable (firmware
+/// cannot change without a replug, which changes the path set).
+///
+/// [`device_status`] stays consistent because the poll applies the action before
+/// reading it: `Loss` ⇒ [`reset_handshake_state`] ⇒ `HOST_CAPABLE=false` ⇒
+/// `NoModule`; `Gain` ⇒ [`perform_handshake`] ⇒ `HOST_CAPABLE=true` ⇒
+/// `Connected` (after the sub-second handshake; the brief `NoModule` window is
+/// the documented transient caveat).
+pub struct PresenceTracker {
+    last_paths: Vec<String>,
+    last_capable: bool,
+}
+
+impl PresenceTracker {
+    /// Seed from the live bus + the startup-handshake result. Construct on the
+    /// poll thread right after the runner's startup handshake so `last_capable`
+    /// reflects it (the first tick then sees no transition ⇒ no spurious action).
+    pub fn new() -> Self {
+        Self {
+            last_paths: tier1_paths(),
+            last_capable: host_capable(),
+        }
+    }
+
+    /// One poll tick. Enumerates the Tier-1 paths; if the path *set* changed
+    /// since the last tick, re-probes capable presence via [`classify_devices`]
+    /// and folds to `any(Capable)`. Returns the [`HandshakeAction`] to apply.
+    pub fn tick(&mut self, verbose: bool) -> HandshakeAction {
+        let paths = tier1_paths();
+        let tier1_present = !paths.is_empty();
+        let paths_changed = paths != self.last_paths;
+        let reprobed = if paths_changed && tier1_present {
+            Some(
+                classify_devices(verbose)
+                    .iter()
+                    .any(|d| matches!(d.kind, DeviceKind::Capable { .. })),
+            )
+        } else {
+            None
+        };
+        let (action, capable) =
+            presence_tick_decision(self.last_capable, paths_changed, tier1_present, reprobed);
+        self.last_capable = capable;
+        self.last_paths = paths;
+        action
+    }
+}
+
+impl Default for PresenceTracker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 // R-COEX (VIA coexistence, F14) — must-preserve invariant at this transport
 // boundary. spec/DEVICE_DISCOVERY.md §6; spec/ARCHITECTURE.md §10 #10.
@@ -2876,31 +2989,103 @@ disable = ["known_b", "phantom"]
     }
 
     #[test]
-    fn test_poll_thread_seeded_from_startup() {
-        // record_startup_device_state() probes is_device_connected() once and freezes the
-        // result in the set-once STARTUP_DEVICE_CONNECTED. startup_device_was_connected()
-        // then returns that bool. OnceLock is process-global & set-once, and tests run in one
-        // process — so the FIRST record call wins; later calls are no-ops. We assert the
-        // round-trip contract: after recording, the accessor matches the live probe (on a CI
-        // box with no QMK device both are false; on a box with a device both are true).
-        record_startup_device_state();
+    fn test_handshake_action_loss_on_seeded_true_to_false() {
+        // PresenceTracker seeds `last_capable` from `host_capable()` (the startup
+        // handshake result). When a capable startup is followed by the capable
+        // board vanishing, presence_tick_decision yields handshake_action(
+        // Some(true), false) — which MUST be Loss so reset_handshake_state()
+        // fires, HAS_HANDSHAKED clears, and the subsequent reconnect re-runs the
+        // handshake (re-sending SET_OS). (Also asserted in
+        // test_handshake_action_transitions; restated here to pin the invariant
+        // PresenceTracker depends on.)
+        assert_eq!(handshake_action(Some(true), false), HandshakeAction::Loss);
+    }
+
+    // ===== PresenceTracker / presence_tick_decision (Finding #1) =====
+    // Pure transition logic for the capable-board-keyed handshake lifecycle.
+    // No HID needed: presence_tick_decision takes the path-set-change flag, the
+    // Tier-1 presence, and an optional fresh re-probe result. These encode the
+    // headline F13 mixed multi-board fix (a capable board unplugging while a
+    // non-capable Tier-1 board remains is a real Loss).
+
+    #[test]
+    fn test_presence_tick_capable_unplug_with_non_capable_remaining_is_loss() {
+        // Finding #1 headline: capable board A unplugs while pure-VIA board B
+        // remains. last_capable was true (A was capable). The path set changed
+        // (A's path gone) ⇒ re-probe returns any(Capable)=false (only B left).
+        // tier1_present stays true (B is still a 0xFF60 interface). Decision MUST
+        // be Loss so reset_handshake_state() clears HOST_CAPABLE + HAS_HANDSHAKED
+        // (otherwise the tray would falsely show "Connected" and a replug of a
+        // different capable board would never re-handshake).
+        let (action, capable) = presence_tick_decision(true, true, true, Some(false));
+        assert_eq!(action, HandshakeAction::Loss);
+        assert!(!capable);
+    }
+
+    #[test]
+    fn test_presence_tick_capable_replug_different_board_is_gain() {
+        // After the Loss above, a *different* capable board A' is plugged (path
+        // set changes again). last_capable is now false; re-probe finds a Capable
+        // board ⇒ Gain ⇒ perform_handshake re-runs (HAS_HANDSHAKED was cleared by
+        // the Loss's reset). This is the replug-resumes-without-restart guarantee.
+        let (action, capable) = presence_tick_decision(false, true, true, Some(true));
+        assert_eq!(action, HandshakeAction::Gain);
+        assert!(capable);
+    }
+
+    #[test]
+    fn test_presence_tick_stable_bus_no_reprobe_no_action() {
+        // Stable bus (no plug/unplug): paths_changed=false ⇒ reuse last_capable,
+        // no re-probe (the hot poll loop never pings on a stable bus — Finding #3).
+        // Whether capable or not, a stable bus ⇒ None.
         assert_eq!(
-            startup_device_was_connected(),
-            is_device_connected(),
-            "after record_startup_device_state, startup_device_was_connected must match the \
-             live is_device_connected probe (OnceLock freezes the first record's value)"
+            presence_tick_decision(true, false, true, None),
+            (HandshakeAction::None, true)
+        );
+        assert_eq!(
+            presence_tick_decision(false, false, true, None),
+            (HandshakeAction::None, false)
         );
     }
 
     #[test]
-    fn test_handshake_action_loss_on_seeded_true_to_false() {
-        // The P1.M3.T1.S1 seed fix relies on this exact transition being `Loss`: when the poll
-        // thread is seeded from startup_device_was_connected() == Some(true) and the first tick
-        // transiently reads false, handshake_action(Some(true), false) MUST be Loss so
-        // reset_handshake_state() fires and the subsequent reconnect re-sends SET_OS. (Also
-        // asserted in test_handshake_action_transitions; restated here to pin the invariant
-        // the seed fix depends on.)
-        assert_eq!(handshake_action(Some(true), false), HandshakeAction::Loss);
+    fn test_presence_tick_all_unplugged_forces_loss() {
+        // The whole bus goes empty (last Tier-1 board unplugs). tier1_present=false
+        // forces capable=false regardless of paths_changed, so a previously-capable
+        // bus records Loss. (paths_changed would be true here, but the empty-bus
+        // arm dominates — no re-probe is needed/possible with no candidates.)
+        assert_eq!(
+            presence_tick_decision(true, true, false, None),
+            (HandshakeAction::Loss, false)
+        );
+        // And a stable-empty bus that was already not-capable stays None.
+        assert_eq!(
+            presence_tick_decision(false, false, false, None),
+            (HandshakeAction::None, false)
+        );
+    }
+
+    #[test]
+    fn test_presence_tick_boot_reprobe_capable_is_none_when_already_capable() {
+        // At boot PresenceTracker::new seeds last_capable from host_capable(). If
+        // the startup handshake already found a capable board, the first tick's
+        // re-probe (path set empty→non-empty) returning capable=true matches the
+        // seed ⇒ None (no spurious re-handshake; perform_handshake is itself
+        // idempotent via HAS_HANDSHAKED, but the action is cleanly None here too).
+        assert_eq!(
+            presence_tick_decision(true, true, true, Some(true)),
+            (HandshakeAction::None, true)
+        );
+    }
+
+    #[test]
+    fn test_presence_tick_reprobe_not_capable_after_not_capable_is_none() {
+        // Mirror: boot with a non-capable Tier-1 board (handshake left
+        // HOST_CAPABLE=false). First-tick re-probe confirms not-capable ⇒ None.
+        assert_eq!(
+            presence_tick_decision(false, true, true, Some(false)),
+            (HandshakeAction::None, false)
+        );
     }
 
     // ========================================================================
@@ -3904,5 +4089,19 @@ disable = ["known_b", "phantom"]
         // Do NOT assert a count (0 on a box with no QMK board, N on one with N).
         let result = classify_devices(false);
         let _ = result.len();
+    }
+
+    // ── E. handshake_warm_eligible (Finding #2 policy, pure) ──
+
+    #[test]
+    fn test_handshake_warm_eligible_single_board_only() {
+        // The broadcast handshake can attribute its single reply to a path ONLY
+        // when ≤1 Tier-1 board is present (broadcast == unicast). With ≥2 boards
+        // it must NOT warm-stamp (it would mislabel a co-present non-capable
+        // board `✓ qmk_notifier` in the picker until the TTL expires).
+        assert!(handshake_warm_eligible(0)); // no board: stamp loops over nothing
+        assert!(handshake_warm_eligible(1)); // single board: broadcast == unicast
+        assert!(!handshake_warm_eligible(2)); // mixed: cannot attribute
+        assert!(!handshake_warm_eligible(3));
     }
 }
