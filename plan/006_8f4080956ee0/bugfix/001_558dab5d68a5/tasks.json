@@ -1,0 +1,185 @@
+{
+  "backlog": [
+    {
+      "type": "Phase",
+      "id": "P1",
+      "title": "Bug Fix Release — Identifier, Autostart, Handshake & Heuristic Defects",
+      "status": "Researching",
+      "description": "Fix five verified defects: Hyprland dialog identifier mismatch (Major), X11 WM_CLASS parser off-by-one (Major), unquoted Windows autostart path (Major), VID/PID change not resetting handshake (Minor), and Windows title-length heuristic using byte length instead of char count (Minor). All fixes are surgical one-liners or small-block changes grounded in confirmed codebase research (see plan/006_8f4080956ee0/bugfix/001_558dab5d68a5/architecture/).",
+      "milestones": [
+        {
+          "type": "Milestone",
+          "id": "P1.M1",
+          "title": "Major Bug Fixes — Identifier Correctness & Autostart Safety",
+          "status": "Planned",
+          "description": "Fix the three Major-severity defects (PRD IDs 1, 2, 4) that affect rule correctness on Hyprland/X11 and autostart reliability on Windows paths containing spaces.",
+          "tasks": [
+            {
+              "type": "Task",
+              "id": "P1.M1.T1",
+              "title": "Fix Hyprland 'Show Window Information' dialog to display initial_class",
+              "status": "Planned",
+              "description": "The 'Show Window Information' dialog uses list_foreground_windows() which returns c.class, but the keyboard notification paths send initial_class. For apps where these differ (Electron, some JVM apps), users copy a value that silently fails to match. Fix: use initial_class in list_foreground_windows() for parity with the notification path.",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P1.M1.T1.S1",
+                  "title": "Change list_foreground_windows() to use initial_class instead of class",
+                  "status": "Planned",
+                  "story_points": 1,
+                  "dependencies": [],
+                  "prd_selectors": ["h2.2/h3.0", "h2.2", "h2.5", "para.0"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See plan/006_8f4080956ee0/bugfix/001_558dab5d68a5/architecture/bug_findings.md §Bug 1. The hyprland crate's Client struct (data/regular.rs L239/L241) exposes both `initial_class` (stable, set once at window creation) and `class` (mutable, can change at runtime). The notification paths in handle_window_state_change (L479) and poll_window_state (L398) use `active_window.initial_class.clone()`. The dialog path list_foreground_windows() (L559-584) uses `c.class.clone()` at L571 and `active.class.clone()` at L577.\n2. INPUT: None — list_foreground_windows() is the source of dialog data. It calls Clients::get() and Client::get_active() from the hyprland crate (live IPC, cannot be mocked in unit tests without a running compositor).\n3. LOGIC: In src/platforms/hyprland.rs, function list_foreground_windows(): (a) at L571 change `c.class.clone()` to `c.initial_class.clone()`; (b) at L577 change `active.class.clone()` to `active.initial_class.clone()`. Both are inside the same function. Do NOT change handle_window_state_change or poll_window_state — they already use initial_class. The existing test module at L599 has no coverage for this function (it requires live IPC); verify manually on a Hyprland session with an app where class != initial_class (e.g., some Electron apps).\n4. OUTPUT: list_foreground_windows() returns Vec<(String, String)> where the first tuple element is initial_class — matching what notify_qmk sends to the keyboard firmware.\n5. DOCS: none — no user-facing/config/API surface change. The fix makes the dialog MORE consistent with existing docs that already say 'window class'."
+                }
+              ]
+            },
+            {
+              "type": "Task",
+              "id": "P1.M1.T2",
+              "title": "Fix X11 WM_CLASS parser off-by-one (returns instance instead of class)",
+              "status": "Planned",
+              "description": "The WM_CLASS parser in x11.rs filters xprop output with split('\"').filter(|s| !s.is_empty()), but the leading space and the ', ' separator are non-empty, shifting indices so .get(1) returns the instance string instead of the class string.",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P1.M1.T2.S1",
+                  "title": "Fix parser to return class and add unit tests",
+                  "status": "Planned",
+                  "story_points": 1,
+                  "dependencies": [],
+                  "prd_selectors": ["h2.2/h3.1", "h2.2", "h2.5", "para.0"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See plan/006_8f4080956ee0/bugfix/001_558dab5d68a5/architecture/bug_findings.md §Bug 2. In src/platforms/x11.rs L68-74, the parser does: `let quoted: Vec<&str> = rest.split('\"').filter(|s| !s.is_empty()).collect();` then `quoted.get(1)`. For xprop output `WM_CLASS(STRING) = \"instance\", \"Class\"`, after split_once('=') rest = ` \"instance\", \"Class\"`. split('\"') yields `[\" \", \"instance\", \", \", \"Class\", \"\"]`; after filter(non-empty) = `[\" \", \"instance\", \", \", \"Class\"]`; .get(1) = \"instance\" (WRONG — should be \"Class\").\n2. INPUT: The `rest` string from `line.split_once('=').map(|(_, r)| r)` for a line starting with `WM_CLASS`. Format: ` \"instance\", \"Class\"` (leading space, comma-separated quoted strings). The `_NET_WM_NAME` parsing branch (L78-82) is UNRELATED and must NOT change.\n3. LOGIC: Replace the split-on-quote approach with split-on-comma: extract a pure helper `fn parse_wm_class(rest: &str) -> Option<String>` that does `rest.split(',').map(|s| s.trim().trim_matches('\"')).filter(|s| !s.is_empty()).collect::<Vec<_>>().get(1).or_else(|| parts.first())`. For rest = ` \"instance\", \"Class\"`: split(',') → `[' \"instance\"', ' \"Class\"']` → trim + trim_matches('\"') → `['instance', 'Class']` → .get(1) = 'Class' ✓. Call this helper from the `if line.starts_with(\"WM_CLASS\")` branch. Add a `#[cfg(test)] mod tests` block (x11.rs currently has NONE) with tests: (a) typical `\"firefox\", \"Firefox\"` → returns \"Firefox\"; (b) single-field degenerate case → falls back to first; (c) empty/whitespace rest → None or empty.\n4. OUTPUT: The app_class fed to WindowInfo::new(app_class, title) is the **class** (e.g., \"Firefox\") not the instance (e.g., \"firefox\").\n5. DOCS: none — the fix makes behavior match docs that already say 'window class' (docs/configuration.md L281, docs/troubleshooting.md L571)."
+                }
+              ]
+            },
+            {
+              "type": "Task",
+              "id": "P1.M1.T3",
+              "title": "Quote Windows autostart path in both autostart.rs and the Inno installer",
+              "status": "Planned",
+              "description": "Both src/autostart.rs enable() and the Inno installer [Registry] section write the HKCU Run key value as an unquoted path. If the install path contains spaces (e.g., C:\\Users\\John Doe\\...), the Run key may fail to execute on login or become a security vector (unquoted path traversal).",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P1.M1.T3.S1",
+                  "title": "Quote the exe path in src/autostart.rs current_exe_wide()",
+                  "status": "Planned",
+                  "story_points": 1,
+                  "dependencies": [],
+                  "prd_selectors": ["h2.2/h3.2", "h2.2", "h2.5", "para.0"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See plan/006_8f4080956ee0/bugfix/001_558dab5d68a5/architecture/bug_findings.md §Bug 3A. src/autostart.rs is entirely #[cfg(target_os = \"windows\")]. current_exe_wide() (L57) calls std::env::current_exe(), then encodes the OsStr as UTF-16 with a trailing NUL. enable() (L72) writes this buffer directly as REG_SZ data via RegSetValueExW (L103). is_enabled() (L38) checks value PRESENCE via RegGetValueW, not content — so quoting does NOT break the presence check.\n2. INPUT: The resolved exe path from std::env::current_exe().\n3. LOGIC: Modify current_exe_wide() (or the enable() call site) so the UTF-16 buffer encodes `\"<path>\"` — i.e., chain a leading `\"` (0x0022) before the path's encode_wide() iterator, then the path chars, then a trailing `\"` (0x0022), then the NUL (0x0000). The resulting REG_SZ data is e.g. `\"C:\\Users\\John Doe\\AppData\\Local\\Programs\\QMKonnect\\QMKonnect.exe\"`. Test: assert current_exe_wide() starts with 0x0022 and the char before the final NUL is 0x0022.\n4. OUTPUT: The HKCU Run key value is a quoted path. is_enabled() continues to work (presence-based). disable() is unaffected (it deletes the value).\n5. DOCS: none — internal quoting fix. docs/troubleshooting.md L265 shows a `reg query` command to check the entry, not the value format."
+                },
+                {
+                  "type": "Subtask",
+                  "id": "P1.M1.T3.S2",
+                  "title": "Quote the path in packaging/windows/inno/QMKonnect.iss [Registry] section",
+                  "status": "Planned",
+                  "story_points": 0.5,
+                  "dependencies": [],
+                  "prd_selectors": ["h2.2/h3.2", "h2.2", "h2.5", "para.0"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See plan/006_8f4080956ee0/bugfix/001_558dab5d68a5/architecture/bug_findings.md §Bug 3B. The [Registry] section of packaging/windows/inno/QMKonnect.iss currently writes: `ValueData: \"{app}\\{#MyAppExeName}\"` (unquoted). {app} expands to the install dir (DefaultDirName = {localappdata}\\Programs\\QMKonnect), which can contain spaces if the username does.\n2. INPUT: Inno Setup constants {app} and {#MyAppExeName} (\"QMKonnect.exe\").\n3. LOGIC: In the [Registry] section line for the Run key, change ValueData to use Inno's `\"\"` escape for literal double-quotes: `ValueData: \"\"\"{app}\\{#MyAppExeName}\"\"\"`. Inno resolves `\"\"` to a single `\"` in the final registry value, producing `\"C:\\...\\QMKonnect.exe\"`. Keep ValueType: string, ValueName: \"QMKonnect\", and Flags: uninsdeletevalue unchanged. This MUST match P1.M1.T3.S1's quoting so the installer and the in-app toggle write the same format.\n4. OUTPUT: Fresh installs and upgrades via QMKonnect-Setup.exe write a quoted path to the HKCU Run key.\n5. DOCS: none — no user-facing surface change. The installer comment already documents the Run key contract."
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "Milestone",
+          "id": "P1.M2",
+          "title": "Minor Bug Fixes — Handshake Reset & Title Heuristic",
+          "status": "Planned",
+          "description": "Fix the two Minor-severity defects (PRD IDs 3, 5): VID/PID change in Settings not resetting handshake state (multi-board case), and Windows should_ignore_window title-length heuristic counting bytes instead of characters.",
+          "tasks": [
+            {
+              "type": "Task",
+              "id": "P1.M2.T1",
+              "title": "Reset handshake state when VID/PID changes in Settings (all platforms)",
+              "status": "Planned",
+              "description": "When multiple capable boards are present and the user switches VID/PID in Settings, no plug/unplug event fires, so the PresenceTracker Gain/Loss loop never re-handshakes. The stale CALLBACK_NAMES map from the old board persists for the new board. Fix: call reset_handshake_state() + perform_handshake() in each platform's save path when VID/PID actually changes.",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P1.M2.T1.S1",
+                  "title": "Add reset_handshake_state() + perform_handshake() to Windows tray save path (tray.rs)",
+                  "status": "Planned",
+                  "story_points": 1,
+                  "dependencies": [],
+                  "prd_selectors": ["h2.3/h3.3", "h2.3", "h2.5", "para.0"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See plan/006_8f4080956ee0/bugfix/001_558dab5d68a5/architecture/bug_findings.md §Bug 4. The Windows save path in src/tray.rs (~L970-989) merges VID/PID onto `current_config` via `let mut merged = current_config;` (MOVES current_config), then writes via `crate::core::atomic_write(config_path, &config_content)?;`. reset_handshake_state() is pub at notifier.rs:814 (clears HOST_CAPABLE, BOARD_HAS_RULES, CALLBACK_NAMES, HAS_HANDSHAKED). perform_handshake(verbose) is pub at notifier.rs:353.\n2. INPUT: The pre-save VID/PID (from current_config BEFORE the move into merged) and the post-save VID/PID (merged.vendor_id / merged.product_id). The `verbose` variable is in scope in the tray save function.\n3. LOGIC: BEFORE `let mut merged = current_config;`, snapshot `let old_vid = current_config.vendor_id; let old_pid = current_config.product_id;`. AFTER `crate::core::atomic_write(config_path, &config_content)?;` succeeds, add: `if merged.vendor_id != old_vid || merged.product_id != old_pid { crate::core::notifier::reset_handshake_state(); crate::core::notifier::perform_handshake(verbose); }`. The `#[cfg(target_os = \"windows\")]` gate on this function means the import is already available.\n4. OUTPUT: The global CALLBACK_NAMES map is cleared and rebuilt for the newly-selected board immediately after a VID/PID change, without waiting for a replug event.\n5. DOCS: none — internal handshake lifecycle change."
+                },
+                {
+                  "type": "Subtask",
+                  "id": "P1.M2.T1.S2",
+                  "title": "Add reset_handshake_state() + perform_handshake() to macOS tray save path (tray.rs)",
+                  "status": "Planned",
+                  "story_points": 1,
+                  "dependencies": [],
+                  "prd_selectors": ["h2.3/h3.3", "h2.3", "h2.5", "para.0"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See plan/006_8f4080956ee0/bugfix/001_558dab5d68a5/architecture/bug_findings.md §Bug 4. The macOS save path in src/tray.rs (~L1870-1885) uses the same pattern as Windows: `let mut merged = current_config;` (MOVES current_config), then merges chosen/manual VID/PID, then writes via `crate::core::atomic_write(config_path, &config_content)?;`. This function is `#[cfg(target_os = \"macos\")]`.\n2. INPUT: The pre-save VID/PID (from current_config BEFORE the move) and the post-save merged.vendor_id / merged.product_id.\n3. LOGIC: BEFORE `let mut merged = current_config;`, snapshot old VID/PID. AFTER `crate::core::atomic_write(config_path, &config_content)?;` succeeds, add the same guard: `if merged.vendor_id != old_vid || merged.product_id != old_pid { crate::core::notifier::reset_handshake_state(); crate::core::notifier::perform_handshake(verbose); }`. Use whatever `verbose` variable is in scope (check the function signature / surrounding code — it may be a closure variable or module-level).\n4. OUTPUT: Same as P1.M2.T1.S1 — stale name map cleared and rebuilt for the new board on macOS.\n5. DOCS: none — internal handshake lifecycle change."
+                },
+                {
+                  "type": "Subtask",
+                  "id": "P1.M2.T1.S3",
+                  "title": "Add reset_handshake_state() + perform_handshake() to Linux tray save path (linux_tray.rs)",
+                  "status": "Planned",
+                  "story_points": 1,
+                  "dependencies": [],
+                  "prd_selectors": ["h2.3/h3.3", "h2.3", "h2.5", "para.0"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See plan/006_8f4080956ee0/bugfix/001_558dab5d68a5/architecture/bug_findings.md §Bug 4. The Linux save path is `fn save_and_notify(vendor_id: Option<u16>, product_id: Option<u16>)` at src/linux_tray.rs L718. It calls write_config(vendor_id, product_id) (L725) then apply_device_rule. `verbose` is NOT in scope here (save_and_notify takes only vid/pid). The existing helper `fn current_vidpid() -> Option<(u16, u16)>` at L988-1012 reads the current config's VID/PID.\n2. INPUT: The new vendor_id/product_id passed to save_and_notify, and the pre-save VID/PID from current_vidpid() called BEFORE write_config.\n3. LOGIC: At the top of the `Ok(path) => { ... }` arm (after write_config succeeds, L726), add: read old VID/PID via `let old = current_vidpid();` (NOTE: call this BEFORE write_config or its result is already stale — actually write_config already wrote, so snapshot BEFORE write_config at the top of save_and_notify). Compare old vs new. If changed: `crate::core::notifier::reset_handshake_state(); crate::core::notifier::perform_handshake(false);` (pass false for verbose since it's not in scope; alternatively add a `verbose: bool` param to save_and_notify and update its two call sites at L856 and L925).\n4. OUTPUT: Same as P1.M2.T1.S1/S2 — stale name map cleared and rebuilt for the new board on Linux.\n5. DOCS: none — internal handshake lifecycle change."
+                }
+              ]
+            },
+            {
+              "type": "Task",
+              "id": "P1.M2.T2",
+              "title": "Fix Windows should_ignore_window title-length heuristic to count characters",
+              "status": "Planned",
+              "description": "should_ignore_window() in windows.rs uses window_info.title.len() which counts bytes, not characters. A 1-char emoji title (4 bytes) is kept while a 1-char ASCII title (1 byte) is dropped — inconsistent behavior.",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P1.M2.T2.S1",
+                  "title": "Change .len() to .chars().count() and add unit tests for should_ignore_window",
+                  "status": "Planned",
+                  "story_points": 1,
+                  "dependencies": [],
+                  "prd_selectors": ["h2.3/h3.4", "h2.3", "h2.5", "para.0"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See plan/006_8f4080956ee0/bugfix/001_558dab5d68a5/architecture/bug_findings.md §Bug 5. should_ignore_window() in src/platforms/windows.rs checks `if window_info.title.len() < 2 && !window_info.title.is_empty() { return true; }`. Rust String::len() returns BYTE length. WindowInfo is defined in src/core/types.rs (fields: app_class: String, title: String). The file is entirely #[cfg(target_os = \"windows\")] — tests will only compile/run on Windows.\n2. INPUT: A &WindowInfo reference with .app_class and .title fields.\n3. LOGIC: Change `window_info.title.len() < 2` to `window_info.title.chars().count() < 2`. Add a `#[cfg(test)] mod tests` block (windows.rs currently has NONE) with tests for should_ignore_window: (a) empty title with non-allowed class → true (ignored); (b) empty title with allowed class (e.g., \"Chrome_WidgetWin_1\") → false (kept); (c) 1-char ASCII title (e.g., \"x\") → true (ignored, 1 char < 2); (d) 1-char emoji title (e.g., \"😀\", 4 bytes) → true (ignored, 1 char < 2 — this is the FIX: previously it was 4 bytes ≥ 2 so it was KEPT); (e) 2-char title (e.g., \"ab\") → false (kept); (f) internal class name (e.g., \"Shell_TrayWnd\") with any title → true. Construct WindowInfo via WindowInfo::new(class, title).\n4. OUTPUT: should_ignore_window() consistently ignores titles shorter than 2 CHARACTERS regardless of UTF-8 byte length.\n5. DOCS: none — internal heuristic fix."
+                }
+              ]
+            },
+            {
+              "type": "Task",
+              "id": "P1.M2.T3",
+              "title": "Sync changeset-level documentation",
+              "status": "Planned",
+              "description": "Final documentation sweep to verify that docs/troubleshooting.md, docs/configuration.md, and README.md remain accurate after the identifier-consistency fixes (Hyprland initial_class, X11 class), the autostart quoting fix, and the heuristic fix. Per SOW §5 Mode B, this task runs LAST and depends on all implementing subtasks.",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P1.M2.T3.S1",
+                  "title": "Verify and update docs/troubleshooting.md window-class guidance",
+                  "status": "Planned",
+                  "story_points": 0.5,
+                  "dependencies": ["P1.M1.T1.S1", "P1.M1.T2.S1"],
+                  "prd_selectors": ["h2.5", "h2.0"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: docs/troubleshooting.md L571-574 says 'Pattern matches the real window class?' and shows `qmkonnect -v | grep -i \"window|sending\"`. After Bug 1 (Hyprland) and Bug 2 (X11) fixes, the identifier shown in the dialog and sent to the keyboard is now consistently the stable class/initial_class. Evaluate whether the troubleshooting text needs a clarifying note (e.g., 'On Hyprland this is initial_class; on X11 this is the WM_CLASS class field').\n2. INPUT: The completed fixes from P1.M1.T1.S1 (Hyprland initial_class) and P1.M1.T2.S1 (X11 class parser).\n3. LOGIC: Read docs/troubleshooting.md around L565-580. If the existing text already accurately describes 'window class' generically, no change is needed — note this in the commit message. If it would benefit from a clarifying note about Hyprland initial_class vs X11 WM_CLASS class, add a one-line note. Do NOT rewrite the section — only add precision where a user would be confused.\n4. OUTPUT: docs/troubleshooting.md is accurate and consistent with the fixed identifier behavior.\n5. DOCS: [Mode B] This IS the documentation sync task — update docs/troubleshooting.md as described above."
+                },
+                {
+                  "type": "Subtask",
+                  "id": "P1.M2.T3.S2",
+                  "title": "Verify README.md and docs remain accurate for autostart and heuristic changes",
+                  "status": "Planned",
+                  "story_points": 0.5,
+                  "dependencies": ["P1.M1.T3.S1", "P1.M1.T3.S2", "P1.M2.T1.S1", "P1.M2.T1.S2", "P1.M2.T1.S3", "P1.M2.T2.S1"],
+                  "prd_selectors": ["h2.5", "h2.0"],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: README.md L280-281 describes 'Open at Login via the HKCU Run key'. docs/installation.md L30 describes the autostart via HKCU Run key. docs/usage.md L48 mentions 'Open at Login is enabled by default'. None of these describe the path-quoting format. The handshake-reset and title-heuristic changes are internal with no documented behavior surface.\n2. INPUT: The completed fixes from P1.M1.T3 (autostart quoting), P1.M2.T1 (handshake reset), and P1.M2.T2 (title heuristic).\n3. LOGIC: Read README.md L275-285 and docs/installation.md L20-35. Confirm that no text describes the Run key value FORMAT (quoted vs unquoted) — if none does, no change is needed. Confirm that no README/overview text claims handshake behavior or title filtering behavior that the fixes contradict. If everything is already accurate, note 'no doc changes needed' in the commit message and mark complete.\n4. OUTPUT: README.md, docs/installation.md, docs/usage.md are all accurate post-changeset.\n5. DOCS: [Mode B] This IS the documentation sync task — verify README.md and installation/usage docs."
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

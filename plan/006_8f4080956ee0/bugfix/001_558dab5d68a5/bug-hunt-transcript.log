@@ -1,0 +1,100 @@
+All findings confirmed. Here is my creative bug-hunt report.
+
+---
+
+# QMKonnect — End-to-End PRD Validation & Bug Hunt
+
+**Baseline:** 390 tests pass (`--test-threads=1`), `cargo fmt`/`clippy -D warnings`/trayless build all clean. The prior validation (plan/006) already found + fixed the callback-sweep transient, trayless dead-code, and the mutex-poison inconsistency. The hot path (debouncer, rules engine, config cache, device discovery, handshake) is exceptionally well-engineered and heavily tested.
+
+I focused on **integration seams and platform code that unit tests can't reach**. Four new issues found, all in code the standard validation explicitly couldn't exercise (live Hyprland/X11, multi-board picker, Windows runtime).
+
+---
+
+## 🟡 Finding 1 — Hyprland "Show Window Information" reports `class`, but the keyboard receives `initial_class`
+
+**Where:** `src/platforms/hyprland.rs:571,577` (`list_foreground_windows`)
+
+**Evidence:**
+- The two **notification** paths send `initial_class`:
+  - `handle_window_state_change` (`:479`): `app_class: active_window.initial_class.clone()`
+  - `poll_window_state` (`:398`): `app_class: active_window.initial_class.clone()`
+- But the **dialog** data source uses `class`:
+  - `:571` `.map(|c| (c.class.clone(), c.title.clone()))`
+  - `:577` `let key = (active.class.clone(), active.title.clone())`
+
+**PRD conflict:** `PLATFORMS.md:39` states Hyprland's stable identifier is `initial_class`, and `:42` says the dialog exists *"so users discover these exact strings… to put in their `DEFINE_SERIAL_*` rules."* The dialog therefore shows a value that can **differ** from what the firmware actually matches.
+
+**Impact:** For apps where `class != initial_class` (some Electron apps, games launched via Steam wrappers, apps that rename their window class at runtime), a user copies the dialog's `class` into a firmware rule, but the keyboard is matching `initial_class` → the rule **silently never matches**. This defeats the dialog's single stated purpose. (Usually identical, so impact is real but intermittent.)
+
+**Fix:** use `initial_class` in both lines of `list_foreground_windows` to match the notification path.
+
+---
+
+## 🟡 Finding 2 — X11 `WM_CLASS` parser returns the **instance**, not the **class** (off-by-one)
+
+**Where:** `src/platforms/x11.rs:68-74` (`get_active_window_info`)
+
+The comment says *"Prefer the class (second element), fall back to instance,"* but the code does the opposite. Verified by simulating against real `xprop` output:
+
+```
+input : WM_CLASS(STRING) = "firefox", "Firefox"
+quoted: [' ', 'firefox', ', ', 'Firefox']   ← the leading space after '=' is element [0]
+PICKED: 'firefox'                            ← the INSTANCE, not the class
+```
+
+Because `xprop` always emits `WM_CLASS(STRING) = "instance", "Class"` (a space after `=`), `split('"').filter(|s| !s.is_empty())` yields `[' ', 'instance', ', ', 'Class']`. The non-empty leading space survives the filter and shifts every index by one, so `.get(1)` returns the **instance** (`firefox`) instead of the **class** (`Firefox`).
+
+**Impact:** The X11 fallback monitor reports the lowercased, less-stable *instance* (which can even be `" Navigator "` for Firefox) instead of the stable *class*. Rules matching the documented `WM_CLASS` value won't fire. The comment and the code disagree — a latent correctness bug.
+
+**Fix:** filter on the trimmed segment so the leading space *and* the `", "` separator both drop:
+```rust
+let quoted: Vec<&str> = rest.split('"').filter(|s| !s.trim().is_empty()).collect();
+// → ["instance", "Class"];  quoted.get(1) == "Class"  ✓
+```
+
+Severity medium-low only because X11 is the non-default, explicitly "not first-class" fallback (PRD §2.2) — but it *is* shipped (`--no-default-features`) and has no test.
+
+---
+
+## 🔵 Finding 3 — Settings-dialog VID/PID change does not reset the handshake (multi-capable-board case)
+
+**Where:** `src/tray.rs:979/981` (Windows) and `:1877/1878` (macOS), `src/linux_tray.rs` `save_and_notify` — none call `reset_handshake_state()` after writing a new VID/PID.
+
+**The path-set guard mostly works:** in the *single-board* case, changing the filter changes which hidapi `path`s appear in `tier1_paths()`, so `PresenceTracker::tick` fires `Loss → reset` (or `Gain → re-handshake`). That path is correct.
+
+**But it breaks with two capable boards simultaneously present.** Trace with board A + board B both capable, both plugged in:
+1. Startup, no VID/PID → broadcast handshake queries one board (say A). `CALLBACK_NAMES = A`'s map, `HOST_CAPABLE = true`. `PresenceTracker { last_paths:[A,B], last_capable:true }`.
+2. User opens Settings, picks **B** in the discovered-device picker → writes B's VID/PID.
+3. Next poll: `tier1_paths()` is now `[B]`. `paths_changed=true`, `tier1_present=true`. `classify_devices` re-probes B → capable, so `reprobed=Some(true)`.
+4. `presence_tick_decision(last_capable=true, changed=true, present=true, Some(true))` → `capable=true`, `handshake_action(Some(true), true)` = **`None`**.
+5. → No `Gain`, no `Loss` → `perform_handshake` **not re-run**, `HAS_HANDSHAKED` still consumed → `CALLBACK_NAMES` stays **A's map**.
+6. Host rules now evaluate against **B** using **A's** name→id map. If the registries differ, wrong callback ids are sent to B; `enable`/`disable` names that exist on B but not A are silently dropped.
+
+**Severity:** Low. This overlaps the documented non-goal *"Per-keyboard rule sets / independent handshakes per board… future work"* (PRD §2.2/§12), so it's expected to be imperfect. Worth noting because it's the one config-change path the PresenceTracker doesn't cover, and a picker change is the user-facing way to land in this state.
+
+**Fix (when per-board lands):** on a settings save that changes VID/PID, call `reset_handshake_state()` + `classification_cache_clear()` so the next poll tick re-handshakes against the newly-selected board.
+
+---
+
+## 🔵 Finding 4 (potential — needs Windows runtime check) — HKCU `Run` autostart value is written unquoted
+
+**Where:** `src/autostart.rs:103` (`enable`) and `packaging/windows/inno/QMKonnect.iss:103` — both write the bare exe path with no surrounding quotes:
+- App: `RegSetValueExW(... VALUE, ..., data = current_exe_wide())` — unquoted
+- Installer: `ValueData: "{app}\{#MyAppExeName}"` — unquoted, where `{app} = {localappdata}\Programs\QMKonnect`
+
+**Concern:** for a Windows user whose profile path contains a space (e.g. `C:\Users\John Doe\…`), the Run value becomes an unquoted `C:\Users\John Doe\AppData\Local\Programs\QMKonnect\qmkonnect.exe`. The HKCU `Run` key is the classic "unquoted path" footgun — at login the shell may parse `C:\Users\John.exe …` and fail to launch (or, worse, match a planted binary earlier in the path). This is the F7 "Open at Login" feature silently failing for a common class of usernames.
+
+I can't reproduce Windows' exact ShellExecute behavior from this Linux box, hence "potential." The standard, safe form is a quoted value: `ValueData: """{app}\{#MyAppExeName}"""` (installer) and a quoted wide string in `enable()`. Both the installer and the in-app toggle must change together to stay the single source of truth.
+
+---
+
+## Minor / notes (not blocking)
+
+- **Windows `should_ignore_window` title-length heuristic** (`src/platforms/windows.rs`): `if window_info.title.len() < 2 …` uses **byte** length, so a 1-char ASCII title (1 byte) is dropped but a 1-char emoji title (4 bytes) is kept — inconsistent, and it's an invented filter not in the PRD. A legitimate single-char-title app is silently ignored.
+- **Confirmed clean (re-verified against prior report):** mutex-poison inconsistency is resolved (only `#[cfg(test)]` sites use raw `.unwrap()` now); trayless build is warning-free; the NoModule desktop notification being Linux-only is **spec-correct** (`DEVICE_DISCOVERY.md:184,456`), not a parity gap.
+
+---
+
+**Bottom line:** The debouncer, rules evaluator, config cache, two-tier discovery, handshake lifecycle, and VIA-coexistence invariant are all correct and the most thoroughly-tested code in the repo. The new findings cluster in the *less-testable* periphery: the Hyprland window-info dialog field (Finding 1) and the X11 WM_CLASS parser (Finding 2) are the highest-value, both one-line fixes with concrete evidence.
+
+Want me to apply the fixes for Findings 1 and 2 (the clear-cut one-liners)?
