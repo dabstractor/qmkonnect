@@ -556,6 +556,15 @@ pub fn perform_handshake_with(verbose: bool, opts: HandshakeOptions) {
             // already correct.
             BOARD_HAS_RULES.store(board_rules_present, Ordering::SeqCst);
             HOST_CAPABLE.store(true, Ordering::SeqCst);
+            // Warm the per-path cache from this handshake result so classify_devices
+            // reads a TTL hit (single-ping-per-appearance, §2.4). Best-effort:
+            // enumerate_candidates finds 0 Tier-1 devices under MockNotifier.
+            warm_cache_from_handshake(DeviceKind::Capable {
+                proto_ver: 2,
+                feature_flags,
+                callback_count,
+                board_rules_present,
+            });
             if verbose {
                 eprintln!(
                     "[{}ms] perform_handshake: complete — capable ({} callbacks mapped)",
@@ -576,6 +585,8 @@ pub fn perform_handshake_with(verbose: bool, opts: HandshakeOptions) {
             HOST_CAPABLE.store(false, Ordering::SeqCst);
             CALLBACK_NAMES.lock().unwrap().clear();
             HAS_HANDSHAKED.store(false, Ordering::SeqCst); // transient — allow retry
+            // Warm the per-path cache (best-effort no-op under MockNotifier).
+            warm_cache_from_handshake(DeviceKind::NotQmkNotifier);
             if verbose {
                 eprintln!(
                     "[{}ms] perform_handshake: query timed out (transient) — string-only mode, will retry on reconnect",
@@ -587,6 +598,8 @@ pub fn perform_handshake_with(verbose: bool, opts: HandshakeOptions) {
             drop(n);
             HOST_CAPABLE.store(false, Ordering::SeqCst);
             CALLBACK_NAMES.lock().unwrap().clear();
+            // Warm the per-path cache (best-effort no-op under MockNotifier).
+            warm_cache_from_handshake(DeviceKind::NotQmkNotifier);
             if verbose {
                 eprintln!(
                     "[{}ms] perform_handshake: non-capable reply ({:?}) — string-only mode",
@@ -603,6 +616,8 @@ pub fn perform_handshake_with(verbose: bool, opts: HandshakeOptions) {
             // firmware — release the dedup token so the next poll/reconnect
             // retries the handshake against the capable board.
             HAS_HANDSHAKED.store(false, Ordering::SeqCst);
+            // Warm the per-path cache (best-effort no-op under MockNotifier).
+            warm_cache_from_handshake(DeviceKind::NotQmkNotifier);
             if verbose {
                 eprintln!(
                     "[{}ms] perform_handshake: device error ({}) — string-only mode, will retry on reconnect",
@@ -902,6 +917,225 @@ pub fn classification_cache_insert(path: &str, kind: DeviceKind) {
 pub fn classification_cache_clear() {
     if let Ok(mut map) = CLASSIFICATION_CACHE.lock() {
         map.clear();
+    }
+}
+
+// ===== Device classification — S2: classify_devices (P3.M1.T1.S2) =====
+// The Tier-2 per-candidate capability probe + cache mechanics. S1 (above)
+// ships the TYPES + CACHE + HELPERS; this section ships the probe that
+// POPULATES the cache. See `spec/DEVICE_DISCOVERY.md` §2 (the algorithm
+// source of truth) + the gotchas pinned in this section's comments.
+
+/// Classify a `QUERY_INFO` reply into a [`DeviceKind`] (`spec/DEVICE_DISCOVERY.md`
+/// §2.2).
+///
+/// `Ok(Info { proto_ver: 2, .. })` ⇒ [`DeviceKind::Capable`] (records all four
+/// fields verbatim so the picker can show them); every other reply
+/// (`Legacy` / `Timeout` / `Ack` / `CallbackName` / `Info { proto_ver != 2 }`)
+/// and every `Err(_)` ⇒ [`DeviceKind::NotQmkNotifier`]. No board is harmed: the
+/// `0x81 0x9F` magic header is silently ignored by VIA/Vial's `raw_hid_receive`
+/// (the R-COEX guarantee — §2.2).
+///
+/// Does NOT gate on `feature_flags & 0x01`. The `APPLY_HOST_CONTEXT` bit is the
+/// handshake's gate for the host-rules SEND (`perform_handshake_with` @~444);
+/// the classifier records `feature_flags` so the consumer (the picker / status
+/// resolver) can read it. Adding the gate here would hide capable-but-no-host-
+/// rules boards from the picker — diverges from §2.2.
+#[allow(dead_code)]
+fn classify_reply(
+    resp: Result<qmk_notifier::CommandResponse, Box<dyn Error + Send + Sync>>,
+) -> DeviceKind {
+    match resp {
+        Ok(qmk_notifier::CommandResponse::Info {
+            proto_ver: 2,
+            feature_flags,
+            callback_count,
+            board_rules_present,
+        }) => DeviceKind::Capable {
+            proto_ver: 2,
+            feature_flags,
+            callback_count,
+            board_rules_present,
+        },
+        _ => DeviceKind::NotQmkNotifier,
+    }
+}
+
+/// One enumerated Tier-1 HID interface, pre-classification (the cache key +
+/// the four Tier-1 narrowers). Factored out of [`classify_devices`] so
+/// [`classify_candidates`] is testable without a real HID bus — the enumerate
+/// step talks to `hidapi::HidApi::new()` (uncontrollable in a unit test; the CI
+/// box may have 0 or N QMK boards), but the classify step is pure w.r.t. a
+/// `Vec<Candidate>` + the queued mock responses.
+#[allow(dead_code)]
+struct Candidate {
+    path: String,
+    vendor_id: u16,
+    product_id: u16,
+    product_name: Option<String>,
+    usage_page: u16,
+    usage: u16,
+}
+
+/// Enumerate the Tier-1 HID candidates (`spec/DEVICE_DISCOVERY.md` §2.3):
+/// `usage_page == 0xFF60 && usage == 0x61` plus the optional vid/pid narrowers
+/// from `configured_filter()`. Verbatim `.filter`/`.map`/`.collect` mirror of
+/// [`is_device_connected`] @~216 (which uses `.any`). Read-only enumeration —
+/// `HidApi::new()` never opens the device and never sends a report, so it is
+/// R-COEX safe (identical to the poll-thread enumeration that already runs every
+/// tick). Returns `vec![]` if hidapi cannot enumerate (the "device absent"
+/// degradation).
+///
+/// `d.path()` returns `&CStr` (hidapi 2.6.3, `DeviceInfo::path`), not `&OsStr` —
+/// convert via `.to_string_lossy().to_string()` so a non-UTF8 path (rare but
+/// possible on Windows) degrades instead of panicking.
+fn enumerate_candidates() -> Vec<Candidate> {
+    let f = configured_filter();
+    match hidapi::HidApi::new() {
+        Ok(api) => api
+            .device_list()
+            .filter(|d| {
+                d.usage_page() == f.usage_page
+                    && d.usage() == f.usage
+                    && f.vendor_id.is_none_or(|v| d.vendor_id() == v)
+                    && f.product_id.is_none_or(|p| d.product_id() == p)
+            })
+            .map(|d| Candidate {
+                path: d.path().to_string_lossy().to_string(),
+                vendor_id: d.vendor_id(),
+                product_id: d.product_id(),
+                product_name: d.product_string().map(|s| s.to_string()),
+                usage_page: d.usage_page(),
+                usage: d.usage(),
+            })
+            .collect(),
+        Err(_) => Vec::new(),
+    }
+}
+
+/// The pure, MockNotifier-testable core of the Tier-2 probe (`spec/
+/// DEVICE_DISCOVERY.md` §2.3): classify each Tier-1 candidate by consulting the
+/// [`CLASSIFICATION_CACHE`] (TTL hit ⇒ reuse, no ping) or else pinging the board
+/// with a vid/pid-narrowed [`DeviceFilter`], then caching the result. This is
+/// factored out of [`classify_devices`] so the unit tests can drive it with a
+/// hand-built `Vec<Candidate>` + a queued mock response queue (deterministic,
+/// no real HID) — `classify_devices` itself only provides the hidapi shell.
+///
+/// Per-candidate mechanism: the `qmk_notifier` crate has **no per-path send**
+/// (`external_deps.md`: `MatchKey` is private + filter-keyed — every send
+/// broadcasts to ALL devices matching the filter). vid/pid narrowing is the sole
+/// app-side knob, so each candidate's `DeviceFilter` is pinned to
+/// `(Some(c.vendor_id), Some(c.product_id), c.usage_page, c.usage)`. **LIMITATION
+/// (`DEVICE_DISCOVERY.md` §4.3):** this is a true single-device ping ONLY when
+/// vid/pid is unique on the bus; two boards sharing vid/pid (e.g. a split pair)
+/// both match the narrowed filter and both get pinged — the app cannot attribute
+/// the single reply to a specific path. The handshake has the same limitation;
+/// both are bounded by the same single-vid/pid-on-bus assumption.
+///
+/// Lock discipline: the notifier lock is acquired **per candidate** (short
+/// scope), mirroring the callback sweep's per-iteration re-acquire
+/// (`perform_handshake_with` @~446) so a concurrent `notify_qmk` / debounce
+/// flush can interleave between candidates. Holding one lock across all
+/// candidates would starve the notification path. `.lock().unwrap()` matches
+/// `perform_handshake_with` — a poisoned `NOTIFIER` is a hard failure.
+#[allow(dead_code)]
+fn classify_candidates(candidates: Vec<Candidate>, verbose: bool) -> Vec<ClassifiedDevice> {
+    let notifier = get_notifier();
+    candidates
+        .into_iter()
+        .map(|c| {
+            let kind = match classification_cache_get(&c.path) {
+                Some(k) => {
+                    if verbose {
+                        eprintln!(
+                            "[{}ms] classify: cache hit {}",
+                            crate::core::now_ms(),
+                            c.path
+                        );
+                    }
+                    k
+                }
+                None => {
+                    // Narrow the filter to this candidate's vid/pid (the crate
+                    // has no per-path send — see the §4.3 limitation above).
+                    let narrowed = DeviceFilter {
+                        vendor_id: Some(c.vendor_id),
+                        product_id: Some(c.product_id),
+                        usage_page: c.usage_page,
+                        usage: c.usage,
+                    };
+                    let resp = notifier
+                        .lock()
+                        .unwrap()
+                        .send_command(qmk_notifier::RunCommand::QueryInfo, &narrowed);
+                    let kind = classify_reply(resp);
+                    classification_cache_insert(&c.path, kind.clone());
+                    kind
+                }
+            };
+            ClassifiedDevice {
+                path: c.path,
+                vendor_id: c.vendor_id,
+                product_id: c.product_id,
+                product_name: c.product_name,
+                usage_page: c.usage_page,
+                usage: c.usage,
+                kind,
+            }
+        })
+        .collect()
+}
+
+/// Drop cache entries whose `path` is no longer present in the Tier-1 candidate
+/// set (`spec/DEVICE_DISCOVERY.md` §2.3 — eviction on disappearance). A board
+/// that unplugged mid-session must not keep advertising a stale `DeviceKind`.
+/// Uses `Vec::contains` (n = board count ≈ 1-2) to avoid importing `HashSet`.
+#[allow(dead_code)]
+fn invalidate_absent_cache_entries(candidates: &[Candidate]) {
+    let present: Vec<&str> = candidates.iter().map(|c| c.path.as_str()).collect();
+    if let Ok(mut map) = CLASSIFICATION_CACHE.lock() {
+        map.retain(|path, _| present.contains(&path.as_str()));
+    }
+}
+
+/// Enumerate present Tier-1 candidates, invalidate absent cache entries, then
+/// classify each (`spec/DEVICE_DISCOVERY.md` §2.3). The top-level Tier-2 entry
+/// point: called by the discovered-device picker (P3.M2), the `device_status()`
+/// per-device resolver (P1), and the `--list-devices` kind column (P4.M1.T1.S1).
+///
+/// Algorithm: `enumerate_candidates` (the hidapi shell) →
+/// `invalidate_absent_cache_entries` (drop disappeared paths) →
+/// [`classify_candidates`] (the pure, cache-aware per-candidate core). Cache
+/// hits (within [`CLASSIFICATION_TTL`]) skip the ping; misses narrow a
+/// [`DeviceFilter`] to the candidate's vid/pid and ping `QUERY_INFO` (the
+/// mechanism + its multi-same-vid/pid limitation are documented on
+/// [`classify_candidates`]). The handshake path ([`perform_handshake_with`])
+/// warm-feeds the same cache via [`warm_cache_from_handshake`] so the status
+/// path stays single-ping-per-appearance (§2.4).
+#[allow(dead_code)]
+pub fn classify_devices(verbose: bool) -> Vec<ClassifiedDevice> {
+    let candidates = enumerate_candidates();
+    invalidate_absent_cache_entries(&candidates);
+    classify_candidates(candidates, verbose)
+}
+
+/// Warm the per-path [`CLASSIFICATION_CACHE`] from the handshake result
+/// (best-effort, `spec/DEVICE_DISCOVERY.md` §2.4 — single-ping-per-appearance).
+///
+/// `perform_handshake_with` already pings `QUERY_INFO` once per boot; without
+/// this cross-feed, [`classify_devices`] would re-ping on the first status call
+/// (2 pings per appearance). To keep it to 1, the handshake stamps its result
+/// into the per-path cache so `classify_devices` reads a warm cache (TTL hit ⇒
+/// no re-ping). Since the handshake is filter-keyed (no single path), this
+/// enumerates the present Tier-1 paths and stamps them all with `kind` —
+/// correct under the single-vid/pid-on-bus assumption (`DEVICE_DISCOVERY.md`
+/// §4.3): if multiple interfaces share vid/pid they all get the handshake's
+/// single result, which is acceptable because they are the same board model in
+/// the common case. No-op in tests (the handshake tests use `MockNotifier` with
+/// no real HID, so `enumerate_candidates` finds 0 Tier-1 devices).
+fn warm_cache_from_handshake(kind: DeviceKind) {
+    for c in enumerate_candidates() {
+        classification_cache_insert(&c.path, kind.clone());
     }
 }
 
@@ -1543,6 +1777,14 @@ mod tests {
     static MOCK_LAST_MESSAGE: Lazy<StdMutex<Option<String>>> = Lazy::new(|| StdMutex::new(None));
     static MOCK_SEND_COMMAND_CALLS: Lazy<StdMutex<Vec<qmk_notifier::RunCommand>>> =
         Lazy::new(|| StdMutex::new(Vec::new()));
+    // P3.M1.T1.S2: per-`send_command` filter tuples `(vid, pid, usage_page, usage)`
+    // so classify_candidates tests can assert the per-candidate vid/pid NARROWING
+    // (the chosen per-candidate mechanism — the crate has no per-path send).
+    // Records tuples, NOT `DeviceFilter`, so no `Clone`/`PartialEq` derive is
+    // added to the production struct purely for test convenience.
+    static MOCK_SEND_COMMAND_FILTERS:
+        Lazy<StdMutex<Vec<(Option<u16>, Option<u16>, u16, u16)>>> =
+        Lazy::new(|| StdMutex::new(Vec::new()));
     static MOCK_RESPONSES: Lazy<StdMutex<VecDeque<qmk_notifier::CommandResponse>>> =
         Lazy::new(|| StdMutex::new(VecDeque::new()));
     // LOW-1: error injection for testing the transient-failure retry path. When
@@ -1560,6 +1802,7 @@ mod tests {
         MOCK_CALL_COUNT.store(0, Ordering::SeqCst);
         *MOCK_LAST_MESSAGE.lock().unwrap() = None;
         MOCK_SEND_COMMAND_CALLS.lock().unwrap().clear();
+        MOCK_SEND_COMMAND_FILTERS.lock().unwrap().clear();
         MOCK_RESPONSES.lock().unwrap().clear();
         MOCK_SEND_COMMAND_ERRORS.lock().unwrap().clear();
         *MOCK_SEND_DELAY.lock().unwrap() = None;
@@ -1583,6 +1826,13 @@ mod tests {
 
         fn get_send_command_calls() -> Vec<qmk_notifier::RunCommand> {
             MOCK_SEND_COMMAND_CALLS.lock().unwrap().clone()
+        }
+
+        /// P3.M1.T1.S2: the per-`send_command` filter tuples `(vid, pid,
+        /// usage_page, usage)`, in call order — lets a classify_candidates
+        /// test assert each candidate's ping was narrowed to its vid/pid.
+        fn get_send_command_filters() -> Vec<(Option<u16>, Option<u16>, u16, u16)> {
+            MOCK_SEND_COMMAND_FILTERS.lock().unwrap().clone()
         }
 
         fn set_mock_responses(responses: Vec<qmk_notifier::CommandResponse>) {
@@ -1613,12 +1863,18 @@ mod tests {
         fn send_command(
             &self,
             command: qmk_notifier::RunCommand,
-            _filter: &DeviceFilter,
+            filter: &DeviceFilter,
         ) -> Result<qmk_notifier::CommandResponse, Box<dyn Error + Send + Sync>> {
             MOCK_SEND_COMMAND_CALLS
                 .lock()
                 .unwrap()
                 .push(command.clone());
+            // P3.M1.T1.S2: record the per-call filter tuple so the classify
+            // tests can assert the per-candidate vid/pid narrowing.
+            MOCK_SEND_COMMAND_FILTERS
+                .lock()
+                .unwrap()
+                .push((filter.vendor_id, filter.product_id, filter.usage_page, filter.usage));
             // P1.M3.T2.S1 (#4): optional artificial delay to widen the sweep window for the
             // per-iteration lock-release test (wall-clock sleep, so CI CPU slowdown can't shrink it).
             if let Some(d) = *MOCK_SEND_DELAY.lock().unwrap() {
@@ -3240,5 +3496,347 @@ disable = ["known_b", "phantom"]
         };
         assert_eq!(dev_a, dev_a.clone());
         assert_eq!(dev_a.kind, cap_b);
+    }
+
+    // ===== classify_devices (P3.M1.T1.S2) tests =====
+    // The Tier-2 per-candidate capability classifier. Pure tests (A) drive
+    // `classify_reply` directly; MockNotifier tests (B/C/D) use the standard
+    // handshake-test setup idiom (`reset_test_state` + `reset_handshake_state`
+    // + `set_notifier(MockNotifier::new())`) + `classification_cache_clear()`
+    // (the static outlives tests; crate tests are single-threaded per AGENTS.md).
+    // The MockNotifier's FIFO `MOCK_RESPONSES` queue gives per-candidate ordering
+    // (candidate i ⇔ response i); `get_send_command_filters()` asserts the
+    // per-candidate vid/pid NARROWING.
+
+    /// Build a Tier-1 `Candidate` for the tests (the four fields + the cache key).
+    fn candidate(path: &str, vid: u16, pid: u16) -> Candidate {
+        Candidate {
+            path: path.to_string(),
+            vendor_id: vid,
+            product_id: pid,
+            product_name: None,
+            usage_page: 0xFF60,
+            usage: 0x61,
+        }
+    }
+
+    // ── A. classify_reply (pure — no mock, 6 tests) ──
+
+    #[test]
+    fn test_classify_reply_info_proto2_capable() {
+        // §2.2: Info{proto_ver:2} ⇒ Capable carrying all four fields.
+        let resp: Result<qmk_notifier::CommandResponse, Box<dyn Error + Send + Sync>> =
+            Ok(qmk_notifier::CommandResponse::Info {
+                proto_ver: 2,
+                feature_flags: 0x01,
+                callback_count: 3,
+                board_rules_present: true,
+            });
+        assert_eq!(
+            classify_reply(resp),
+            DeviceKind::Capable {
+                proto_ver: 2,
+                feature_flags: 0x01,
+                callback_count: 3,
+                board_rules_present: true,
+            }
+        );
+    }
+
+    #[test]
+    fn test_classify_reply_info_proto2_no_feature_bit_still_capable() {
+        // G2: the classifier does NOT gate on feature_flags & 0x01. A
+        // proto-v2 board with no APPLY_HOST_CONTEXT bit is STILL Capable
+        // (the handshake gates; the classifier records the flags).
+        let resp: Result<qmk_notifier::CommandResponse, Box<dyn Error + Send + Sync>> =
+            Ok(qmk_notifier::CommandResponse::Info {
+                proto_ver: 2,
+                feature_flags: 0x00,
+                callback_count: 0,
+                board_rules_present: false,
+            });
+        assert_eq!(
+            classify_reply(resp),
+            DeviceKind::Capable {
+                proto_ver: 2,
+                feature_flags: 0x00,
+                callback_count: 0,
+                board_rules_present: false,
+            }
+        );
+    }
+
+    #[test]
+    fn test_classify_reply_info_proto1_notqmk() {
+        // The literal `proto_ver: 2` arm does NOT match a proto-v1 reply ⇒ falls
+        // to `_` ⇒ NotQmkNotifier (replied but not the typed-command protocol).
+        let resp: Result<qmk_notifier::CommandResponse, Box<dyn Error + Send + Sync>> =
+            Ok(qmk_notifier::CommandResponse::Info {
+                proto_ver: 1,
+                feature_flags: 0,
+                callback_count: 0,
+                board_rules_present: false,
+            });
+        assert_eq!(classify_reply(resp), DeviceKind::NotQmkNotifier);
+    }
+
+    #[test]
+    fn test_classify_reply_legacy_notqmk() {
+        let resp: Result<qmk_notifier::CommandResponse, Box<dyn Error + Send + Sync>> =
+            Ok(qmk_notifier::CommandResponse::Legacy { matched: true });
+        assert_eq!(classify_reply(resp), DeviceKind::NotQmkNotifier);
+    }
+
+    #[test]
+    fn test_classify_reply_timeout_notqmk() {
+        let resp: Result<qmk_notifier::CommandResponse, Box<dyn Error + Send + Sync>> =
+            Ok(qmk_notifier::CommandResponse::Timeout);
+        assert_eq!(classify_reply(resp), DeviceKind::NotQmkNotifier);
+    }
+
+    #[test]
+    fn test_classify_reply_ack_notqmk() {
+        // Ack is the empty-queue default the mock returns — not a capable reply.
+        let resp: Result<qmk_notifier::CommandResponse, Box<dyn Error + Send + Sync>> =
+            Ok(qmk_notifier::CommandResponse::Ack { ok: true });
+        assert_eq!(classify_reply(resp), DeviceKind::NotQmkNotifier);
+    }
+
+    #[test]
+    fn test_classify_reply_err_notqmk() {
+        // A transport error degrades to NotQmkNotifier (no board harmed).
+        let resp: Result<qmk_notifier::CommandResponse, Box<dyn Error + Send + Sync>> =
+            Err("device error".into());
+        assert_eq!(classify_reply(resp), DeviceKind::NotQmkNotifier);
+    }
+
+    // ── B. classify_candidates (MockNotifier, 5 tests — the core) ──
+
+    #[test]
+    fn test_classify_candidates_capable() {
+        reset_test_state();
+        reset_handshake_state();
+        set_notifier(Box::new(MockNotifier::new()));
+        classification_cache_clear();
+
+        let c = candidate("p-cap", 0x1234, 0x5678);
+        MockNotifier::set_mock_responses(vec![qmk_notifier::CommandResponse::Info {
+            proto_ver: 2,
+            feature_flags: 0x01,
+            callback_count: 2,
+            board_rules_present: true,
+        }]);
+        let result = classify_candidates(vec![c], false);
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(
+            result[0].kind,
+            DeviceKind::Capable {
+                proto_ver: 2,
+                feature_flags: 0x01,
+                callback_count: 2,
+                board_rules_present: true,
+            }
+        );
+        // Exactly one ping (cache miss).
+        let calls = MockNotifier::get_send_command_calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0], qmk_notifier::RunCommand::QueryInfo);
+        // The filter was narrowed to this candidate's vid/pid (G4 mechanism).
+        let filters = MockNotifier::get_send_command_filters();
+        assert_eq!(filters.len(), 1);
+        assert_eq!(filters[0], (Some(0x1234u16), Some(0x5678u16), 0xFF60u16, 0x61u16));
+    }
+
+    #[test]
+    fn test_classify_candidates_mixed() {
+        reset_test_state();
+        reset_handshake_state();
+        set_notifier(Box::new(MockNotifier::new()));
+        classification_cache_clear();
+
+        // 3 candidates: distinct vid/pid so the narrowing is per-candidate.
+        let cands = vec![
+            candidate("p-a", 0x1111, 0x2222),
+            candidate("p-b", 0x3333, 0x4444),
+            candidate("p-c", 0x5555, 0x6666),
+        ];
+        // FIFO queue gives per-candidate ordering (candidate i ⇔ response i).
+        MockNotifier::set_mock_responses(vec![
+            qmk_notifier::CommandResponse::Info {
+                proto_ver: 2,
+                feature_flags: 0x01,
+                callback_count: 0,
+                board_rules_present: false,
+            },
+            qmk_notifier::CommandResponse::Legacy { matched: true },
+            qmk_notifier::CommandResponse::Timeout,
+        ]);
+        let result = classify_candidates(cands, false);
+
+        assert_eq!(result.len(), 3);
+        assert_eq!(
+            result[0].kind,
+            DeviceKind::Capable {
+                proto_ver: 2,
+                feature_flags: 0x01,
+                callback_count: 0,
+                board_rules_present: false,
+            }
+        );
+        assert_eq!(result[1].kind, DeviceKind::NotQmkNotifier);
+        assert_eq!(result[2].kind, DeviceKind::NotQmkNotifier);
+        // 3 pings, each narrowed to its own vid/pid.
+        assert_eq!(MockNotifier::get_send_command_calls().len(), 3);
+        let filters = MockNotifier::get_send_command_filters();
+        assert_eq!(filters.len(), 3);
+        assert_eq!(filters[0], (Some(0x1111u16), Some(0x2222u16), 0xFF60u16, 0x61u16));
+        assert_eq!(filters[1], (Some(0x3333u16), Some(0x4444u16), 0xFF60u16, 0x61u16));
+        assert_eq!(filters[2], (Some(0x5555u16), Some(0x6666u16), 0xFF60u16, 0x61u16));
+    }
+
+    #[test]
+    fn test_classify_candidates_cache_hit_skips_ping() {
+        reset_test_state();
+        reset_handshake_state();
+        set_notifier(Box::new(MockNotifier::new()));
+        classification_cache_clear();
+
+        let c = candidate("p-hit", 0x1234, 0x5678);
+        // Pre-warm the cache: the probe must NOT re-ping (TTL hit).
+        classification_cache_insert(
+            &c.path,
+            DeviceKind::Capable {
+                proto_ver: 2,
+                feature_flags: 0x01,
+                callback_count: 0,
+                board_rules_present: false,
+            },
+        );
+        // EMPTY response queue — a ping here would pop the default Ack
+        // (NotQmkNotifier) and clobber the cached Capable, so the empty queue
+        // + the call-count assertion together prove no ping happened.
+        let result = classify_candidates(vec![c], false);
+
+        assert_eq!(
+            result[0].kind,
+            DeviceKind::Capable {
+                proto_ver: 2,
+                feature_flags: 0x01,
+                callback_count: 0,
+                board_rules_present: false,
+            }
+        );
+        // Cache hit ⇒ NO ping at all.
+        assert!(MockNotifier::get_send_command_calls().is_empty());
+        assert!(MockNotifier::get_send_command_filters().is_empty());
+    }
+
+    #[test]
+    fn test_classify_candidates_cache_miss_pings_and_caches() {
+        reset_test_state();
+        reset_handshake_state();
+        set_notifier(Box::new(MockNotifier::new()));
+        classification_cache_clear();
+
+        let c = candidate("p-miss", 0x1234, 0x5678);
+        // First call: cache miss, queue a Capable reply ⇒ pings once + caches.
+        MockNotifier::set_mock_responses(vec![qmk_notifier::CommandResponse::Info {
+            proto_ver: 2,
+            feature_flags: 0x01,
+            callback_count: 0,
+            board_rules_present: false,
+        }]);
+        let first = classify_candidates(vec![candidate("p-miss", 0x1234, 0x5678)], false);
+        assert_eq!(
+            first[0].kind,
+            DeviceKind::Capable {
+                proto_ver: 2,
+                feature_flags: 0x01,
+                callback_count: 0,
+                board_rules_present: false,
+            }
+        );
+        assert_eq!(MockNotifier::get_send_command_calls().len(), 1);
+
+        // Second call: EMPTY queue, cache is warm ⇒ still Capable, NO new ping.
+        let second = classify_candidates(vec![c], false);
+        assert_eq!(first[0].kind, second[0].kind);
+        assert_eq!(MockNotifier::get_send_command_calls().len(), 1); // unchanged
+    }
+
+    #[test]
+    fn test_classify_candidates_ttl_re_ping() {
+        reset_test_state();
+        reset_handshake_state();
+        set_notifier(Box::new(MockNotifier::new()));
+        classification_cache_clear();
+
+        let c = candidate("p-ttl", 0x1234, 0x5678);
+        // Seed the cache with a Capable kind, then age the stamp past TTL so the
+        // next get is a miss (same idiom as test_classification_cache_ttl_expiry).
+        classification_cache_insert(
+            &c.path,
+            DeviceKind::Capable {
+                proto_ver: 2,
+                feature_flags: 0x01,
+                callback_count: 0,
+                board_rules_present: false,
+            },
+        );
+        CLASSIFICATION_CACHE.lock().unwrap().insert(
+            c.path.clone(),
+            (
+                DeviceKind::Capable {
+                    proto_ver: 2,
+                    feature_flags: 0x01,
+                    callback_count: 0,
+                    board_rules_present: false,
+                },
+                Instant::now() - CLASSIFICATION_TTL - Duration::from_millis(1),
+            ),
+        );
+        // The re-ping will pop this Timeout ⇒ NotQmkNotifier (new result cached).
+        MockNotifier::set_mock_responses(vec![qmk_notifier::CommandResponse::Timeout]);
+        let result = classify_candidates(vec![c], false);
+
+        assert_eq!(result[0].kind, DeviceKind::NotQmkNotifier);
+        // TTL expired ⇒ exactly one re-ping.
+        assert_eq!(MockNotifier::get_send_command_calls().len(), 1);
+    }
+
+    // ── C. invalidate_absent_cache_entries (pure, 1 test) ──
+
+    #[test]
+    fn test_invalidate_drops_absent_paths() {
+        reset_test_state();
+        reset_handshake_state();
+        set_notifier(Box::new(MockNotifier::new()));
+        classification_cache_clear();
+
+        classification_cache_insert("p1", DeviceKind::NotQmkNotifier);
+        classification_cache_insert("p2", DeviceKind::NotQmkNotifier);
+        // Only p1 is present in the candidate set ⇒ p2 must be evicted.
+        invalidate_absent_cache_entries(&[candidate("p1", 0x1234, 0x5678)]);
+
+        let map = CLASSIFICATION_CACHE.lock().unwrap();
+        assert!(map.contains_key("p1"));
+        assert!(!map.contains_key("p2"));
+    }
+
+    // ── D. classify_devices smoke (the env-dependent shell, 1 test) ──
+
+    #[test]
+    fn test_classify_devices_smoke_returns_vec() {
+        reset_test_state();
+        reset_handshake_state();
+        set_notifier(Box::new(MockNotifier::new()));
+        classification_cache_clear();
+
+        // enumerate_candidates touches real HID — env-dependent. Just prove the
+        // enumerate → invalidate → classify wiring compiles + runs without panic.
+        // Do NOT assert a count (0 on a box with no QMK board, N on one with N).
+        let result = classify_devices(false);
+        let _ = result.len();
     }
 }
