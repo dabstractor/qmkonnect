@@ -297,7 +297,7 @@
       "type": "Phase",
       "id": "P4",
       "title": "Config/CLI cleanup + Mode-A documentation",
-      "status": "Researching",
+      "status": "Complete",
       "description": "Small finishing work: the 0xFEED template cleanup (D3), the --list-devices kind column (D4), user-facing doc updates, and the changeset-level documentation sweep.",
       "milestones": [
         {
@@ -370,21 +370,21 @@
           "type": "Milestone",
           "id": "P4.M2",
           "title": "Changeset-level documentation (Mode B final sweep)",
-          "status": "Researching",
+          "status": "Complete",
           "description": "Final changeset-level documentation sweep: audit README.md and top-level overviews for F13/F14, regenerate docs/llms_full.txt.",
           "tasks": [
             {
               "type": "Task",
               "id": "P4.M2.T1",
               "title": "Sync README.md + cross-cutting overviews for F13/F14 + regenerate docs/llms_full.txt",
-              "status": "Researching",
+              "status": "Complete",
               "description": "Audit README.md and top-level overviews; update if they describe discovery/VID-PID/status. Regenerate the concatenated llms_full.txt. Runs LAST — depends on all implementing subtasks.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P4.M2.T1.S1",
                   "title": "Audit README.md and top-level overviews; regenerate docs/llms_full.txt",
-                  "status": "Researching",
+                  "status": "Complete",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M1.T1.S1",

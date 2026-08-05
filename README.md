@@ -203,19 +203,25 @@ disambiguate among multiple QMK keyboards.
 > - **Windows**: `%APPDATA%\QMKonnect\config.toml`
 > - **macOS**: `~/Library/Application Support/QMKonnect/config.toml`
 
-Don't know your keyboard's IDs? Discover them with read-only enumeration:
+Don't know your keyboard's IDs? The **Settings → discovered-device picker**
+lists connected boards and writes the IDs for you; or enumerate read-only:
 
 ```bash
-qmkonnect --list-devices
+qmkonnect --list-devices     # each row shows a `kind` column:
+                             #   qmk_notifier / qmk-only / -
 ```
 
 ### Windows & macOS
 
-1. Right-click the QMKonnect system tray icon
-2. Select "Settings"
-3. Enter your keyboard's Vendor ID (hex format, e.g., feed)
-4. Enter your keyboard's Product ID (hex format, e.g., 0000)
-5. Click OK to save
+In the common case you never open Settings — QMKonnect auto-discovers a
+single qmk_notifier-capable board. Right-click the tray/menu-bar icon →
+**Settings** only to disambiguate among several boards: the dialog lists
+every connected QMK board by name with its VID:PID and a ✓
+(qmk_notifier-capable) or ✗ (QMK board, no module) marker — pick one and
+QMKonnect writes its VID/PID for you. **Advanced ▸** (rarely needed): the
+raw `vendor_id` / `product_id` hex fields live under a disclosure for
+manually targeting a board that isn't currently on the bus. Changes take
+effect immediately — no restart needed.
 
 ### Linux
 
@@ -229,8 +235,8 @@ qmkonnect -c
 
 Only set these to pin a specific keyboard (otherwise leave them commented out for auto-discovery):
 ```
-# vendor_id = 0xfeed
-# product_id = 0x0000
+# vendor_id  = 0x????   # unset: auto-discover any QMK keyboard (recommended)
+# product_id = 0x????   # unset: auto-discover any QMK keyboard (recommended)
 ```
 
 Then reload (writes the matching udev rule and reloads udev — run as root):
@@ -301,11 +307,10 @@ When a window focus change is detected, this application formats the data as:
 This is the **desktop-side** config only (your firmware still needs qmk_notifier — see above). QMKonnect auto-discovers standard QMK keyboards, so the default config leaves these commented out (uncomment only to pin a specific keyboard):
 
 ```toml
-# Your QMK keyboard's vendor ID (in hex)
-# vendor_id = 0xfeed
-
-# Your QMK keyboard's product ID (in hex)
-# product_id = 0x0000
+# Your QMK keyboard's vendor/product IDs (in hex) — unset: auto-discover
+# any QMK keyboard (recommended); set only to pin a specific board.
+# vendor_id  = 0x????
+# product_id = 0x????
 ```
 
 ## Example Use Cases

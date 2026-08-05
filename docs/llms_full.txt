@@ -224,19 +224,25 @@ disambiguate among multiple QMK keyboards.
 > - **Windows**: `%APPDATA%\QMKonnect\config.toml`
 > - **macOS**: `~/Library/Application Support/QMKonnect/config.toml`
 
-Don't know your keyboard's IDs? Discover them with read-only enumeration:
+Don't know your keyboard's IDs? The **Settings → discovered-device picker**
+lists connected boards and writes the IDs for you; or enumerate read-only:
 
 ```bash
-qmkonnect --list-devices
+qmkonnect --list-devices     # each row shows a `kind` column:
+                             #   qmk_notifier / qmk-only / -
 ```
 
 ### Windows & macOS
 
-1. Right-click the QMKonnect system tray icon
-2. Select "Settings"
-3. Enter your keyboard's Vendor ID (hex format, e.g., feed)
-4. Enter your keyboard's Product ID (hex format, e.g., 0000)
-5. Click OK to save
+In the common case you never open Settings — QMKonnect auto-discovers a
+single qmk_notifier-capable board. Right-click the tray/menu-bar icon →
+**Settings** only to disambiguate among several boards: the dialog lists
+every connected QMK board by name with its VID:PID and a ✓
+(qmk_notifier-capable) or ✗ (QMK board, no module) marker — pick one and
+QMKonnect writes its VID/PID for you. **Advanced ▸** (rarely needed): the
+raw `vendor_id` / `product_id` hex fields live under a disclosure for
+manually targeting a board that isn't currently on the bus. Changes take
+effect immediately — no restart needed.
 
 ### Linux
 
@@ -250,8 +256,8 @@ qmkonnect -c
 
 Only set these to pin a specific keyboard (otherwise leave them commented out for auto-discovery):
 ```
-# vendor_id = 0xfeed
-# product_id = 0x0000
+# vendor_id  = 0x????   # unset: auto-discover any QMK keyboard (recommended)
+# product_id = 0x????   # unset: auto-discover any QMK keyboard (recommended)
 ```
 
 Then reload (writes the matching udev rule and reloads udev — run as root):
@@ -322,11 +328,10 @@ When a window focus change is detected, this application formats the data as:
 This is the **desktop-side** config only (your firmware still needs qmk_notifier — see above). QMKonnect auto-discovers standard QMK keyboards, so the default config leaves these commented out (uncomment only to pin a specific keyboard):
 
 ```toml
-# Your QMK keyboard's vendor ID (in hex)
-# vendor_id = 0xfeed
-
-# Your QMK keyboard's product ID (in hex)
-# product_id = 0x0000
+# Your QMK keyboard's vendor/product IDs (in hex) — unset: auto-discover
+# any QMK keyboard (recommended); set only to pin a specific board.
+# vendor_id  = 0x????
+# product_id = 0x????
 ```
 
 ## Example Use Cases
@@ -517,8 +522,12 @@ sudo install -m644 packaging/linux/udev/69-qmkonnect-rawhid.rules \
 sudo udevadm control --reload && sudo udevadm trigger
 ```
 
-   Only set `vendor_id`/`product_id` to disambiguate among multiple QMK
-   keyboards; then generate the matching rule (root-aware, works under sudo):
+   You rarely set `vendor_id`/`product_id` by hand: the **Settings →
+   discovered-device picker** lists each connected QMK board (with a
+   ✓/✗ qmk_notifier-capable marker) and writes the IDs for you when several
+   boards are present. Set them manually only to disambiguate among
+   multiple QMK keyboards, then generate the matching rule (root-aware,
+   works under sudo):
 
 ```bash
 qmkonnect -c          # writes a commented-out default config (edit as needed)
@@ -627,7 +636,14 @@ After installation, verify QMKonnect is working (this only confirms the desktop
 app talks to the keyboard — your **firmware** must also have qmk_notifier set up,
 see [QMK Integration]({{ site.baseurl }}/qmk-integration)):
 
-1. **Check if running**:
+1. **Check the tray/menu-bar icon** — it shows one of three device states:
+   - **● Device Connected** — a qmk_notifier-capable board is present (you're set).
+   - **⚠ QMK board found — no qmk_notifier module (flash it)** — a QMK board
+     is attached but isn't running qmk_notifier; flash it (see the
+     [QMK Integration Guide]({{ site.baseurl }}/qmk-integration)).
+   - **○ No Device Connected** — no QMK board detected.
+
+   Platform quick-checks that the process is running:
    - Windows: Look for the system tray icon
    - Linux: `systemctl --user status qmkonnect`
    - macOS: Check Activity Monitor
@@ -1015,16 +1031,23 @@ connected and need to disambiguate which one QMKonnect targets.
 
 ### Windows & macOS - GUI Settings
 
-Both Windows and macOS use a settings dialog through the system tray:
+Both Windows and macOS use a settings dialog through the system tray. In
+the common case you never open it — QMKonnect auto-discovers a single
+qmk_notifier-capable board — but it's there to disambiguate among several:
 
 1. **Find the system tray icon** (QMKonnect icon in your system tray/menu bar)
 2. **Right-click the icon** and select "Settings"
-3. **Enter your keyboard IDs** (both fields are optional — leave either blank for auto-discovery):
-   - **Vendor ID**: Your keyboard's vendor ID in hex format (e.g., `feed`)
-   - **Product ID**: Your keyboard's product ID in hex format (e.g., `0000`)
-4. **Click OK** to save
-
-Settings are saved automatically and work right away - no restart needed.
+3. The dialog shows a **discovered-device list**: every connected QMK
+   board appears by name with its VID:PID and a ✓ (qmk_notifier-capable)
+   or ✗ (QMK board, no module) marker. With a single capable board there's
+   nothing to choose — auto-discovery is already correct. With several,
+   pick the one you want and QMKonnect writes its VID/PID for you. Use
+   **Rescan** after flashing a board while the dialog is open.
+4. **Advanced ▸** (rarely needed): the raw `vendor_id` / `product_id` hex
+   fields live under a disclosure for manually targeting a board that
+   isn't currently on the bus, or overriding the picker. Leave either
+   blank for auto-discovery.
+5. **Click OK** to save (takes effect immediately — no restart needed).
 
 ### Linux - Configuration File
 
@@ -1058,8 +1081,8 @@ This creates a default configuration file with every device-identifying field co
 # 0 disables. Default 0.
 # poll_interval_ms = 0
 
-# vendor_id  = 0xfeed   # unset: auto-discovery
-# product_id = 0x0000   # unset: auto-discovery
+# vendor_id  = 0x????   # unset: auto-discover any QMK keyboard (recommended)
+# product_id = 0x????   # unset: auto-discover any QMK keyboard (recommended)
 ```
 
 #### Editing the Configuration
@@ -1099,8 +1122,10 @@ Finding your keyboard's IDs is **optional** — you only need them to disambigua
 If you have your QMK configuration, look for these values in your `config.h`:
 
 ```c
-#define VENDOR_ID    0xFEED
-#define PRODUCT_ID   0x0000
+// In your QMK config.h — your board's USB IDs live here (the Settings
+// picker / `qmkonnect --list-devices` will show the real values):
+#define VENDOR_ID    0x????   // your board's USB vendor ID
+#define PRODUCT_ID   0x????   // your board's USB product ID
 ```
 
 ### Method 2: System Tools
@@ -1169,8 +1194,8 @@ This is the **desktop-side** default — no IDs are set, so QMKonnect
 auto-discovers any single QMK keyboard. (Your firmware still needs qmk_notifier
 built in — see [QMK Integration]({{ site.baseurl }}/qmk-integration).)
 ```toml
-# vendor_id  = 0xfeed   # unset: auto-discovery
-# product_id = 0x0000   # unset: auto-discovery
+# vendor_id  = 0x????   # unset: auto-discover any QMK keyboard (recommended)
+# product_id = 0x????   # unset: auto-discover any QMK keyboard (recommended)
 ```
 
 ### Disambiguate multiple keyboards (Linux)
@@ -1194,8 +1219,8 @@ All keys are optional. With your firmware already running qmk_notifier, QMKonnec
 
 | Key | Default | Description |
 | --- | --- | --- |
-| `vendor_id` | unset (any) | USB vendor ID (hex). Set only to disambiguate among multiple QMK keyboards. |
-| `product_id` | unset (any) | USB product ID (hex). Set only to disambiguate among multiple QMK keyboards. |
+| `vendor_id` | unset (any) | USB vendor ID (hex). **Advanced override** — the discovered-device picker writes this for you; set manually only to disambiguate among multiple QMK keyboards. |
+| `product_id` | unset (any) | USB product ID (hex). **Advanced override** — set manually only to disambiguate among multiple QMK keyboards. |
 | `usage_page` | `0xff60` | HID usage page. Set only if your firmware overrode `RAW_USAGE_PAGE`. |
 | `usage` | `0x61` | HID usage. Set only if your firmware overrode `RAW_USAGE_ID`. |
 | `debounce_ms` | `50` | Window (ms) for coalescing rapid window-change bursts before sending to the keyboard. `0` disables debouncing. |
@@ -1208,7 +1233,7 @@ All keys are optional. With your firmware already running qmk_notifier, QMKonnec
 | `-c`, `--config` | Create a default (commented-out) `config.toml` **and** a commented `rules.toml` template (no-op if either exists). |
 | `-r`, `--reload` | Re-read the config and write the matching udev rule (Linux; requires root). |
 | `-l`, `--list` | List the platforms supported by this build. |
-| `--list-devices` | List connected HID devices (VID/PID discovery). |
+| `--list-devices` | List connected HID devices, each with a `kind` column showing its qmk_notifier capability (`qmk_notifier` / `qmk-only` / `-`). VID/PID discovery. |
 | `--list-callbacks` | Handshake the connected keyboard and print its callback name→id table (sorted by id). With legacy firmware prints a string-only-mode notice; with no board prints a no-device notice (always exits 0). |
 | `--validate-rules` [`--rules-path <path>`] | Parse `rules.toml` and report schema/callback-name errors. A parse/schema error (or a `--rules-path` that doesn't exist) exits non-zero; unknown callback names are warnings (exit 0); a missing `rules.toml` is informational (exit 0). Use `--rules-path` to validate a file outside the default location. |
 | `--rules-path <path>` | Override the `rules.toml` location (used with `--validate-rules`). |
@@ -1633,10 +1658,20 @@ The behavior is entirely customized in your QMK firmware - QMKonnect just provid
 
 ### Verify Keyboard Connection
 
-If your layers aren't switching as expected:
-1. Check that QMKonnect shows as "connected" in the system tray/menu bar
-2. Verify your QMK firmware is properly configured with the qmk_notifier module
-3. Test by switching between different applications
+If your layers aren't switching as expected, read the tray/menu-bar icon —
+it's three-state:
+
+- **● Device Connected** — a qmk_notifier-capable board is present (you're set).
+- **⚠ QMK board found — no qmk_notifier module (flash it)** — a QMK board is
+  attached but isn't running qmk_notifier; flash it (see the
+  [QMK Integration Guide]({{ site.baseurl }}/qmk-integration)). This is the
+  most common cause of "running but nothing happens."
+- **○ No Device Connected** — no QMK Raw-HID board detected.
+
+Then:
+
+1. Verify your QMK firmware is properly configured with the qmk_notifier module
+2. Test by switching between different applications
 
 For detailed troubleshooting, see the [troubleshooting guide]({{ site.baseurl }}/troubleshooting).
 
@@ -2143,6 +2178,14 @@ systemctl --user status qmkonnect
 
 **Symptoms**: QMKonnect runs but doesn't communicate with keyboard, layers don't switch
 
+> **Read the tray/menu-bar status first — it's three-state.** **● Device
+> Connected** means a qmk_notifier-capable board is present. **⚠ QMK board
+> found — no qmk_notifier module (flash it)** means a QMK board is attached
+> but isn't running qmk_notifier — **flash qmk_notifier** (see
+> [QMK Integration]({{ site.baseurl }}/qmk-integration)); this is the most
+> common cause of "detected but nothing happens." **○ No Device
+> Connected** means no QMK Raw-HID board was found at all.
+
 **Quick Diagnosis**:
 ```bash
 # Linux - test keyboard connection
@@ -2168,7 +2211,10 @@ system_profiler SPUSBDataType | grep -A 10 -B 10 -i keyboard
 **Solutions**:
 
 1. **Verify keyboard configuration**:
-   - Check vendor_id and product_id in config
+   - Use the **Settings → discovered-device picker** to confirm which board
+     QMKonnect sees (each row shows ✓ qmk_notifier-capable or ✗ QMK board,
+     no module); set `vendor_id`/`product_id` manually only to disambiguate
+     among multiple boards.
    - Ensure Raw HID is enabled in QMK firmware
    - Confirm qmk_notifier module is included
 
@@ -2472,13 +2518,19 @@ See the [installation guide]({{ site.baseurl }}/installation/#macos) for the ful
 
 ### Wrong Keyboard IDs
 
+> You rarely need to find IDs by hand — the **Settings → discovered-device
+> picker** lists connected boards and writes the IDs for you, and
+> `qmkonnect --list-devices` prints every board's VID:PID and qmk_notifier
+> capability (`kind` column). The methods below are only for the rare
+> manual case.
+
 **Find correct IDs**:
 
 #### Using QMK Configuration
 ```c
-// Check your QMK config.h
-#define VENDOR_ID    0xFEED
-#define PRODUCT_ID   0x0000
+// Check your QMK config.h — your board's USB IDs live here:
+#define VENDOR_ID    0x????   // your board's USB vendor ID
+#define PRODUCT_ID   0x????   // your board's USB product ID
 ```
 
 #### Using System Tools

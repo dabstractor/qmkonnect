@@ -112,10 +112,20 @@ The behavior is entirely customized in your QMK firmware - QMKonnect just provid
 
 ### Verify Keyboard Connection
 
-If your layers aren't switching as expected:
-1. Check that QMKonnect shows as "connected" in the system tray/menu bar
-2. Verify your QMK firmware is properly configured with the qmk_notifier module
-3. Test by switching between different applications
+If your layers aren't switching as expected, read the tray/menu-bar icon —
+it's three-state:
+
+- **● Device Connected** — a qmk_notifier-capable board is present (you're set).
+- **⚠ QMK board found — no qmk_notifier module (flash it)** — a QMK board is
+  attached but isn't running qmk_notifier; flash it (see the
+  [QMK Integration Guide]({{ site.baseurl }}/qmk-integration)). This is the
+  most common cause of "running but nothing happens."
+- **○ No Device Connected** — no QMK Raw-HID board detected.
+
+Then:
+
+1. Verify your QMK firmware is properly configured with the qmk_notifier module
+2. Test by switching between different applications
 
 For detailed troubleshooting, see the [troubleshooting guide]({{ site.baseurl }}/troubleshooting).
 
