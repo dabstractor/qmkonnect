@@ -568,13 +568,13 @@ pub fn list_foreground_windows() -> Vec<(String, String)> {
     let mut rows: Vec<(String, String)> = clients
         .iter()
         .filter(|c| c.mapped)
-        .map(|c| (c.class.clone(), c.title.clone()))
+        .map(|c| (c.initial_class.clone(), c.title.clone()))
         .collect();
 
     // Move the active window to the front so callers taking `.next()` report
     // the focused window (parity with the macOS/Windows "active window" notion).
     if let Ok(Some(active)) = Client::get_active() {
-        let key = (active.class.clone(), active.title.clone());
+        let key = (active.initial_class.clone(), active.title.clone());
         if let Some(pos) = rows.iter().position(|r| *r == key) {
             rows.swap(0, pos);
         }
