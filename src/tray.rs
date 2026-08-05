@@ -50,9 +50,53 @@ enum UserEvent {
 
 // Shared result slot for the Windows settings dialog, replacing the former
 // Arc::into_raw + mem::forget leak (#9).
+//
+// The discovered-device picker (spec/DEVICE_DISCOVERY.md §5 / spec/UI.md §2.0)
+// made this a struct: `chosen` is the listbox selection (a concrete `(vid,pid)`
+// from `ClassifiedDevice`), `manual` is the typed hex pair from the Advanced
+// fields (each field `None` ⇒ auto-discovery). The save path applies `chosen`
+// first, else `manual`, else leaves the open-time config's VID/PID as-is.
 #[cfg(target_os = "windows")]
-static DIALOG_RESULT: std::sync::Mutex<Option<(Option<u16>, Option<u16>)>> =
-    std::sync::Mutex::new(None);
+#[derive(Clone, Default)]
+struct DialogResult {
+    chosen: Option<(u16, u16)>,
+    manual: Option<(Option<u16>, Option<u16>)>,
+}
+
+#[cfg(target_os = "windows")]
+static DIALOG_RESULT: std::sync::Mutex<Option<DialogResult>> = std::sync::Mutex::new(None);
+
+// The LISTBOX row store for the discovered-device picker (spec/DEVICE_DISCOVERY.md
+// §5). Mirrors `WINDOW_INFO_ROWS` below (the Win32 dialog proc is a free
+// `extern "system" fn` with no per-call user data, so a static is the only way
+// to carry the index→device mapping from `populate_device_picker` to the OK
+// arm). Populated on initial open + [Rescan]; read by the OK arm (1003) to map
+// a selected listbox index → `(vendor_id, product_id)`. Only one settings dialog
+// is open at a time, so a single shared slot is sufficient.
+#[cfg(target_os = "windows")]
+static PICKER_DEVICES: std::sync::Mutex<Vec<crate::core::notifier::ClassifiedDevice>> =
+    std::sync::Mutex::new(Vec::new());
+
+// The dialog-OPEN config's vid/pid, captured before the controls are created so
+// the [Rescan] arm (`settings_dialog_proc`) can re-evaluate the three picker
+// cases (spec/DEVICE_DISCOVERY.md §5.1) without re-reading the config file —
+// the user is mid-edit, so the live edit fields are NOT authoritative here.
+#[cfg(target_os = "windows")]
+static DIALOG_OPEN_VIDPID: std::sync::Mutex<(Option<u16>, Option<u16>)> =
+    std::sync::Mutex::new((None, None));
+
+// Control IDs for the discovered-device picker controls. The existing settings
+// dialog uses 1001-1004 (VID EDIT, PID EDIT, OK, Cancel) and the window-info
+// dialog uses 4001-4013 / 5000+ / 6000+ (see the comment block near
+// `show_window_info_dialog`), so these new IDs sit safely between 1004 and 4001.
+#[cfg(target_os = "windows")]
+const IDC_DEVICE_LIST: i32 = 1010; // LISTBOX (the picker)
+#[cfg(target_os = "windows")]
+const IDC_RESCAN: i32 = 1011; // [Rescan] BUTTON
+#[cfg(target_os = "windows")]
+const IDC_ADVANCED_GROUP: i32 = 1012; // BS_GROUPBOX (visual frame; NEVER in WM_COMMAND)
+#[cfg(target_os = "windows")]
+const IDC_HEADER: i32 = 1013; // WC_STATICW (the "Detected:" / "No QMK..." header line)
 
 /// Format an optional ID for display: its 4-digit hex, or "auto" when unset.
 /// macOS-only: only the macOS settings dialog renders IDs into its message
@@ -776,6 +820,19 @@ fn handle_settings_click() {
 }
 
 #[cfg(target_os = "windows")]
+/// Render the Windows native Settings dialog (`QMKSettingsDialog` window class,
+/// `WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU`, control IDs 1001-1013 — see
+/// `spec/UI.md` §2.1). The primary surface is a live LISTBOX of discovered
+/// devices built from `classify_devices` (`spec/DEVICE_DISCOVERY.md` §5);
+/// the legacy VID/PID hex `EDIT` controls are relocated under an "Advanced /
+/// manual override" `BS_GROUPBOX` disclosure. Selecting a listbox row writes
+/// that board's `vid`/`pid` to `config.toml` via `render_config_body`; a
+/// [Rescan] button clears the classification cache + re-classifies. The
+/// zero-config case (one capable board, no VID/PID set) hides the picker and
+/// shows a static `Detected: <name>` line. The dialog proc stores its result
+/// in `DIALOG_RESULT`; this function reads it back after the message loop and
+/// applies `chosen` first, else `manual`, else leaves the open-time VID/PID
+/// (`spec/UI.md` §2.0).
 fn show_settings_dialog(config_path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
     use std::ptr;
     use windows::Win32::Foundation::HWND;
@@ -824,8 +881,8 @@ fn show_settings_dialog(config_path: &std::path::Path) -> Result<(), Box<dyn std
             windows::Win32::UI::WindowsAndMessaging::SM_CYSCREEN,
         );
 
-        let dialog_width = 400;
-        let dialog_height = 200;
+        let dialog_width = 420;
+        let dialog_height = 380;
         let x = (screen_width - dialog_width) / 2;
         let y = (screen_height - dialog_height) / 2;
 
@@ -848,6 +905,12 @@ fn show_settings_dialog(config_path: &std::path::Path) -> Result<(), Box<dyn std
         if hwnd.0 == 0 {
             return Err("Failed to create settings dialog window".into());
         }
+
+        // Capture the dialog-OPEN vid/pid so the [Rescan] arm can re-evaluate
+        // the three picker cases without re-reading the config file — the user
+        // is mid-edit, so the live edit fields are NOT authoritative.
+        *DIALOG_OPEN_VIDPID.lock().unwrap() =
+            (current_config.vendor_id, current_config.product_id);
 
         // Create controls
         create_dialog_controls(hwnd, h_instance.into(), &current_config)?;
@@ -891,15 +954,27 @@ fn show_settings_dialog(config_path: &std::path::Path) -> Result<(), Box<dyn std
         // Get the result
         let result = DIALOG_RESULT.lock().unwrap().take();
 
-        if let Some((vendor_id, product_id)) = result {
+        if let Some(dr) = result {
             // Save to file, PRESERVING every non-VID/PID field
             // (usage_page/usage/debounce_ms/poll_interval_ms): overlay the
             // dialog's VID/PID onto the config parsed at dialog-open time and
             // serialize the full struct. Previously this rendered a VID/PID-only
             // body and silently reset the user's other fields on every save.
+            //
+            // Apply `chosen` first, else `manual`, else leave the open-time
+            // VID/PID as-is (spec/UI.md §2.0). `chosen` is the listbox pick —
+            // a concrete (u16,u16) from ClassifiedDevice; `manual` is the
+            // typed hex pair (each None ⇒ auto-discovery). When neither is set
+            // the user clicked OK without changing anything, so we keep the
+            // open-time config.
             let mut merged = current_config;
-            merged.vendor_id = vendor_id;
-            merged.product_id = product_id;
+            if let Some((v, p)) = dr.chosen {
+                merged.vendor_id = Some(v);
+                merged.product_id = Some(p);
+            } else if let Some((v, p)) = dr.manual {
+                merged.vendor_id = v;
+                merged.product_id = p;
+            }
             let config_content = crate::core::render_config_body(&merged);
 
             crate::core::atomic_write(config_path, &config_content)?;
@@ -914,27 +989,217 @@ fn show_settings_dialog(config_path: &std::path::Path) -> Result<(), Box<dyn std
 }
 
 #[cfg(target_os = "windows")]
+/// Build one LISTBOX row for a discovered device (`spec/DEVICE_DISCOVERY.md
+/// §5.1 / §3): a ✓/✗ capability glyph, the HID `product_name` (or
+/// `(unnamed)`), the `0xVID:0xPID` pair, and a short status label. The name is
+/// space-padded (`format!("{:<22}", ...)`) instead of `LBS_USETABSTOPS` +
+/// `LB_SETTABSTOPS` — tab stops are in dialog-template units and would need
+/// conversion for this pixel-based dialog, whereas a padded string is robust
+/// for the 2-4 rows the picker shows (research §5).
+fn picker_row_text(d: &crate::core::notifier::ClassifiedDevice) -> String {
+    use crate::core::notifier::DeviceKind;
+    let (glyph, status) = match d.kind {
+        DeviceKind::Capable { .. } => ("\u{2713}", "qmk_notifier"), // ✓
+        DeviceKind::NotQmkNotifier => ("\u{2717}", "QMK board, no module"), // ✗
+    };
+    let name = d.product_name.as_deref().unwrap_or("(unnamed)");
+    format!(
+        "{}  {:<22} 0x{:04X}:0x{:04X}  {}",
+        glyph, name, d.vendor_id, d.product_id, status
+    )
+}
+
+#[cfg(target_os = "windows")]
+/// Populate the discovered-device LISTBOX + header for the three cases in
+/// `spec/DEVICE_DISCOVERY.md` §5.1, and toggle the LISTBOX + [Rescan]
+/// visibility accordingly. Reused by the initial dialog open (from
+/// `create_dialog_controls`) and by the [Rescan] arm of `settings_dialog_proc`,
+/// so both paths produce identical rendering. `open_vid`/`open_pid` are the
+/// dialog-OPEN config's vid/pid (from `DIALOG_OPEN_VIDPID`), NOT the live edit
+/// fields — the user is mid-edit, so the clean-auto case is judged against the
+/// open-time config.
+///
+/// The three cases:
+/// 1. **empty** — no Tier-1 devices: hide the picker, header "No QMK keyboards
+///    detected...".
+/// 2. **clean-auto** — exactly one `Capable` board AND `open_vid`/`open_pid`
+///    are both `None` (the zero-config promise): hide the picker, header
+///    `Detected: <name>`.
+/// 3. **picker** — otherwise (≥2 boards, or 1 non-capable board, or VID/PID
+///    already set): show the LISTBOX with one row per device.
+fn populate_device_picker(
+    hwnd: windows::Win32::Foundation::HWND,
+    devices: &[crate::core::notifier::ClassifiedDevice],
+    open_vid: Option<u16>,
+    open_pid: Option<u16>,
+) {
+    use crate::core::notifier::DeviceKind;
+    use windows::Win32::Foundation::{LPARAM, WPARAM};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetDlgItem, SendMessageW, SetDlgItemTextW, ShowWindow, LB_ADDSTRING, LB_RESETCONTENT,
+        SW_HIDE, SW_SHOW,
+    };
+
+    // Mirror the device list into the static so the OK arm can map a selected
+    // listbox index → (vendor_id, product_id) (PICKER_DEVICES mirrors
+    // WINDOW_INFO_ROWS — the proc has no per-call user data).
+    *PICKER_DEVICES.lock().unwrap() = devices.to_vec();
+
+    unsafe {
+        let lb = GetDlgItem(hwnd, IDC_DEVICE_LIST);
+        // LB_RESETCONTENT clears any prior rows (initial open is empty anyway,
+        // but [Rescan] reuses this path).
+        let _ = SendMessageW(lb, LB_RESETCONTENT, WPARAM(0), LPARAM(0));
+        for d in devices {
+            // Runtime-built text ⇒ to_wide_string (w! only works on literals).
+            let text = to_wide_string(&picker_row_text(d));
+            let _ = SendMessageW(lb, LB_ADDSTRING, WPARAM(0), LPARAM(text.as_ptr() as isize));
+        }
+
+        // Resolve the three picker cases (spec/DEVICE_DISCOVERY.md §5.1).
+        let clean_auto = devices.len() == 1
+            && matches!(devices[0].kind, DeviceKind::Capable { .. })
+            && open_vid.is_none()
+            && open_pid.is_none();
+        let (header, show_picker) = if devices.is_empty() {
+            (
+                "No QMK keyboards detected. Enter IDs manually below.".to_string(),
+                false,
+            )
+        } else if clean_auto {
+            // The zero-config case: hide the picker, show "Detected: <name>".
+            let name = devices[0].product_name.as_deref().unwrap_or("(unnamed)");
+            (format!("Detected: {}", name), false)
+        } else {
+            ("Detected keyboard(s) — choose one:".to_string(), true)
+        };
+
+        // Always set the header (it always exists).
+        let header_w = to_wide_string(&header);
+        let _ = SetDlgItemTextW(hwnd, IDC_HEADER, windows::core::PCWSTR(header_w.as_ptr()));
+
+        // Toggle the LISTBOX + [Rescan] together (both are irrelevant when the
+        // picker is hidden).
+        let cmd = if show_picker { SW_SHOW } else { SW_HIDE };
+        let _ = ShowWindow(lb, cmd);
+        let rescan = GetDlgItem(hwnd, IDC_RESCAN);
+        let _ = ShowWindow(rescan, cmd);
+    }
+}
+
+#[cfg(target_os = "windows")]
+/// Create every control in the Windows Settings dialog (`spec/UI.md` §2.1 +
+/// `spec/DEVICE_DISCOVERY.md` §5.3): a header static, the discovered-device
+/// LISTBOX (the picker), a [Rescan] button, and an "Advanced / manual
+/// override" `BS_GROUPBOX` that visually contains the relocated VID/PID labels
+/// + `EDIT`s, then the OK + Cancel buttons. The group box is created BEFORE
+/// its children so the children are higher in z-order and paint on top; it is
+/// purely visual and never appears in `WM_COMMAND`. After creation the VID/PID
+/// fields are prefilled and `populate_device_picker` classifies + fills the
+/// LISTBOX per the three §5.1 cases.
 fn create_dialog_controls(
     hwnd: windows::Win32::Foundation::HWND,
     h_instance: windows::Win32::Foundation::HINSTANCE,
     config: &crate::core::Config,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use std::ptr;
-    use windows::Win32::UI::Controls::{WC_BUTTONW, WC_EDITW, WC_STATICW};
+    use windows::Win32::UI::Controls::{WC_BUTTONW, WC_EDITW, WC_LISTBOX, WC_STATICW};
     use windows::Win32::UI::WindowsAndMessaging::{
-        CreateWindowExW, SetDlgItemTextW, WS_CHILD, WS_TABSTOP, WS_VISIBLE,
+        BS_GROUPBOX, CreateWindowExW, HMENU, LBS_HASSTRINGS, LBS_NOINTEGRALHEIGHT,
+        LBS_NOTIFY, SetDlgItemTextW, WINDOW_STYLE, WS_CHILD, WS_EX_CLIENTEDGE,
+        WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
     };
 
     unsafe {
-        // Vendor ID label
+        // 1. Header static (IDC_HEADER=1013): the "Detected:" / "No QMK..."
+        //    line; text is set by populate_device_picker.
+        CreateWindowExW(
+            windows::Win32::UI::WindowsAndMessaging::WINDOW_EX_STYLE(0),
+            WC_STATICW,
+            windows::core::PCWSTR::null(),
+            WS_CHILD | WS_VISIBLE,
+            16,
+            14,
+            388,
+            18,
+            hwnd,
+            None,
+            h_instance,
+            Some(ptr::null()),
+        );
+
+        // 2. LISTBOX (IDC_DEVICE_LIST=1010): the discovered-device picker.
+        //    LBS_NOTIFY/LBS_HASSTRINGS/LBS_NOINTEGRALHEIGHT are raw i32 and do
+        //    NOT impl BitOr<WINDOW_STYLE>, so the codebase cast pattern
+        //    (tray.rs set_font) is: cast each as u32, OR, wrap in WINDOW_STYLE.
+        CreateWindowExW(
+            WS_EX_CLIENTEDGE,
+            WC_LISTBOX,
+            windows::core::PCWSTR::null(),
+            WINDOW_STYLE(
+                WS_CHILD.0
+                    | WS_VISIBLE.0
+                    | WS_TABSTOP.0
+                    | WS_VSCROLL.0
+                    | LBS_NOTIFY as u32
+                    | LBS_HASSTRINGS as u32
+                    | LBS_NOINTEGRALHEIGHT as u32,
+            ),
+            16,
+            36,
+            388,
+            110,
+            hwnd,
+            HMENU(IDC_DEVICE_LIST as isize),
+            h_instance,
+            Some(ptr::null()),
+        );
+
+        // 3. [Rescan] button (IDC_RESCAN=1011): clears the classification
+        //    cache + re-classifies + repopulates the LISTBOX.
+        CreateWindowExW(
+            windows::Win32::UI::WindowsAndMessaging::WINDOW_EX_STYLE(0),
+            WC_BUTTONW,
+            windows::core::w!("Rescan"),
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+            314,
+            152,
+            90,
+            26,
+            hwnd,
+            HMENU(IDC_RESCAN as isize),
+            h_instance,
+            Some(ptr::null()),
+        );
+
+        // 4. Advanced group box (IDC_ADVANCED_GROUP=1012): purely visual frame
+        //    (BS_GROUPBOX never sends BN_CLICKED and is NEVER branched on in
+        //    WM_COMMAND). Created BEFORE its child labels/edits so those
+        //    children are higher in z-order and paint on top of the frame.
+        CreateWindowExW(
+            windows::Win32::UI::WindowsAndMessaging::WINDOW_EX_STYLE(0),
+            WC_BUTTONW,
+            windows::core::w!("Advanced / manual override"),
+            WINDOW_STYLE(WS_CHILD.0 | WS_VISIBLE.0 | BS_GROUPBOX as u32),
+            14,
+            188,
+            392,
+            120,
+            hwnd,
+            HMENU(IDC_ADVANCED_GROUP as isize),
+            h_instance,
+            Some(ptr::null()),
+        );
+
+        // 5. VID label (no id) — inside the group box.
         CreateWindowExW(
             windows::Win32::UI::WindowsAndMessaging::WINDOW_EX_STYLE(0),
             WC_STATICW,
             windows::core::w!("Vendor ID (hex):"),
             WS_CHILD | WS_VISIBLE,
-            20,
             30,
-            120,
+            218,
+            130,
             20,
             hwnd,
             None,
@@ -942,31 +1207,31 @@ fn create_dialog_controls(
             Some(ptr::null()),
         );
 
-        // Vendor ID text box
+        // 6. VID text box (1001) — SAME ID, relocated under the group box.
         CreateWindowExW(
-            windows::Win32::UI::WindowsAndMessaging::WS_EX_CLIENTEDGE,
+            WS_EX_CLIENTEDGE,
             WC_EDITW,
             windows::core::PCWSTR::null(),
             WS_CHILD | WS_VISIBLE | WS_TABSTOP,
-            150,
-            28,
-            100,
+            170,
+            216,
+            110,
             24,
             hwnd,
-            windows::Win32::UI::WindowsAndMessaging::HMENU(1001),
+            HMENU(1001),
             h_instance,
             Some(ptr::null()),
         );
 
-        // Product ID label
+        // 7. PID label (no id) — inside the group box.
         CreateWindowExW(
             windows::Win32::UI::WindowsAndMessaging::WINDOW_EX_STYLE(0),
             WC_STATICW,
             windows::core::w!("Product ID (hex):"),
             WS_CHILD | WS_VISIBLE,
-            20,
-            70,
-            120,
+            30,
+            250,
+            130,
             20,
             hwnd,
             None,
@@ -974,50 +1239,50 @@ fn create_dialog_controls(
             Some(ptr::null()),
         );
 
-        // Product ID text box
+        // 8. PID text box (1002) — SAME ID, relocated under the group box.
         CreateWindowExW(
-            windows::Win32::UI::WindowsAndMessaging::WS_EX_CLIENTEDGE,
+            WS_EX_CLIENTEDGE,
             WC_EDITW,
             windows::core::PCWSTR::null(),
             WS_CHILD | WS_VISIBLE | WS_TABSTOP,
-            150,
-            68,
-            100,
+            170,
+            248,
+            110,
             24,
             hwnd,
-            windows::Win32::UI::WindowsAndMessaging::HMENU(1002),
+            HMENU(1002),
             h_instance,
             Some(ptr::null()),
         );
 
-        // OK button
+        // 9. OK button (1003) — SAME ID, relocated.
         CreateWindowExW(
             windows::Win32::UI::WindowsAndMessaging::WINDOW_EX_STYLE(0),
             WC_BUTTONW,
             windows::core::w!("OK"),
             WS_CHILD | WS_VISIBLE | WS_TABSTOP,
-            150,
-            110,
-            75,
+            230,
+            324,
+            80,
             30,
             hwnd,
-            windows::Win32::UI::WindowsAndMessaging::HMENU(1003),
+            HMENU(1003),
             h_instance,
             Some(ptr::null()),
         );
 
-        // Cancel button
+        // 10. Cancel button (1004) — SAME ID, relocated.
         CreateWindowExW(
             windows::Win32::UI::WindowsAndMessaging::WINDOW_EX_STYLE(0),
             WC_BUTTONW,
             windows::core::w!("Cancel"),
             WS_CHILD | WS_VISIBLE | WS_TABSTOP,
-            240,
-            110,
-            75,
+            318,
+            324,
+            80,
             30,
             hwnd,
-            windows::Win32::UI::WindowsAndMessaging::HMENU(1004),
+            HMENU(1004),
             h_instance,
             Some(ptr::null()),
         );
@@ -1039,6 +1304,12 @@ fn create_dialog_controls(
 
         let _ = SetDlgItemTextW(hwnd, 1001, windows::core::PCWSTR(vendor_text.as_ptr()));
         let _ = SetDlgItemTextW(hwnd, 1002, windows::core::PCWSTR(product_text.as_ptr()));
+
+        // Classify discovered devices + populate the LISTBOX / header per the
+        // three §5.1 cases. (classify_devices runs HID I/O; the cache is warm
+        // from the handshake so usually <50ms — see the [Rescan] note.)
+        let devices = crate::core::notifier::classify_devices(true);
+        populate_device_picker(hwnd, &devices, config.vendor_id, config.product_id);
     }
 
     Ok(())
@@ -1052,8 +1323,9 @@ unsafe extern "system" fn settings_dialog_proc(
     lparam: windows::Win32::Foundation::LPARAM,
 ) -> windows::Win32::Foundation::LRESULT {
     use windows::Win32::UI::WindowsAndMessaging::{
-        DefWindowProcW, DestroyWindow, GetDlgItemTextW, MessageBoxW, PostQuitMessage, MB_ICONERROR,
-        MB_OK, WM_CLOSE, WM_COMMAND, WM_DESTROY,
+        DefWindowProcW, DestroyWindow, GetDlgItem, GetDlgItemTextW, LB_ERR, LB_GETCURSEL,
+        MessageBoxW, PostQuitMessage, SendMessageW, MB_ICONERROR, MB_OK, WM_CLOSE, WM_COMMAND,
+        WM_DESTROY,
     };
 
     match msg {
@@ -1061,7 +1333,34 @@ unsafe extern "system" fn settings_dialog_proc(
             let control_id = (wparam.0 & 0xFFFF) as u32;
             match control_id {
                 1003 => {
-                    // OK button
+                    // OK button — read the listbox selection first (chosen),
+                    // then the Advanced hex fields (manual). chosen is a
+                    // concrete (vid,pid) from ClassifiedDevice; manual is the
+                    // typed pair (each None ⇒ auto). The save path applies
+                    // chosen first, else manual (spec/UI.md §2.0).
+                    let chosen = {
+                        let lb = GetDlgItem(hwnd, IDC_DEVICE_LIST);
+                        // LB_GETCURSEL returns the 0-based index OR LB_ERR (-1)
+                        // when nothing is selected. Cast .0 as i32 and check
+                        // `!= LB_ERR && >= 0` — index 0 is a VALID selection.
+                        let sel = SendMessageW(
+                            lb,
+                            LB_GETCURSEL,
+                            windows::Win32::Foundation::WPARAM(0),
+                            windows::Win32::Foundation::LPARAM(0),
+                        )
+                        .0 as i32;
+                        if sel != LB_ERR && sel >= 0 {
+                            PICKER_DEVICES
+                                .lock()
+                                .unwrap()
+                                .get(sel as usize)
+                                .map(|d| (d.vendor_id, d.product_id))
+                        } else {
+                            None
+                        }
+                    };
+
                     let mut vendor_buffer = [0u16; 256];
                     let mut product_buffer = [0u16; 256];
 
@@ -1078,7 +1377,10 @@ unsafe extern "system" fn settings_dialog_proc(
                     match (parse_id_field(&vendor_str), parse_id_field(&product_str)) {
                         (Ok(vendor_id), Ok(product_id)) => {
                             // Store result via the shared static slot (#9).
-                            *DIALOG_RESULT.lock().unwrap() = Some((vendor_id, product_id));
+                            *DIALOG_RESULT.lock().unwrap() = Some(DialogResult {
+                                chosen,
+                                manual: Some((vendor_id, product_id)),
+                            });
                             let _ = DestroyWindow(hwnd);
                         }
                         (Err(e), _) | (_, Err(e)) => {
@@ -1091,6 +1393,22 @@ unsafe extern "system" fn settings_dialog_proc(
                             );
                         }
                     }
+                }
+                id if id == IDC_RESCAN as u32 => {
+                    // [Rescan]: clear the classification cache + re-classify +
+                    // repopulate the LISTBOX. NOTE (G7): runs HID I/O inline on
+                    // the tray thread; the cache is warm from the handshake so
+                    // usually <50ms, but a cold classify is ~N×(read timeout).
+                    // Acceptable for v1 (the spec does not require a worker); do
+                    // NOT spawn a thread — the listbox must repopulate
+                    // synchronously before this proc returns.
+                    crate::core::notifier::classification_cache_clear();
+                    let devices = crate::core::notifier::classify_devices(true);
+                    // Use the dialog-OPEN vid/pid (NOT the live edit fields):
+                    // the user is mid-edit, so the clean-auto case must be
+                    // judged against the open-time config.
+                    let (vid, pid) = *DIALOG_OPEN_VIDPID.lock().unwrap();
+                    populate_device_picker(hwnd, &devices, vid, pid);
                 }
                 1004 => {
                     // Cancel button
@@ -2427,5 +2745,50 @@ mod tests {
             device_status_text(DeviceStatus::Disconnected),
             "\u{25CB}  No Device Connected"
         );
+    }
+
+    // The pure LISTBOX row builder for the discovered-device picker
+    // (`spec/DEVICE_DISCOVERY.md` §5.1 / §3). The Win32 dialog itself spawns a
+    // real message loop and is NOT unit-testable; only this string builder is.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn test_picker_row_text_glyphs() {
+        use crate::core::notifier::{ClassifiedDevice, DeviceKind};
+
+        let capable = ClassifiedDevice {
+            path: String::new(),
+            vendor_id: 0xFEED,
+            product_id: 0x0000,
+            product_name: Some("Dactyl".into()),
+            usage_page: 0xFF60,
+            usage: 0x61,
+            kind: DeviceKind::Capable {
+                proto_ver: 2,
+                feature_flags: 1,
+                callback_count: 0,
+                board_rules_present: false,
+            },
+        };
+        let notqmk = ClassifiedDevice {
+            kind: DeviceKind::NotQmkNotifier,
+            vendor_id: 0x3434,
+            product_id: 0x0123,
+            product_name: Some("Keychron".into()),
+            ..capable.clone()
+        };
+
+        let cap_row = picker_row_text(&capable);
+        let nq_row = picker_row_text(&notqmk);
+
+        assert!(
+            cap_row.starts_with('\u{2713}'),
+            "capable row starts with ✓: {cap_row}"
+        );
+        assert!(cap_row.contains("0xFEED:0x0000") && cap_row.contains("qmk_notifier"));
+        assert!(
+            nq_row.starts_with('\u{2717}'),
+            "notqmk row starts with ✗: {nq_row}"
+        );
+        assert!(nq_row.contains("0x3434:0x0123") && nq_row.contains("QMK board, no module"));
     }
 }

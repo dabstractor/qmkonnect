@@ -228,7 +228,7 @@
                   "type": "Subtask",
                   "id": "P3.M2.T1.S1",
                   "title": "Windows Win32 picker (LISTBOX) + Advanced group box in src/tray.rs",
-                  "status": "Researching",
+                  "status": "Complete",
                   "story_points": 2,
                   "dependencies": [
                     "P3.M1.T1.S2"
@@ -249,7 +249,7 @@
                   "type": "Subtask",
                   "id": "P3.M2.T1.S2",
                   "title": "macOS NSAlert picker (NSStackView of rows) + Advanced toggle in src/tray.rs",
-                  "status": "Planned",
+                  "status": "Researching",
                   "story_points": 2,
                   "dependencies": [
                     "P3.M1.T1.S2"
