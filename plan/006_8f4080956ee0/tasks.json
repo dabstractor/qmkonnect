@@ -4,7 +4,7 @@
       "type": "Phase",
       "id": "P1",
       "title": "Verify the capability-keyed lifecycle delta is complete",
-      "status": "Researching",
+      "status": "Planned",
       "description": "This delta (session 6) is a specification clarification of the capability-keyed discovery/status lifecycle that was ALREADY SHIPPED during session 5 in commit d240b27 ('Key handshake lifecycle on capable-board presence, not Tier-1'). There is no new feature work. The phase's sole objective is to verify the already-shipped implementation satisfies the v6 spec, the quality gates are green, and there is zero spec/code drift. If verification surfaces an unexpected gap, fix it in place; otherwise the delta closes as verified-complete.",
       "milestones": [
         {
@@ -25,9 +25,10 @@
                   "type": "Subtask",
                   "id": "P1.M1.T1.S1",
                   "title": "Run project quality gates and confirm the PresenceTracker/warm-feed/classify-mixed tests pass",
-                  "status": "Planned",
+                  "status": "Complete",
                   "story_points": 1,
                   "dependencies": [],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See plan/006_8f4080956ee0/architecture/verification_findings.md §4 and §6. The project's validate.sh at plan/005_8b95ea464bd9/validate.sh defines 7 phases. The core dev-loop gate per AGENTS.md is single-threaded tests (--test-threads=1) because of shared global debouncer state. The relevant tests live in src/core/notifier.rs and MUST be run single-threaded.\n2. INPUT: No code input needed — this is a verification subtask that runs the existing test suite and build gates against the already-shipped code (commit d240b27).\n3. LOGIC: Run in sequence (each must pass before the next matters):\n   (a) cargo fmt --all --check\n   (b) cargo clippy --all-targets -- -D warnings\n   (c) cargo build --release\n   (d) cargo build --release --no-default-features  (trayless build, the documented caveat path)\n   (e) cargo test --bin qmkonnect -- --test-threads=1\n   Report the total test count from (e). Then explicitly confirm these specific tests PASS (grep the test output for their names):\n     - test_presence_tick_capable_unplug_with_non_capable_remaining_is_loss (notifier.rs:3012)\n     - test_presence_tick_capable_replug_different_board_is_gain (notifier.rs:3026)\n     - test_presence_tick_stable_bus_no_reprobe_no_action (notifier.rs:3037)\n     - test_handshake_warm_eligible_single_board_only (notifier.rs:4097)\n     - test_classify_candidates_mixed (notifier.rs:3894)\n4. OUTPUT: A pass/fail report for each gate (a)-(e) plus the explicit confirmation that the 5 named tests passed. If any gate fails, capture the exact error output and flag it as a regression to investigate.\n5. DOCS: none — no user-facing/config/API surface change. This is a test-run subtask.",
                   "prd_selectors": [
                     "h2.32",
                     "h2.33",
@@ -35,16 +36,18 @@
                     "h2.34",
                     "h2.77",
                     "h2.77/h3.122"
-                  ],
-                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See plan/006_8f4080956ee0/architecture/verification_findings.md §4 and §6. The project's validate.sh at plan/005_8b95ea464bd9/validate.sh defines 7 phases. The core dev-loop gate per AGENTS.md is single-threaded tests (--test-threads=1) because of shared global debouncer state. The relevant tests live in src/core/notifier.rs and MUST be run single-threaded.\n2. INPUT: No code input needed — this is a verification subtask that runs the existing test suite and build gates against the already-shipped code (commit d240b27).\n3. LOGIC: Run in sequence (each must pass before the next matters):\n   (a) cargo fmt --all --check\n   (b) cargo clippy --all-targets -- -D warnings\n   (c) cargo build --release\n   (d) cargo build --release --no-default-features  (trayless build, the documented caveat path)\n   (e) cargo test --bin qmkonnect -- --test-threads=1\n   Report the total test count from (e). Then explicitly confirm these specific tests PASS (grep the test output for their names):\n     - test_presence_tick_capable_unplug_with_non_capable_remaining_is_loss (notifier.rs:3012)\n     - test_presence_tick_capable_replug_different_board_is_gain (notifier.rs:3026)\n     - test_presence_tick_stable_bus_no_reprobe_no_action (notifier.rs:3037)\n     - test_handshake_warm_eligible_single_board_only (notifier.rs:4097)\n     - test_classify_candidates_mixed (notifier.rs:3894)\n4. OUTPUT: A pass/fail report for each gate (a)-(e) plus the explicit confirmation that the 5 named tests passed. If any gate fails, capture the exact error output and flag it as a regression to investigate.\n5. DOCS: none — no user-facing/config/API surface change. This is a test-run subtask."
+                  ]
                 },
                 {
                   "type": "Subtask",
                   "id": "P1.M1.T1.S2",
                   "title": "Confirm zero spec drift: the 6 v6 diff hunks have corresponding spec passages",
-                  "status": "Planned",
+                  "status": "Researching",
                   "story_points": 1,
-                  "dependencies": ["P1.M1.T1.S1"],
+                  "dependencies": [
+                    "P1.M1.T1.S1"
+                  ],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See plan/006_8f4080956ee0/architecture/verification_findings.md §3. All 6 diff hunks have been verified present in the spec files during this research phase. This subtask re-confirms that assertion independently.\n2. INPUT: The four spec files: spec/DEVICE_DISCOVERY.md, spec/LINUX.md, spec/HOST_RULES.md. (Note: DEVICE_DISCOVERY.md is touched by hunks #1, #2, #3; LINUX.md by hunks #4, #5; HOST_RULES.md by hunk #6.)\n3. LOGIC: For EACH of the 6 diff hunks described in the delta PRD §1, assert the corresponding passage exists in the spec file. The 6 hunks to verify:\n   Hunk #1 (DEVICE_DISCOVERY.md §2.2): phrase 'No proto-v2 or pure-VIA board' + proto-v1 caveat block mentioning process_full_message(\"\") deactivation.\n   Hunk #2 (DEVICE_DISCOVERY.md §2.4): NEW section on handshake → cache warm-feed scope, mentioning single-Tier-1-board guard.\n   Hunk #3 (DEVICE_DISCOVERY.md §3): 'capable-keyed' phrasing + 'PresenceTracker' + re-probe only on plug/unplug.\n   Hunk #4 (LINUX.md §6.2): NEW trayless (--no-default-features) build caveat, mentioning BindsTo and Restart=always.\n   Hunk #5 (LINUX.md §7.1): 'PresenceTracker tick' + tray field renamed 'device_status'.\n   Hunk #6 (HOST_RULES.md §13 R6): R6 expanded with proto-v1 exception detail referencing PresenceTracker.\n   Use grep to assert each key phrase is present. Report PASS/FAIL per hunk.\n4. OUTPUT: A 6-row table (Hunk # | Spec file | Key phrase searched | Found Y/N | Line number). Flag any hunk whose passage is missing or diverges from v6 wording.\n5. DOCS: none — this is a read-only spec-drift audit, not a documentation edit.",
                   "prd_selectors": [
                     "h2.32",
                     "h2.33",
@@ -59,8 +62,7 @@
                     "h2.62",
                     "h2.62/h3.100",
                     "h2.62/h3.101"
-                  ],
-                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See plan/006_8f4080956ee0/architecture/verification_findings.md §3. All 6 diff hunks have been verified present in the spec files during this research phase. This subtask re-confirms that assertion independently.\n2. INPUT: The four spec files: spec/DEVICE_DISCOVERY.md, spec/LINUX.md, spec/HOST_RULES.md. (Note: DEVICE_DISCOVERY.md is touched by hunks #1, #2, #3; LINUX.md by hunks #4, #5; HOST_RULES.md by hunk #6.)\n3. LOGIC: For EACH of the 6 diff hunks described in the delta PRD §1, assert the corresponding passage exists in the spec file. The 6 hunks to verify:\n   Hunk #1 (DEVICE_DISCOVERY.md §2.2): phrase 'No proto-v2 or pure-VIA board' + proto-v1 caveat block mentioning process_full_message(\"\") deactivation.\n   Hunk #2 (DEVICE_DISCOVERY.md §2.4): NEW section on handshake → cache warm-feed scope, mentioning single-Tier-1-board guard.\n   Hunk #3 (DEVICE_DISCOVERY.md §3): 'capable-keyed' phrasing + 'PresenceTracker' + re-probe only on plug/unplug.\n   Hunk #4 (LINUX.md §6.2): NEW trayless (--no-default-features) build caveat, mentioning BindsTo and Restart=always.\n   Hunk #5 (LINUX.md §7.1): 'PresenceTracker tick' + tray field renamed 'device_status'.\n   Hunk #6 (HOST_RULES.md §13 R6): R6 expanded with proto-v1 exception detail referencing PresenceTracker.\n   Use grep to assert each key phrase is present. Report PASS/FAIL per hunk.\n4. OUTPUT: A 6-row table (Hunk # | Spec file | Key phrase searched | Found Y/N | Line number). Flag any hunk whose passage is missing or diverges from v6 wording.\n5. DOCS: none — this is a read-only spec-drift audit, not a documentation edit."
+                  ]
                 },
                 {
                   "type": "Subtask",
@@ -68,7 +70,10 @@
                   "title": "Confirm documented caveats have backing behavior (read-only code audit)",
                   "status": "Planned",
                   "story_points": 1,
-                  "dependencies": ["P1.M1.T1.S1"],
+                  "dependencies": [
+                    "P1.M1.T1.S1"
+                  ],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See plan/006_8f4080956ee0/architecture/verification_findings.md §1 and §1.5. All four caveats have been verified as having backing behavior during this research phase. This subtask re-confirms independently.\n2. INPUT: The source file src/core/notifier.rs (4107 lines) and src/runners/linux.rs. No external services are involved — this is a static read-only code audit.\n3. LOGIC: Verify each of the four documented caveats by reading the relevant code:\n   (a) Proto-v1 picker caveat — confirm classify_devices (src/core/notifier.rs:1123) does NOT gate on HAS_HANDSHAKED, while perform_handshake_with (:428) DOES (the swap). This asymmetry is the documented proto-v1 exception.\n   (b) Warm-feed scope — confirm warm_cache_from_handshake (:1163) early-returns on !handshake_warm_eligible(candidates.len()), and handshake_warm_eligible (:1141) rejects >=2 boards (returns candidate_count <= 1).\n   (c) Trayless caveat — confirm src/runners/linux.rs:26-32 runs perform_handshake once at startup if is_device_connected(), and that the systemd template (packaging/linux/systemd/qmkonnect.service.template) has BindsTo + Restart=always.\n   (d) Status-poll never pings on a stable bus — confirm PresenceTracker::tick (:1311) only calls classify_devices when paths != self.last_paths (the paths_changed branch), so on a stable bus reprobed is None and no ping occurs.\n   For each, read the actual code lines and report whether the behavior matches. NO code changes expected.\n4. OUTPUT: A 4-row audit report (Caveat | Code location read | Expected behavior | Confirmed Y/N). If any audit item FAILS, flag it explicitly — that would be the only scenario where this delta gains a follow-on fix task. Otherwise the delta closes as verified-complete.\n5. DOCS: none — this is a read-only code audit.",
                   "prd_selectors": [
                     "h2.33",
                     "h2.33/h3.36",
@@ -81,8 +86,7 @@
                     "h2.62",
                     "h2.62/h3.100",
                     "h2.62/h3.101"
-                  ],
-                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See plan/006_8f4080956ee0/architecture/verification_findings.md §1 and §1.5. All four caveats have been verified as having backing behavior during this research phase. This subtask re-confirms independently.\n2. INPUT: The source file src/core/notifier.rs (4107 lines) and src/runners/linux.rs. No external services are involved — this is a static read-only code audit.\n3. LOGIC: Verify each of the four documented caveats by reading the relevant code:\n   (a) Proto-v1 picker caveat — confirm classify_devices (src/core/notifier.rs:1123) does NOT gate on HAS_HANDSHAKED, while perform_handshake_with (:428) DOES (the swap). This asymmetry is the documented proto-v1 exception.\n   (b) Warm-feed scope — confirm warm_cache_from_handshake (:1163) early-returns on !handshake_warm_eligible(candidates.len()), and handshake_warm_eligible (:1141) rejects >=2 boards (returns candidate_count <= 1).\n   (c) Trayless caveat — confirm src/runners/linux.rs:26-32 runs perform_handshake once at startup if is_device_connected(), and that the systemd template (packaging/linux/systemd/qmkonnect.service.template) has BindsTo + Restart=always.\n   (d) Status-poll never pings on a stable bus — confirm PresenceTracker::tick (:1311) only calls classify_devices when paths != self.last_paths (the paths_changed branch), so on a stable bus reprobed is None and no ping occurs.\n   For each, read the actual code lines and report whether the behavior matches. NO code changes expected.\n4. OUTPUT: A 4-row audit report (Caveat | Code location read | Expected behavior | Confirmed Y/N). If any audit item FAILS, flag it explicitly — that would be the only scenario where this delta gains a follow-on fix task. Otherwise the delta closes as verified-complete.\n5. DOCS: none — this is a read-only code audit."
+                  ]
                 }
               ]
             },
@@ -104,6 +108,7 @@
                     "P1.M1.T1.S2",
                     "P1.M1.T1.S3"
                   ],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See plan/006_8f4080956ee0/architecture/verification_findings.md §5. The delta PRD §4 explicitly states no Mode A or Mode B doc changes are needed. This subtask verifies that claim. README.md and docs/ were regenerated in commit 293f565 ('Sync README and usage overview with F13/F14; regenerate llms_full').\n2. INPUT: README.md, docs/llms_full.txt, and any docs/*.md overview files. The delta's scope is the PresenceTracker / warm-feed / capable-keyed lifecycle — an internal correctness mechanism.\n3. LOGIC: Read README.md's device-status / discovery / multi-board sections and docs/llms_full.txt's equivalent passages. Verify they do NOT make claims that contradict the v6 lifecycle semantics (e.g., they should not claim Tier-1-keyed status, should not promise single-ping-per-appearance without the single-board qualifier, etc.). Since this is an internal fix, user-facing docs are expected to already be accurate or silent on these internals. If a contradiction is found, fix it in place; otherwise report 'no drift found — docs already accurate.'\n4. OUTPUT: A one-line verdict: 'VERIFIED: no documentation drift' or a list of specific files/lines requiring updates (if any).\n5. DOCS: [Mode B] This IS the changeset-level documentation sweep. If it finds no drift (expected), it closes as a no-op. If it finds drift, it updates the affected overview doc(s) in place.",
                   "prd_selectors": [
                     "h2.34",
                     "h2.35",
@@ -111,8 +116,7 @@
                     "h2.62",
                     "h2.62/h3.101",
                     "h2.63"
-                  ],
-                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See plan/006_8f4080956ee0/architecture/verification_findings.md §5. The delta PRD §4 explicitly states no Mode A or Mode B doc changes are needed. This subtask verifies that claim. README.md and docs/ were regenerated in commit 293f565 ('Sync README and usage overview with F13/F14; regenerate llms_full').\n2. INPUT: README.md, docs/llms_full.txt, and any docs/*.md overview files. The delta's scope is the PresenceTracker / warm-feed / capable-keyed lifecycle — an internal correctness mechanism.\n3. LOGIC: Read README.md's device-status / discovery / multi-board sections and docs/llms_full.txt's equivalent passages. Verify they do NOT make claims that contradict the v6 lifecycle semantics (e.g., they should not claim Tier-1-keyed status, should not promise single-ping-per-appearance without the single-board qualifier, etc.). Since this is an internal fix, user-facing docs are expected to already be accurate or silent on these internals. If a contradiction is found, fix it in place; otherwise report 'no drift found — docs already accurate.'\n4. OUTPUT: A one-line verdict: 'VERIFIED: no documentation drift' or a list of specific files/lines requiring updates (if any).\n5. DOCS: [Mode B] This IS the changeset-level documentation sweep. If it finds no drift (expected), it closes as a no-op. If it finds drift, it updates the affected overview doc(s) in place."
+                  ]
                 }
               ]
             }
