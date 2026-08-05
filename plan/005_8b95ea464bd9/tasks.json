@@ -159,21 +159,21 @@
           "type": "Milestone",
           "id": "P3.M1",
           "title": "classify_devices() + cache, and the per-candidate classification mechanism",
-          "status": "Planned",
+          "status": "Researching",
           "description": "Implement the DeviceKind/ClassifiedDevice types, the CLASSIFICATION_CACHE with TTL, and the classify_devices() function that enumerates Tier-1 candidates and classifies each via QUERY_INFO.",
           "tasks": [
             {
               "type": "Task",
               "id": "P3.M1.T1",
               "title": "Implement classify_devices() with a TTL cache, resolving the per-device ping mechanism",
-              "status": "Planned",
+              "status": "Researching",
               "description": "Add the classification types, cache infrastructure, and the classify_devices() function. Split into types+cache (S1) and implementation+tests (S2) to respect the 2 SP subtask cap.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P3.M1.T1.S1",
                   "title": "Add DeviceKind / ClassifiedDevice types + CLASSIFICATION_CACHE infrastructure to src/core/notifier.rs",
-                  "status": "Researching",
+                  "status": "Complete",
                   "story_points": 1,
                   "dependencies": [],
                   "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See plan/005_8b95ea464bd9/architecture/notifier_mechanisms.md and external_deps.md. The crate's CommandResponse::Info{proto_ver:2, feature_flags, callback_count, board_rules_present} variant is the capable classifier (lib.rs). classify_devices will enumerate via hidapi::HidApi::new() (same as is_device_connected at notifier.rs:216 and list_devices at notifier.rs:129), then for each candidate send QUERY_INFO via send_command(RunCommand::QueryInfo, &filter). The existing perform_handshake at notifier.rs:348 already sends QUERY_INFO and sets HOST_CAPABLE — that IS the Tier-2 probe for the global status. CLASSIFICATION_CACHE should be a Mutex<HashMap<String,(DeviceKind,Instant)>> keyed by device path, with CLASSIFICATION_TTL default 5s. The crate's MatchKey (core.rs:641) is filter-keyed NOT path-keyed, so per-candidate classification requires narrowing the filter to the candidate's vid/pid (the only mechanism available app-side).\n2. INPUT: src/core/notifier.rs (existing types, DeviceFilter at line 83, configured_filter at line 95, send_command path via Notifier trait at line 56).\n3. LOGIC: Add pub enum DeviceKind { Capable { proto_ver: u8, feature_flags: u8, callback_count: u8, board_rules_present: bool }, NotQmkNotifier }. Add pub struct ClassifiedDevice { path: String, vendor_id: u16, product_id: u16, product_name: Option<String>, usage_page: u16, usage: u16, kind: DeviceKind }. Add const CLASSIFICATION_TTL: Duration = Duration::from_secs(5). Add static CLASSIFICATION_CACHE: Lazy<Mutex<HashMap<String, (DeviceKind, std::time::Instant)>>> keyed by path. Add helper fn classification_cache_get(path) / fn classification_cache_insert(path, kind) / fn classification_cache_clear(). No classify_devices() logic yet (that's S2).\n4. OUTPUT: DeviceKind, ClassifiedDevice, CLASSIFICATION_CACHE + helpers in notifier.rs. Compiles. No logic yet.\n5. DOCS: [Mode A] DeviceKind/ClassifiedDevice/CLASSIFICATION_CACHE doc-comments cite DEVICE_DISCOVERY.md section 2.",
@@ -191,7 +191,7 @@
                   "type": "Subtask",
                   "id": "P3.M1.T1.S2",
                   "title": "Implement classify_devices() logic + unit tests with mock HID layer",
-                  "status": "Planned",
+                  "status": "Researching",
                   "story_points": 2,
                   "dependencies": [
                     "P3.M1.T1.S1"

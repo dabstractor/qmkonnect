@@ -779,6 +779,134 @@ fn classify_device_status(present: bool, capable: bool) -> DeviceStatus {
     }
 }
 
+// ===== Device classification (P3.M1) — per-candidate capability tier =====
+// The data model + TTL cache infrastructure for the discovered-device picker
+// (`spec/DEVICE_DISCOVERY.md` §2). Populated by `classify_devices()`
+// (P3.M1.T1.S2 — not yet implemented) and read by the picker (P3.M2) + the
+// status resolver. This section ships the TYPES + CACHE + HELPERS only; S2
+// owns the hidapi/send_command probe logic.
+
+/// Per-device capability classification — the result of the Tier-2 capability
+/// probe (`spec/DEVICE_DISCOVERY.md` §2.2). A `Capable` board replied to the
+/// `QUERY_INFO` typed command with `proto_ver == 2` + the host-rules feature
+/// bit; its four fields mirror the `qmk_notifier::CommandResponse::Info`
+/// variant (crate rev `f26893e`, `lib.rs:95-99`) field-for-field. Every other
+/// reply (`Legacy` / `Timeout` / an error / no reply — the pure-VIA case) or a
+/// Tier-1-present-but-unprobed interface classifies as `NotQmkNotifier`.
+///
+/// This is the **per-device** complement of the AGGREGATE three-state
+/// [`DeviceStatus`] tray status (P1.M1.T1.S1): `device_status()` is
+/// conceptually a fold over a set of these per-device kinds (produced by S2's
+/// `classify_devices()`). Distinct names, distinct semantics.
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq)]
+pub enum DeviceKind {
+    /// The board advertised `proto_ver == 2` + the host-rules feature bit. The
+    /// four fields mirror `qmk_notifier::CommandResponse::Info` (crate rev
+    /// `f26893e`) field-for-field so S2's probe match is a 1:1 structural copy.
+    Capable {
+        proto_ver: u8,
+        feature_flags: u8,
+        callback_count: u8,
+        board_rules_present: bool,
+    },
+    /// Tier-1-present but not qmk_notifier-capable: a pure-VIA / Vial board, a
+    /// legacy reply, or a board that timed out (the normal pure-VIA case — the
+    /// firmware's `raw_hid_receive` never answers the magic header).
+    NotQmkNotifier,
+}
+
+/// One enumerated Tier-1 HID interface (`usage_page == 0xFF60 && usage ==
+/// 0x61`) plus its Tier-2 classification (`spec/DEVICE_DISCOVERY.md` §2.3 /
+/// §5). `path` is the stable hidapi `DeviceInfo::path()` and the
+/// [`CLASSIFICATION_CACHE`] key (the picker/status care WHICH physical device
+/// is capable). Returned by `classify_devices()` (P3.M1.T1.S2) and rendered
+/// row-by-row by the discovered-device picker (P3.M2 — the `kind` column:
+/// `Capable` ⇒ "qmk_notifier ✓", `NotQmkNotifier` ⇒ "QMK board, no module").
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClassifiedDevice {
+    pub path: String,
+    pub vendor_id: u16,
+    pub product_id: u16,
+    pub product_name: Option<String>,
+    pub usage_page: u16,
+    pub usage: u16,
+    pub kind: DeviceKind,
+}
+
+/// TTL for [`CLASSIFICATION_CACHE`] entries (`spec/DEVICE_DISCOVERY.md` §2.3).
+/// Default 5 s so the hot status-poll thread (macOS/Windows 3 s, Linux 1 s) does
+/// not re-ping on every tick — classification is **event-driven** (once per
+/// device appearance), with the cached `DeviceKind` reused until the device
+/// disappears or the TTL expires. Mirrors the `CALLBACK_SWEEP_DEADLINE`
+/// `Duration`-const idiom.
+#[allow(dead_code)]
+const CLASSIFICATION_TTL: Duration = Duration::from_secs(5);
+
+/// Per-device classification cache, keyed by the stable hidapi `path`
+/// (`spec/DEVICE_DISCOVERY.md` §2.3). Value is `(DeviceKind, Instant)` where the
+/// `Instant` stamps when it was classified for the TTL check. **PRIVATE** —
+/// access via the three `classification_cache_*` helpers below (mirrors the
+/// `HOST_CAPABLE`/`CALLBACK_NAMES` private-static + pub-reader/writer idiom).
+///
+/// Keyed by **path** (not vid/pid) because the crate has no per-path send
+/// (`external_deps.md`: `MatchKey` is private + filter-keyed); S2 narrows the
+/// *filter* to a candidate's vid/pid, while the picker/status care about which
+/// *physical interface* is capable. Populated by `classify_devices()` (S2) on a
+/// Tier-1 false→true transition; read by the picker (P3.M2) + the status
+/// resolver; cleared on a real device transition (device-loss / board swap).
+#[allow(dead_code)]
+static CLASSIFICATION_CACHE: Lazy<Mutex<HashMap<String, (DeviceKind, Instant)>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+
+/// Look up a device's cached [`DeviceKind`] by its stable hidapi `path`
+/// (`spec/DEVICE_DISCOVERY.md` §2.3 / §2.4). Returns `None` when the path is
+/// absent OR when the entry is older than [`CLASSIFICATION_TTL`] (lazy expiry —
+/// the stale entry is left in place; a later [`classification_cache_insert`]
+/// overwrites it; S2 is the eviction authority). Returns `Some(kind)` (cloned)
+/// only when fresh. S2's `classify_devices()` calls this before pinging a
+/// candidate, and after every successful per-candidate probe.
+///
+/// Side-effect-free: never mutates the map and never calls `Instant::now()` at
+/// module load. A poisoned lock yields `None` (the crate has no poison-recovery
+/// policy; a cache miss is the safe degradation, not a panic).
+#[allow(dead_code)]
+pub fn classification_cache_get(path: &str) -> Option<DeviceKind> {
+    let map = CLASSIFICATION_CACHE.lock().ok()?;
+    let (kind, stamped) = map.get(path)?;
+    if stamped.elapsed() < CLASSIFICATION_TTL {
+        Some(kind.clone())
+    } else {
+        None
+    }
+}
+
+/// Record (or refresh) a device's classification, stamping `Instant::now()`
+/// (`spec/DEVICE_DISCOVERY.md` §2.3). Overwrites any prior entry for `path` —
+/// so a stale-but-not-yet-expired entry is refreshed in place. Called by S2's
+/// `classify_devices()` after each successful per-candidate probe. A poisoned
+/// lock is a no-op (never panics on the cache write path).
+#[allow(dead_code)]
+pub fn classification_cache_insert(path: &str, kind: DeviceKind) {
+    if let Ok(mut map) = CLASSIFICATION_CACHE.lock() {
+        map.insert(path.to_string(), (kind, Instant::now()));
+    }
+}
+
+/// Drop every cached entry (`spec/DEVICE_DISCOVERY.md` §2.3). Called on a real
+/// device transition (device-loss) and by the tray "Reload rules" / picker
+/// "Rescan" path so stale classifications don't survive a board swap. A
+/// poisoned lock is a no-op.
+#[allow(dead_code)]
+pub fn classification_cache_clear() {
+    if let Ok(mut map) = CLASSIFICATION_CACHE.lock() {
+        map.clear();
+    }
+}
+
+// ===== (end Device classification — P3.M1) =====
+
 /// What the host-rules handshake lifecycle should do for a device-status transition.
 ///
 /// Computed by [`handshake_action`] from the previous and current
@@ -3001,5 +3129,116 @@ disable = ["known_b", "phantom"]
             assert_eq!(device_status(), classify_device_status(present, true));
             reset_handshake_state(); // restore HOST_CAPABLE = false (isolation)
         }
+    }
+
+    // ===== Device classification cache tests (P3.M1.T1.S1) =====
+    // Pure helper tests — no HID mock needed (the helpers only lock a static
+    // HashMap). Each test starts with classification_cache_clear() to avoid
+    // cross-test bleed (the static outlives tests; crate tests are single-
+    // threaded per AGENTS.md).
+
+    fn capable_sample() -> DeviceKind {
+        DeviceKind::Capable {
+            proto_ver: 2,
+            feature_flags: 1,
+            callback_count: 4,
+            board_rules_present: true,
+        }
+    }
+
+    #[test]
+    fn test_classification_cache_insert_then_get() {
+        classification_cache_clear();
+        let kind = capable_sample();
+        classification_cache_insert("p-capable", kind.clone());
+        let got = classification_cache_get("p-capable");
+        assert_eq!(got, Some(kind));
+    }
+
+    #[test]
+    fn test_classification_cache_miss() {
+        classification_cache_clear();
+        // An unseen path yields None.
+        assert_eq!(classification_cache_get("never-inserted"), None);
+        // Inserting one path does not populate a different path.
+        classification_cache_insert("p-a", capable_sample());
+        assert_eq!(classification_cache_get("p-b"), None);
+    }
+
+    #[test]
+    fn test_classification_cache_clear() {
+        classification_cache_clear();
+        classification_cache_insert("p-clear", capable_sample());
+        assert!(classification_cache_get("p-clear").is_some());
+        classification_cache_clear();
+        assert_eq!(classification_cache_get("p-clear"), None);
+    }
+
+    #[test]
+    fn test_classification_cache_overwrite() {
+        classification_cache_clear();
+        classification_cache_insert("p-ow", capable_sample());
+        classification_cache_insert("p-ow", DeviceKind::NotQmkNotifier);
+        assert_eq!(
+            classification_cache_get("p-ow"),
+            Some(DeviceKind::NotQmkNotifier)
+        );
+    }
+
+    #[test]
+    fn test_classification_cache_ttl_expiry() {
+        classification_cache_clear();
+        classification_cache_insert("p-ttl", capable_sample());
+        // Sanity: fresh entry hits.
+        assert!(classification_cache_get("p-ttl").is_some());
+        // Simulate expiry by rewriting the stored Instant to the past
+        // (same-module test reaching into the private static is fine).
+        CLASSIFICATION_CACHE
+            .lock()
+            .unwrap()
+            .insert(
+                "p-ttl".to_string(),
+                (
+                    capable_sample(),
+                    Instant::now() - CLASSIFICATION_TTL - Duration::from_millis(1),
+                ),
+            );
+        assert_eq!(classification_cache_get("p-ttl"), None);
+    }
+
+    #[test]
+    fn test_classification_cache_notqmk_variant() {
+        classification_cache_clear();
+        let kind = DeviceKind::NotQmkNotifier;
+        classification_cache_insert("p-nq", kind.clone());
+        assert_eq!(classification_cache_get("p-nq"), Some(kind));
+    }
+
+    #[test]
+    fn test_devicekind_classifieddevice_derives() {
+        // DeviceKind::Capable PartialEq sanity (field-for-field equality).
+        let cap_a = capable_sample();
+        let cap_b = capable_sample();
+        assert_eq!(cap_a, cap_b);
+        // Clone produces an equal value (DeviceKind: Clone is required by
+        // classification_cache_get's owned return).
+        assert_eq!(cap_a.clone(), cap_b);
+        // NotQmkNotifier unit variant PartialEq + Clone sanity.
+        assert_eq!(DeviceKind::NotQmkNotifier, DeviceKind::NotQmkNotifier.clone());
+        // The two variants are distinct.
+        assert_ne!(cap_a, DeviceKind::NotQmkNotifier);
+
+        // ClassifiedDevice PartialEq + Clone sanity (the picker clones rows).
+        let dev_a = ClassifiedDevice {
+            path: "p-dev".to_string(),
+            vendor_id: 0xFEED,
+            product_id: 0x0000,
+            product_name: Some("Dactyl".to_string()),
+            usage_page: 0xFF60,
+            usage: 0x61,
+            kind: cap_a.clone(),
+        };
+        assert_eq!(dev_a, dev_a.clone());
+        assert_eq!(dev_a.kind, cap_b);
     }
 }
