@@ -18,7 +18,7 @@
               "type": "Task",
               "id": "P1.M1.T1",
               "title": "Verify the already-shipped delta: gates + drift + caveat-backing",
-              "status": "Planned",
+              "status": "Researching",
               "description": "Three-part verification of the capability-keyed lifecycle delta: (1) run the project quality gates and confirm green, (2) confirm zero spec drift between the four spec files and the v6 snapshot, (3) read-only audit confirming each documented caveat has matching code behavior. No code changes are expected — this is verification of already-shipped work (commit d240b27).",
               "subtasks": [
                 {
@@ -42,7 +42,7 @@
                   "type": "Subtask",
                   "id": "P1.M1.T1.S2",
                   "title": "Confirm zero spec drift: the 6 v6 diff hunks have corresponding spec passages",
-                  "status": "Researching",
+                  "status": "Complete",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M1.T1.S1"
@@ -68,7 +68,7 @@
                   "type": "Subtask",
                   "id": "P1.M1.T1.S3",
                   "title": "Confirm documented caveats have backing behavior (read-only code audit)",
-                  "status": "Planned",
+                  "status": "Researching",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M1.T1.S1"
