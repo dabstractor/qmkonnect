@@ -84,28 +84,28 @@
       "type": "Phase",
       "id": "P2",
       "title": "VIA coexistence guarantee (R-COEX, F14)",
-      "status": "Planned",
+      "status": "Researching",
       "description": "Make the already-true shared-open behavior an asserted, documented invariant (the load-bearing guarantee that the always-on QMKonnect never locks out VIA). Includes the research-gated write-narrowing decision (expected: defer).",
       "milestones": [
         {
           "type": "Milestone",
           "id": "P2.M1",
           "title": "Shared-open invariant: comments + tests",
-          "status": "Planned",
+          "status": "Researching",
           "description": "Assert R-COEX: non-seize opens, bounded reads, first-byte-0x81 emission. Document the invariant in code comments and add tests that assert the emission path.",
           "tasks": [
             {
               "type": "Task",
               "id": "P2.M1.T1",
               "title": "Assert R-COEX: non-seize opens, bounded reads, first-byte-0x81 emission",
-              "status": "Planned",
+              "status": "Researching",
               "description": "Add R-COEX invariant comments at the open/send sites and invariant tests asserting every constructed report's first payload byte is 0x81.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P2.M1.T1.S1",
                   "title": "Add R-COEX invariant comments at the open sites + invariant tests",
-                  "status": "Researching",
+                  "status": "Ready",
                   "story_points": 2,
                   "dependencies": [],
                   "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See plan/005_8b95ea464bd9/architecture/external_deps.md. QMKonnect links hidapi=2.6 (unified to 2.6.6 in Cargo.lock). The crate opens via info.open_device(api) at core.rs:754 — hidapi's DEFAULT non-seize open (FILE_SHARE_READ|WRITE Windows, kIOHIDOptionsTypeNone macOS, plain hidraw open Linux). The app does NOT call any seize path; hidapi exposes none. IN_DRAIN_MAX=32 is in the CRATE (core.rs:131), NOT in notifier.rs — the read discipline (pre/post-send bounded drains) is entirely crate-side. The app's send path: QmkNotifier::send_command at notifier.rs:799 builds RunParameters and calls qmk_notifier::run(params). QmkNotifier::notify at notifier.rs:756 builds RunParameters with SendMessage and calls qmk_notifier::run(params). The app's first emitted payload byte is always 0x81 (the magic header). The crate's RunCommand variants (SendMessage, QueryInfo, QueryCallback, SetOs, ApplyHostContext) all construct 0x81-prefixed reports. There is NO per-path send or seize option exposed by the crate.\n2. INPUT: src/core/notifier.rs (the QmkNotifier::send_command at line 799 / notify at line 756 transport boundary), spec/DEVICE_DISCOVERY.md section 6, spec/ARCHITECTURE.md section 10 (#10).\n3. LOGIC: (a) Add a 'R-COEX — must preserve' doc-comment at the send_command/transport boundary in notifier.rs (near line 799 or the QmkNotifier impl block) stating three rules: never introduce a seize/exclusive open; never a perpetual blocking read; the first payload byte is always 0x81. Add // R-COEX: inline markers at any code that touches the open/send path. (b) Add unit tests asserting that every constructed report's first payload byte is 0x81: construct the SendMessage/ApplyHostContext/QueryInfo framing via the crate's RunCommand and RunParameters, call the app-side builders, and assert the first byte. Where a behavior can't be unit-tested without HID hardware (the non-seize open itself, the bounded-drain discipline), add an inline invariant comment + a // R-COEX: marker.\n4. OUTPUT: notifier.rs invariant comments + the 0x81-emission test passing. No runtime behavior change (this phase asserts what's already true).\n5. DOCS: [Mode A] The invariant comments ARE the Mode-A doc for this phase (they live in code). No docs/*.md change beyond what P4 covers.",
@@ -127,7 +127,7 @@
                   "type": "Subtask",
                   "id": "P2.M1.T1.S2",
                   "title": "Confirm the write-narrowing decision: defer (review the architecture decision record)",
-                  "status": "Planned",
+                  "status": "Researching",
                   "story_points": 1,
                   "dependencies": [
                     "P2.M1.T1.S1"
