@@ -11,7 +11,7 @@
           "type": "Milestone",
           "id": "P1.M1",
           "title": "Major Bug Fixes — Identifier Correctness & Autostart Safety",
-          "status": "Researching",
+          "status": "Complete",
           "description": "Fix the three Major-severity defects (PRD IDs 1, 2, 4) that affect rule correctness on Hyprland/X11 and autostart reliability on Windows paths containing spaces.",
           "tasks": [
             {
@@ -66,7 +66,7 @@
               "type": "Task",
               "id": "P1.M1.T3",
               "title": "Quote Windows autostart path in both autostart.rs and the Inno installer",
-              "status": "Researching",
+              "status": "Complete",
               "description": "Both src/autostart.rs enable() and the Inno installer [Registry] section write the HKCU Run key value as an unquoted path. If the install path contains spaces (e.g., C:\\Users\\John Doe\\...), the Run key may fail to execute on login or become a security vector (unquoted path traversal).",
               "subtasks": [
                 {
@@ -88,7 +88,7 @@
                   "type": "Subtask",
                   "id": "P1.M1.T3.S2",
                   "title": "Quote the path in packaging/windows/inno/QMKonnect.iss [Registry] section",
-                  "status": "Researching",
+                  "status": "Complete",
                   "story_points": 0.5,
                   "dependencies": [],
                   "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See plan/006_8f4080956ee0/bugfix/001_558dab5d68a5/architecture/bug_findings.md §Bug 3B. The [Registry] section of packaging/windows/inno/QMKonnect.iss currently writes: `ValueData: \"{app}\\{#MyAppExeName}\"` (unquoted). {app} expands to the install dir (DefaultDirName = {localappdata}\\Programs\\QMKonnect), which can contain spaces if the username does.\n2. INPUT: Inno Setup constants {app} and {#MyAppExeName} (\"QMKonnect.exe\").\n3. LOGIC: In the [Registry] section line for the Run key, change ValueData to use Inno's `\"\"` escape for literal double-quotes: `ValueData: \"\"\"{app}\\{#MyAppExeName}\"\"\"`. Inno resolves `\"\"` to a single `\"` in the final registry value, producing `\"C:\\...\\QMKonnect.exe\"`. Keep ValueType: string, ValueName: \"QMKonnect\", and Flags: uninsdeletevalue unchanged. This MUST match P1.M1.T3.S1's quoting so the installer and the in-app toggle write the same format.\n4. OUTPUT: Fresh installs and upgrades via QMKonnect-Setup.exe write a quoted path to the HKCU Run key.\n5. DOCS: none — no user-facing surface change. The installer comment already documents the Run key contract.",
@@ -121,7 +121,7 @@
                   "type": "Subtask",
                   "id": "P1.M2.T1.S1",
                   "title": "Add reset_handshake_state() + perform_handshake() to Windows tray save path (tray.rs)",
-                  "status": "Planned",
+                  "status": "Researching",
                   "story_points": 1,
                   "dependencies": [],
                   "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: See plan/006_8f4080956ee0/bugfix/001_558dab5d68a5/architecture/bug_findings.md §Bug 4. The Windows save path in src/tray.rs (~L970-989) merges VID/PID onto `current_config` via `let mut merged = current_config;` (MOVES current_config), then writes via `crate::core::atomic_write(config_path, &config_content)?;`. reset_handshake_state() is pub at notifier.rs:814 (clears HOST_CAPABLE, BOARD_HAS_RULES, CALLBACK_NAMES, HAS_HANDSHAKED). perform_handshake(verbose) is pub at notifier.rs:353.\n2. INPUT: The pre-save VID/PID (from current_config BEFORE the move into merged) and the post-save VID/PID (merged.vendor_id / merged.product_id). The `verbose` variable is in scope in the tray save function.\n3. LOGIC: BEFORE `let mut merged = current_config;`, snapshot `let old_vid = current_config.vendor_id; let old_pid = current_config.product_id;`. AFTER `crate::core::atomic_write(config_path, &config_content)?;` succeeds, add: `if merged.vendor_id != old_vid || merged.product_id != old_pid { crate::core::notifier::reset_handshake_state(); crate::core::notifier::perform_handshake(verbose); }`. The `#[cfg(target_os = \"windows\")]` gate on this function means the import is already available.\n4. OUTPUT: The global CALLBACK_NAMES map is cleared and rebuilt for the newly-selected board immediately after a VID/PID change, without waiting for a replug event.\n5. DOCS: none — internal handshake lifecycle change.",

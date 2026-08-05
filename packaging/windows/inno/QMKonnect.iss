@@ -100,7 +100,9 @@ Name: "{userprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingD
 ; Default-on autostart via the HKCU Run key. uninsdeletevalue removes it on
 ; uninstall. The value name "QMKonnect" is the CONTRACT shared with the tray
 ; toggle (src/autostart.rs) and ../install.ps1 - keep it identical everywhere.
-Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "QMKonnect"; ValueData: "{app}\{#MyAppExeName}"; Flags: uninsdeletevalue
+; ValueData is QUOTED ("" = one literal ") so a spaced install path resolves at
+; login and is not an unquoted-service-path vector - MUST match autostart.rs.
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "QMKonnect"; ValueData: """{app}\{#MyAppExeName}"""; Flags: uninsdeletevalue
 
 [Run]
 ; Launch after a successful *interactive* install only. skipifsilent keeps
