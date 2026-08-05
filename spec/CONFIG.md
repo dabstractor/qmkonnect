@@ -31,8 +31,8 @@ pub struct Config {
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `vendor_id` | `Option<u16>` (hex in TOML) | `None` | USB vendor ID. Set only to disambiguate multiple QMK keyboards. |
-| `product_id` | `Option<u16>` (hex in TOML) | `None` | USB product ID. Set only to disambiguate. |
+| `vendor_id` | `Option<u16>` (hex in TOML) | `None` | USB vendor ID. **Advanced override** — the discovered-device picker writes this for you (`DEVICE_DISCOVERY.md` §5). Unset ⇒ auto-discover any qmk_notifier-capable board. |
+| `product_id` | `Option<u16>` (hex in TOML) | `None` | USB product ID. **Advanced override** — set only to disambiguate among multiple boards. |
 | `usage_page` | `Option<u16>` | `0xff60` (resolved at use site) | HID usage page. Set only if firmware overrode `RAW_USAGE_PAGE`. |
 | `usage` | `Option<u16>` | `0x61` (resolved at use site) | HID usage. Set only if firmware overrode `RAW_USAGE_ID`. |
 | `debounce_ms` | `u64` | `50` | Burst-coalescing window (ms). `0` disables debouncing (every change sends immediately). |
@@ -87,12 +87,19 @@ file format never drifts. Output:
 # 0 disables. Default 0.
 # poll_interval_ms = 0
 
-vendor_id  = 0xfeed          # OR:  "# vendor_id  = 0xfeed   # unset: auto-discovery"
-product_id = 0x0000          # OR:  "# product_id = 0x0000   # unset: auto-discovery"
+vendor_id  = 0x????          # unset (commented) = auto-discover any qmk_notifier-capable board
+product_id = 0x????          # unset (commented) = auto-discover
 ```
 
 A value is **explicit** when `Some` (uncommented), **commented-out** when `None`
 ("auto-discovery"). Timing/usage options are always shown as commented hints.
+
+> **`0xFEED` cleanup:** the seeded template (`render_default_config_template`)
+and the `None` rendering of `vendor_id` no longer carry the literal `0xfeed` —
+they read `0x????` to stop the historical misreading that `0xFEED` was the
+default. The crate's `DEFAULT_VENDOR_ID = 0xFEED` / `DEFAULT_PRODUCT_ID =
+0x0000` remain only as **matching-dead** legacy fallbacks (`PROTOCOL.md` §3.4,
+`DEVICE_DISCOVERY.md` §7.2).
 
 ---
 

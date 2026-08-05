@@ -249,6 +249,10 @@ update host state for next diff/logging
   per-window "replace"). `id…` = the full desired enabled set; firmware diffs
   (disable-before-enable).
 
+> The `QUERY_INFO` here is the **same transaction** reused as the Tier-2
+discovery probe (`classify_devices`, `DEVICE_DISCOVERY.md` §2.4) — one ping,
+two purposes (capability handshake *and* device selection).
+
 **Handshake & `has_been_queried`:** at (re)connect the host sends `QUERY_INFO`
 **at most once per board boot** — the firmware sets `has_been_queried` on the
 first `QUERY_INFO`, so a mid-session HID re-enumeration against **legacy** firmware
@@ -560,8 +564,12 @@ One coordinated change across the three repos:
   tests.
 - **Docs:** `Readme.md`, `docs/qmk-integration.md`, `docs/configuration.md`,
   `docs/examples.md`, `docs/troubleshooting.md`, regenerated `docs/llms_full.txt`.
-- **VIA coexistence (separate, out of scope here):** a dispatching
-  `raw_hid_receive` (`0x81 0x9F`+`0xF0` → notifier, else → VIA).
+- **VIA coexistence:** the **host-side** guarantee (always-on QMKonnect opens
+  shared / non-seize, so intermittent VIA can always edit the keymap) is
+  specified in `DEVICE_DISCOVERY.md` §6 (R-COEX). The **firmware-side** piece
+  (Phase E: a dispatching `raw_hid_receive` routing `0x81 0x9F`+`0xF0` →
+  notifier, else → VIA, so one keyboard runs both) remains a `qmk_notifier`-
+  repo deliverable; the typed-command discriminator `0x04` is reserved for it.
 
 ## 12. Testing Plan
 
@@ -593,12 +601,18 @@ context-only (replace); integration per `AGENTS.md`.
   "≤26 ids per report" v1 limit is withdrawn. (`HOST_CALLBACK_MAX` remains the
   firmware's static array ceiling; the host validates against
   `QUERY_INFO.callback_count`.)
-- **R3 — HID exclusivity.** Another Raw HID app (VIA) holding the device blocks
-  QMKonnect. Phase E.
+- **R3 — HID exclusivity — RESOLVED by R-COEX.** The concern that another Raw
+  HID app (VIA) holding the device blocks QMKonnect does not arise: QMKonnect
+  opens all handles **shared / non-seize** and reads only around writes, so the
+  always-on QMKonnect never locks out the intermittently-used VIA app (and vice
+  versa — VIA/WebHID has no exclusive-open at all). Full contract + platform
+  reality: `DEVICE_DISCOVERY.md` §6.
 - **R4 — ID stability across flashes.** Mitigated by re-querying names on every
   reconnect (IDs positional, names stable).
-- **R5 — Multiple keyboards.** v1 = one global ruleset; per-keyboard overrides
-  deferred.
+- **R5 — Multiple keyboards.** v1 = **broadcast** window events to every
+  qmk_notifier-capable board with one global ruleset; per-keyboard overrides
+  deferred. Policy + the homogeneous-firmware limitation:
+  `DEVICE_DISCOVERY.md` §4.
 - **R6 — Legacy handshake side effect — RESOLVED.** The firmware sets
   `has_been_queried` on the first `QUERY_INFO`, and host-rules are gated on
   `proto_ver == 2`; the host handshakes at most once per board boot. Legacy

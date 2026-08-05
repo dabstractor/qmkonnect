@@ -207,6 +207,15 @@ Used by `is_device_connected()`, `startup_device_probe()`, and
 `QmkNotifier::notify()`. The match predicate is the **same** in all three:
 `usage_page == && usage == && vid.is_none_or(==) && pid.is_none_or(==)`.
 
+This is the **Tier-1** (presence) predicate only. A **Tier-2 capability** layer
+sits on top of it for the status line and the write path: `classify_devices()`
+(`DEVICE_DISCOVERY.md` §2) sends one `QUERY_INFO` per Tier-1 candidate and tags
+it `Capable` or `NotQmkNotifier`. The **write match set** is Tier-1 **AND**
+`kind == Capable`, so magic bursts go only to qmk_notifier boards (and, when
+several are present, to all of them — broadcast, `DEVICE_DISCOVERY.md` §4). The
+hot `configured_filter()` itself is unchanged; capability is a separate,
+cached classification, not a per-notification cost.
+
 ### 5.3 Debounce design (the key correctness property)
 
 State (process-global, behind `Lazy<Mutex<DebounceState>>` + `Lazy<Condvar>`):
@@ -259,11 +268,20 @@ Called once at startup by every runner. Read-only `hidapi` enumeration
 configured filter and pointing at `--list-devices`. This is the answer to "a
 typo'd VID fails silently at runtime" (#16).
 
-### 5.6 Status probe (`is_device_connected`)
+### 5.6 Status probe (`is_device_connected` / `classify_devices`)
 
-Read-only enumeration; `true` iff any interface matches the filter. Backs the
-tray device-status line. Runs on a background thread (3 s macOS/Windows,
+Read-only Tier-1 enumeration (`is_device_connected()`); `true` iff any
+interface matches the filter. Backs the device-presence snapshot and the
+broadcast decision. Runs on a background thread (3 s macOS/Windows,
 1 s Linux) and only fires a UI update on a transition.
+
+The tray status line is driven by **`classify_devices()`** (Tier-2, cache-backed
+— `DEVICE_DISCOVERY.md` §2.3), producing a **three-state** value rather than a
+boolean: **Connected** (≥1 capable board), **No module** (≥1 Tier-1 board, 0
+capable — the truthful "flash qmk_notifier" state), **Disconnected** (0 Tier-1
+boards). Classification is event-driven (runs once per device appearance, then
+TTL-cached), so the frequent status poll stays cheap. See `DEVICE_DISCOVERY.md`
+§3 for the full state machine and `UI.md` §4 for the rendered text/icons.
 
 ### 5.7 Host-side-rules extension
 
@@ -406,6 +424,15 @@ produces the full app with a tray on every OS.
    host (`SPEC_LINUX.md` §5).
 7. **`MenuItem` is `!Send`** — mutate only on the event-loop thread.
 8. **Tests are single-threaded** (shared global debouncer).
+9. **Tier-2 capability before action.** A board is only written to / reported
+   "Connected" if it answered the `0x81 0x9F` `QUERY_INFO` probe
+   (`classify_devices`, `DEVICE_DISCOVERY.md` §2). Never treat a pure-`0xFF60`
+   (e.g. VIA-only) board as a target.
+10. **Shared open, always (R-COEX).** Every HID handle is opened shared /
+    non-seize (`hidapi`'s default) and input reports are read only in bounded
+    drains around a write — never a seize, never a perpetual blocking read. The
+    always-on QMKonnect must never lock out the intermittently-used VIA app
+    (`DEVICE_DISCOVERY.md` §6).
 
 ---
 

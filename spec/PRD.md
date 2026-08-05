@@ -70,8 +70,11 @@ QMKonnect is one node in a small ecosystem. A dev agent must understand all of:
 1. **Zero-config for a single standard QMK keyboard.** On every platform, a user
    with a default QMK keyboard running qmk_notifier needs to install QMKonnect
    and *nothing else* — no vendor/product IDs, no udev reload, no sudo. Device
-   discovery is by the stable QMK Raw HID signature (usage page `0xFF60` /
-   usage `0x61`).
+   discovery is **two-tier**: presence by the stable QMK Raw HID signature
+   (usage page `0xFF60` / usage `0x61`), then a `0x81 0x9F` `QUERY_INFO` probe
+   selects the board(s) that actually run qmk_notifier (so a pure-VIA board is
+   never mistaken for a target). VID/PID is an optional Advanced override, never
+   required. Fully specified in `DEVICE_DISCOVERY.md`.
 2. **Cross-platform, native-feeling, and unobtrusive.** A menu-bar icon
    (macOS), system-tray icon (Windows), or StatusNotifierItem (Linux) with a
    minimal menu, a discoverable "Open at Login" toggle (default on), and a
@@ -97,8 +100,9 @@ QMKonnect is one node in a small ecosystem. A dev agent must understand all of:
   ad-hoc-signed macOS). The build scripts *support* a stable Developer ID.
 - A cross-platform settings GUI toolkit. Each platform uses its native surface
   (Win32 / Cocoa / zenity+GTK).
-- Multi-keyboard *management* (VID/PID disambiguation is supported; richer UX
-  is future work).
+- **Per-keyboard** rule sets / independent handshakes per board. (v1 supports
+  *broadcast* to every qmk_notifier-capable board present, with one global
+  `rules.toml`; per-board rules are future work — see `DEVICE_DISCOVERY.md` §4.)
 
 ---
 
@@ -131,6 +135,8 @@ QMKonnect is one node in a small ecosystem. A dev agent must understand all of:
 | F10 | Companion firmware module contract (`qmk_notifier`) | `FIRMWARE.md` |
 | **F11** | **Host-side window rules:** edit `rules.toml` to map apps → layers/callbacks with **no reflash** (stacks on top of board rules) | `HOST_RULES.md` |
 | **F12** | **Named callback registry** + typed Raw HID commands (`QUERY_INFO` / `QUERY_CALLBACK` / `APPLY_HOST_CONTEXT`) with a capability handshake | `HOST_RULES.md` |
+| **F13** | **Two-tier device discovery + capability selection:** `0xFF60` presence then `0x81 0x9F` `QUERY_INFO` probe; truthful three-state tray status; live discovered-device Settings picker; broadcast to all capable boards | `DEVICE_DISCOVERY.md` |
+| **F14** | **VIA coexistence guarantee:** the always-on QMKonnect opens every HID handle shared / non-seize and reads only around its own writes, so the intermittently-used VIA app can always open the device | `DEVICE_DISCOVERY.md` §6 |
 
 ---
 
@@ -207,8 +213,8 @@ A single TOML file, **all fields optional** (zero-config by default):
 
 | Key | Default | Meaning |
 |---|---|---|
-| `vendor_id` | unset (`None` → match any) | USB VID; set only to disambiguate multiple QMK keyboards |
-| `product_id` | unset (`None` → match any) | USB PID; set only to disambiguate |
+| `vendor_id` | unset (`None` → match any) | USB VID; **Advanced override** — the discovered-device picker writes this for you. Unset ⇒ auto-discover any qmk_notifier-capable board (`DEVICE_DISCOVERY.md`) |
+| `product_id` | unset (`None` → match any) | USB PID; **Advanced override** — set only to disambiguate among multiple boards |
 | `usage_page` | `0xff60` | HID usage page; set only if firmware overrode `RAW_USAGE_PAGE` |
 | `usage` | `0x61` | HID usage; set only if firmware overrode `RAW_USAGE_ID` |
 | `debounce_ms` | `50` | Burst-coalescing window (ms); `0` disables debouncing |
@@ -307,7 +313,12 @@ failures degrade silently and recover automatically.)
   The roadmap (see `REMAINING_ISSUES.md` §"Architecture unification") is to make
   every monitor non-blocking/event-pushing and own one host loop. Not required
   to ship, but the cleanest end state.
-- **Multi-keyboard management** beyond VID/PID disambiguation.
+- **Multi-keyboard *per-board* rules.** v1 broadcasts window events to every
+  qmk_notifier-capable board and uses one global `rules.toml`; independent
+  rules/handshakes per board remain future work (`DEVICE_DISCOVERY.md` §4.3).
+- **VIA coexistence is now a shipped guarantee** (F14), not future work: the
+  always-on QMKonnect never locks the device, so the intermittently-used VIA app
+  can always edit the keymap (`DEVICE_DISCOVERY.md` §6).
 - **A device-arrival "launcher" on Windows** (the true udev analog) — separate,
   larger design; today autostart-at-login covers the use case.
 
@@ -332,6 +343,11 @@ failures degrade silently and recover automatically.)
 | **callback registry** | The firmware's named, ordered list of host-invokable callbacks (`DEFINE_HOST_CALLBACKS`); the host resolves names→IDs via `QUERY_CALLBACK`. See `HOST_RULES.md` §6. |
 | **typed command** | A Raw HID command in the `0x81 0x9F 0xF0` namespace (vs. the legacy string path). See `HOST_RULES.md` §5. |
 | **`APPLY_HOST_CONTEXT`** | The typed command carrying the host's desired layer + enabled-callback set; the firmware diffs and applies it. See `HOST_RULES.md` §5. |
+| **Tier-1 / Tier-2 discovery** | Tier-1 = HID usage-page presence (`0xFF60`/`0x61`, every Raw-HID QMK board); Tier-2 = the `0x81 0x9F` `QUERY_INFO` probe that selects qmk_notifier-capable boards. See `DEVICE_DISCOVERY.md` §1. |
+| **capability probe** | A single `QUERY_INFO` sent to a `0xFF60` candidate to classify it `Capable` vs `NotQmkNotifier` (the latter includes pure-VIA boards, which time out). `DEVICE_DISCOVERY.md` §2. |
+| **discovered-device picker** | The live, self-populating Settings list of `0xFF60` devices (named by their own HID descriptors — no curated DB); selecting one narrows matching by writing its VID/PID. `DEVICE_DISCOVERY.md` §5. |
+| **R-COEX** | The requirement that the always-on QMKonnect opens all HID handles **shared / non-seize** (and reads only around writes) so the intermittent VIA app can always open the device. Guaranteed by hidapi's default open mode. `DEVICE_DISCOVERY.md` §6. |
+| **shared open** | Opening a HID handle without an exclusive/seize lock: `FILE_SHARE_READ\|WRITE` (Windows), `kIOHIDOptionsTypeNone` (macOS), plain `hidraw` open (Linux). QMKonnect always opens shared. |
 
 ---
 
@@ -346,6 +362,7 @@ PRD.
 | **`PRD.md`** (this) | Product vision, goals, users, features, glossary, doc map. |
 | @ARCHITECTURE.md | Repository layout, module map, end-to-end data flow, concurrency/threading model, trait design, error model, the platform-divergence problem. |
 | @PROTOCOL.md | The Raw HID wire protocol: payload format, report framing, constants, the `qmk-notifier` crate contract, device matching & discovery, retry/cache. |
+| @DEVICE_DISCOVERY.md | **Two-tier device discovery + capability selection**, the three-state device-status indicator, the discovered-device Settings picker, multi-board broadcast, and the **VIA coexistence guarantee (R-COEX)**. |
 | @PLATFORMS.md | Per-OS window monitoring (Windows WinEventHook, macOS NSWorkspace, Hyprland IPC, X11), window filtering, config paths, permissions. |
 | @UI.md | Tray/menu-bar UI, menu layouts, Settings dialogs, "Show Window Information" dialogs, device-status indicator, "Open at Login" autostart. |
 | @LINUX.md | Linux-specific: static udev rule, `qmkonnect-hid-id` helper, config-driven fallback rule, dangerous-rule detection/repair, root-aware `--reload`, systemd service, SNI tray, GTK window-info dialog. |

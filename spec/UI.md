@@ -94,10 +94,33 @@ The event-loop arm mutates menu items (the only safe place).
 
 ## 2. Settings Dialogs
 
-All three write `config.toml` via the **shared** `core::render_config_body(vid,
-pid)` so the file format is identical everywhere. VID/PID fields are optional
-(empty/`"auto"` ⇒ `None` ⇒ auto-discovery). Config is hot, so a save takes
+All three write `config.toml` via the **shared** `core::render_config_body`
+so the file format is identical everywhere. Config is hot, so a save takes
 effect within ~3 s (no restart).
+
+### 2.0 The discovered-device picker (new primary surface)
+
+The primary surface is no longer two raw VID/PID hex fields — it is a **live,
+self-populating list of discovered devices** built from `classify_devices()`
+(`DEVICE_DISCOVERY.md` §2/§5). The devices name themselves via their HID
+descriptors; **there is no curated keyboard database.** Each row shows:
+
+```
+✓  Dactyl-Manuform (5x7-1)        0xFEED:0x0000   ← qmk_notifier
+✗  Keychron Q1                     0x3434:0x0123   ← QMK board, no module
+```
+
+- **One capable board, no VID/PID set** (common case): a read-only
+  `Detected: <name>` line; no picker shown. Auto-discovery is already correct.
+- **Multiple Tier-1 boards:** the picker appears; selecting a row writes that
+  board's VID/PID via `render_config_body` (the disambiguation).
+- **`[ Rescan ]`** invalidates the classification cache and re-runs
+  `classify_devices` (use after flashing a board with the dialog open).
+
+The legacy VID/PID hex fields move under an **"Advanced / manual override"**
+disclosure (§2.1–§2.3) for the rare case of targeting a board not currently on
+the bus. Empty/`"auto"` ⇒ `None` ⇒ auto-discovery. Per-platform widget choices
+are in `DEVICE_DISCOVERY.md` §5.3.
 
 ### 2.1 Windows — native Win32 dialog (`show_settings_dialog`)
 - A registered `QMKSettingsDialog` window class, `WS_OVERLAPPED|WS_CAPTION|
@@ -209,18 +232,23 @@ index**. Only one dialog open at a time, so a single shared slot suffices.
 
 ## 4. Device-Connection Status Indicator
 
-A **read-only** `hidapi` enumeration (`core::notifier::is_device_connected()`)
-runs on a background thread and refreshes the tray's status line **only on a
-transition** (to avoid needless UI/D-Bus traffic).
+The tray status line is a **three-state** value derived from `classify_devices()`
+(`DEVICE_DISCOVERY.md` §3), refreshed **only on a transition**:
 
-| Platform | Poll cadence | Delivery to UI |
+| State | Text | Icon |
 |---|---|---|
-| macOS / Windows | 3 s | `EventLoopProxy.send_event(UserEvent::DeviceStatus(bool))` → event-loop arm sets `device_status_i.set_text(...)` |
-| Linux (ksni) | 1 s | `handle.update(|t| t.device_connected = …)` (re-serializes menu + icon; also re-checks color scheme every 10 ticks) |
+| **Connected** | `●  Device Connected` (or `●  N Devices Connected`) | solid `U+25CF`, full alpha |
+| **No module** | `⚠  QMK board found — no qmk_notifier module (flash it)` | warning glyph |
+| **Disconnected** | `○  No Device Connected` | hollow `U+25CB`, ~35% alpha (Linux) |
 
-Status text: `"●  Device Connected"` (solid `U+25CF`) / `"○  No Device
-Connected"` (hollow `U+25CB`). The probe **never opens the device** (pure
-enumeration), so it cannot disturb the keyboard.
+The "No module" state is the point of the Tier-2 capability probe: a pure-VIA
+board (no qmk_notifier firmware) no longer shows a false-green "Connected".
+
+The frequent **Tier-1 presence** poll stays a read-only enumeration
+(`is_device_connected()`, pure enumerate, **never opens the device**) on a
+background thread. The **Tier-2 classification** that resolves the three states
+*does* open each candidate once (shared, non-seize — §R-COEX) on a device
+**appearance**, then is TTL-cached, so the hot poll never opens the device.
 
 ---
 

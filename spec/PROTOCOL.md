@@ -151,8 +151,42 @@ them.
 
 The legacy `DEFAULT_VENDOR_ID = 0xFEED` / `DEFAULT_PRODUCT_ID = 0x0000` are
 **not** used for matching in auto mode — `None` means "match any". They remain
-only as historical fallbacks in the crate's CLI. QMKonnect passes `Option<u16>`
-through and `None` always means wildcard.
+only as historical fallbacks in the crate's CLI and are **matching-dead** in
+QMKonnect (a doc comment at their definition points to
+`DEVICE_DISCOVERY.md` §7.2). QMKonnect passes `Option<u16>` through and `None`
+always means wildcard.
+
+### 3.5 Capability tier & multi-board broadcast
+
+Tier-1 presence (§3.1) finds every `0xFF60`/`0x61` interface, including pure-VIA
+boards that will never act on QMKonnect's magic bytes. **Tier-2** narrows the
+match set to boards that actually run qmk_notifier, by sending one `QUERY_INFO`
+typed command (`[0x81][0x9F][0xF0][0x01][0x03]`) and classifying the reply
+(`Info{proto_ver:2}` ⇒ `Capable`; `Legacy`/`Timeout`/anything-else ⇒
+`NotQmkNotifier`). The full discovery/selection design — including the
+per-candidate `classify_devices()`, its cache, and how it feeds the tray status
+and the Settings picker — is in `DEVICE_DISCOVERY.md` §2–§5.
+
+The **write match set** is Tier-1 (this section's predicate) **AND**
+`kind == Capable`. Consequently, when more than one qmk_notifier-capable board is
+present, the crate's existing burst-to-every-matching-device behavior
+(`burst_to_one`, §4.2) **broadcasts every window event to all of them** — the v1
+multi-board policy (`DEVICE_DISCOVERY.md` §4). The device cache `MatchKey` is
+enriched to include the capability distinction so the cache is invalidated when
+a board enters or leaves the capable set.
+
+### 3.6 Shared-open contract (R-COEX)
+
+QMKonnect opens every HID handle **shared / non-seize** — `FILE_SHARE_READ|
+WRITE` on Windows, `kIOHIDOptionsTypeNone` on macOS, plain `hidraw` `open()` on
+Linux — and reads input reports **only in bounded windows around its own
+writes** (`IN_DRAIN_MAX = 32`, §4.2). Because QMKonnect is the always-on process
+and VIA is used only intermittently, this is the load-bearing guarantee that
+VIA can always open the device to edit the keymap. The full contract, the
+platform reality (why an exclusive lock can't occur for a `0xFF60` collection
+on any OS), and the protocol-demultiplex argument are in `DEVICE_DISCOVERY.md`
+§6. **Must-preserve invariants:** never introduce a seize/exclusive open; never
+introduce a perpetual blocking read.
 
 ---
 
@@ -339,4 +373,4 @@ The `qmk-notifier` crate frames these and returns a parsed
 
 ---
 
-*Continue with `SPEC_PLATFORMS.md`.*
+*Continue with `SPEC_DEVICE_DISCOVERY.md`.*
