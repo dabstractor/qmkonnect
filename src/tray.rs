@@ -1554,8 +1554,16 @@ fn picker_row_text(d: &crate::core::notifier::ClassifiedDevice) -> String {
 // `WINDOW_INFO_ROWS` (@the established pattern for a free/extern fn that needs
 // shared state). Only one Settings dialog is open at a time, so a single
 // 2-slot array is sufficient.
+// Raw `*mut Object` is `!Send`/`!Sync`, which would make the `Mutex` (and thus
+// the `static`) non-`Sync`. Obj-C objects are reference-counted and safe for the
+// message sends performed here (always under the lock), so the SendPtr newtype
+// vouches for `Send` — the only bound `Mutex<T>: Sync` requires.
 #[cfg(target_os = "macos")]
-static ADVANCED_FIELDS: std::sync::Mutex<[Option<*mut objc::runtime::Object>; 2]> =
+struct SendPtr(*mut objc::runtime::Object);
+#[cfg(target_os = "macos")]
+unsafe impl Send for SendPtr {}
+#[cfg(target_os = "macos")]
+static ADVANCED_FIELDS: std::sync::Mutex<[Option<SendPtr>; 2]> =
     std::sync::Mutex::new([None, None]);
 
 #[cfg(target_os = "macos")]
@@ -1577,8 +1585,8 @@ extern "C" fn mac_toggle_advanced(
     if let Ok(fields) = ADVANCED_FIELDS.lock() {
         for field_opt in fields.iter() {
             if let Some(field) = field_opt {
-                if !(*field).is_null() {
-                    let _: () = unsafe { msg_send![*field, setHidden: hide] };
+                if !field.0.is_null() {
+                    let _: () = unsafe { msg_send![field.0, setHidden: hide] };
                 }
             }
         }
@@ -1759,7 +1767,8 @@ fn show_settings_dialog_with_pool(
         }];
 
         // Carry the two field pointers to the extern toggle fn (G8).
-        *ADVANCED_FIELDS.lock().unwrap() = [Some(vendor_field), Some(product_field)];
+        *ADVANCED_FIELDS.lock().unwrap() =
+            [Some(SendPtr(vendor_field)), Some(SendPtr(product_field))];
 
         // --- The Advanced checkbox (NSSwitchButton=3, a checkbox). -------------
         // Default: unchecked + fields HIDDEN when capable boards exist (the
@@ -1870,7 +1879,7 @@ fn show_settings_dialog_with_pool(
             // chosen: first NSOnState radio row → concrete (u16,u16) (G4 safety
             // net — take-first guarantees a wrong VID/PID can never be picked).
             let chosen: Option<(u16, u16)> = row_btns.iter().enumerate().find_map(|(i, _)| {
-                let s: isize = msg_send![*row_btns[i], state]; // NSOnState = 1
+                let s: isize = msg_send![row_btns[i], state]; // NSOnState = 1
                 (s == 1).then(|| (devices[i].vendor_id, devices[i].product_id))
             });
             // manual: read both typed fields → parse_id_field each (G10: each
@@ -3027,7 +3036,7 @@ fn show_macos_window_info_dialog_inner() -> Result<(), Box<dyn std::error::Error
 
 #[cfg(all(test, any(target_os = "macos", target_os = "windows")))]
 mod tests {
-    use super::device_status_text;
+    use super::{device_status_text, picker_row_text};
     use crate::core::notifier::DeviceStatus;
 
     #[test]
