@@ -3735,6 +3735,10 @@ disable = ["known_b", "phantom"]
     }
 
     #[test]
+    #[cfg_attr(
+        target_os = "macos",
+        ignore = "live HID enumeration (is_device_connected) traps with SIGTRAP when the cargo-test harness runs it off the main thread on macOS; the present=false dominance logic it asserts is covered deterministically by test_classify_device_status_truth_table"
+    )]
     fn test_device_status_is_disconnected_in_ci_without_hardware() {
         // device_status() wires is_device_connected() (Tier-1 enumerate) + host_capable().
         // When NO Tier-1 board is present (the CI case — `is_device_connected()`
@@ -4238,6 +4242,10 @@ disable = ["known_b", "phantom"]
     // ── D. classify_devices smoke (the env-dependent shell, 1 test) ──
 
     #[test]
+    #[cfg_attr(
+        target_os = "macos",
+        ignore = "classify_devices -> enumerate_candidates -> hidapi::HidApi::new() traps with SIGTRAP off the main thread under the cargo-test harness on macOS; the wiring it smoke-tests is env-dependent by design"
+    )]
     fn test_classify_devices_smoke_returns_vec() {
         reset_test_state();
         reset_handshake_state();
