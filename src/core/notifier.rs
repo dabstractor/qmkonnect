@@ -1254,6 +1254,17 @@ fn handshake_warm_eligible(candidate_count: usize) -> bool {
 /// `MockNotifier` with no real HID, so `enumerate_candidates` finds 0 devices —
 /// 0 ≤ 1, but the loop body stamps nothing).
 fn warm_cache_from_handshake(kind: DeviceKind) {
+    // Gate real HID enumeration out of the test binary. The cargo-test harness
+    // runs each test on a worker thread, and `enumerate_candidates` ->
+    // `hidapi::HidApi::new()` traps with SIGTRAP when driven off the main thread
+    // on macOS (the app always calls this from the main/poll thread, so this is
+    // a test-only hazard). The handshake tests use MockNotifier with no real
+    // hardware, so there is nothing to warm anyway — making this a true no-op
+    // under `cfg!(test)` matches the doc comment above. Production
+    // (`cfg!(test) == false`) is unchanged.
+    if cfg!(test) {
+        return;
+    }
     let candidates = enumerate_candidates();
     if !handshake_warm_eligible(candidates.len()) {
         return;
