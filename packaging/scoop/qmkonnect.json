@@ -1,0 +1,31 @@
+{
+    "##": "Scoop manifest for QMKonnect. innosetup:true => Scoop extracts via innounp (installer logic does NOT run): no HKCU Run autostart, no ARP entry, no AUMID on the shortcut. See packaging/scoop/README.md. CI (P1.M5.T1.S2) fills the real hash before publishing.",
+    "version": "0.2.8",
+    "description": "Cross-platform window activity notifier for QMK keyboards (Windows tray app)",
+    "homepage": "https://github.com/dabstractor/qmkonnect",
+    "license": "MIT",
+    "innosetup": true,
+    "architecture": {
+        "64bit": {
+            "url": "https://github.com/dabstractor/qmkonnect/releases/download/v0.2.8/QMKonnect-0.2.8-windows-x64.exe",
+            "hash": "0000000000000000000000000000000000000000000000000000000000000000"
+        }
+    },
+    "shortcuts": [
+        [
+            "QMKonnect",
+            "QMKonnect.exe"
+        ]
+    ],
+    "checkver": {
+        "github": "https://github.com/dabstractor/qmkonnect",
+        "regex": "v([\\d.]+)"
+    },
+    "autoupdate": {
+        "architecture": {
+            "64bit": {
+                "url": "https://github.com/dabstractor/qmkonnect/releases/download/v$version/QMKonnect-$version-windows-x64.exe"
+            }
+        }
+    }
+}
