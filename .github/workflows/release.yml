@@ -366,3 +366,173 @@ jobs:
         run: |
           # shellcheck disable=SC2016 # $VERSION expands in the su'd builder shell, not here.
           su builder -c 'set -euo pipefail; ./publish.sh "$VERSION"'
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Homebrew tap — publish the patched cask to dabstractor/homebrew-qmkonnect.
+  #
+  # Runs AFTER `publish` (the cask's sha256 is the hash of the release DMG,
+  # which exists only once `publish` attaches it to the GitHub Release) and
+  # only on real tag pushes (skipped for workflow_dispatch dry-runs, where the
+  # release isn't published and the DMG download would 404).
+  #
+  # SECRET — HOMEBREW_TAP_DEPLOY_KEY (REQUIRED for this job to do anything):
+  #   The tap repo is pushed via a GitHub deploy key (SSH, WRITE access).
+  #
+  #   One-time setup:
+  #     1. Generate a dedicated ed25519 key pair (do NOT reuse a personal key):
+  #          ssh-keygen -t ed25519 -C "qmkonnect-homebrew-ci" -f qmkonnect-homebrew
+  #     2. Add the PUBLIC half (qmkonnect-homebrew.pub) to the tap repo
+  #        dabstractor/homebrew-qmkonnect: Settings → Deploy keys → "Add new
+  #        deploy key". CHECK "Allow write access" (or the push is denied).
+  #     3. Store the PRIVATE half (qmkonnect-homebrew, the full PEM incl. the
+  #        BEGIN/END lines) as the HOMEBREW_TAP_DEPLOY_KEY Actions secret in
+  #        dabstractor/qmkonnect (Settings → Secrets and variables → Actions).
+  #
+  #   This is a per-REPO GitHub deploy key (the public half lives on the tap
+  #   repo), NOT the AUR per-account SSH-key model. webfactory/ssh-agent loads
+  #   the key into ssh-agent and pre-trusts github.com, so the git clone over
+  #   SSH is non-interactive. Until this secret is set, the clone step fails
+  #   with "Permission denied (publickey)" — expected on the very first run.
+  # ─────────────────────────────────────────────────────────────────────────
+  homebrew-tap:
+    name: Publish to Homebrew tap (homebrew-qmkonnect)
+    needs: [publish]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # This job builds NO Rust. The workflow only triggers on `v*` tags, so
+      # GITHUB_REF_NAME is the tag (v0.2.8); stripping the leading 'v' yields
+      # the bare version (0.2.8) update-cask.sh requires (it rejects a 'v').
+      # cargo-release cuts the tag from Cargo.toml, so this is transitively the
+      # Cargo.toml version (architecture/external_deps.md "Version Source of Truth").
+      - name: Determine version
+        id: ver
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      # update-cask.sh CAN download the DMG itself, but the contract wants the
+      # job to own the download + hash (single download; visible in CI logs).
+      # sha256sum yields lowercase 64-hex, which update-cask.sh validates.
+      - name: Download release DMG and compute SHA256
+        id: dmg
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          url="https://github.com/dabstractor/qmkonnect/releases/download/v${VERSION}/QMKonnect-${VERSION}-macos.dmg"
+          tmp="$(mktemp)"
+          curl -fL "$url" -o "$tmp"
+          echo "sha256=$(sha256sum "$tmp" | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+          rm -f "$tmp"
+
+      # Patches version + sha256 in packaging/homebrew/Casks/qmkonnect.rb IN THE
+      # SOURCE CHECKOUT. Passing the hash (2-arg form) skips the script's own
+      # download. PURE local update — does NOT push (the job does, next).
+      - name: Patch cask (update-cask.sh)
+        working-directory: packaging/homebrew
+        run: ./update-cask.sh "${{ steps.ver.outputs.version }}" "${{ steps.dmg.outputs.sha256 }}"
+
+      # Loads the deploy key into ssh-agent + pre-trusts github.com (built-in
+      # host-key list). NOTE: the repo is `webfactory/ssh-agent` — the
+      # bucket-README's `webfactory/agents/github-ssh-agent` path DOES NOT EXIST.
+      - name: Configure SSH deploy key for the tap repo
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
+
+      # update-cask.sh patched the SOURCE-checkout cask; copy it into the tap
+      # clone, set a git identity (the script doesn't push — the job owns the
+      # commit), commit, and push over the deploy key.
+      - name: Push patched cask to the tap repo
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          set -euo pipefail
+          git clone git@github.com:dabstractor/homebrew-qmkonnect.git tap-repo
+          cp packaging/homebrew/Casks/qmkonnect.rb tap-repo/Casks/qmkonnect.rb
+          cd tap-repo
+          git config user.email "qmkonnect-bot@users.noreply.github.com"
+          git config user.name  "QMKonnect release automation"
+          git add Casks/qmkonnect.rb
+          git commit -m "qmkonnect cask v${VERSION}"
+          git push
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Scoop bucket — publish the patched manifest to dabstractor/scoop-qmkonnect.
+  #
+  # Runs AFTER `publish` (the manifest's hash is the SHA256 of the release
+  # Inno installer, which exists only once `publish` attaches it) and only on
+  # real tag pushes (skipped for workflow_dispatch dry-runs).
+  #
+  # SECRET — SCOOP_BUCKET_DEPLOY_KEY (REQUIRED for this job to do anything):
+  #   The bucket repo is pushed via a GitHub deploy key (SSH, WRITE access).
+  #
+  #   One-time setup:
+  #     1. Generate a dedicated ed25519 key pair:
+  #          ssh-keygen -t ed25519 -C "qmkonnect-scoop-ci" -f qmkonnect-scoop
+  #     2. Add the PUBLIC half (qmkonnect-scoop.pub) to the bucket repo
+  #        dabstractor/scoop-qmkonnect: Settings → Deploy keys → "Add new
+  #        deploy key". CHECK "Allow write access" (or the push is denied).
+  #     3. Store the PRIVATE half (qmkonnect-scoop, full PEM) as the
+  #        SCOOP_BUCKET_DEPLOY_KEY Actions secret in dabstractor/qmkonnect.
+  #
+  #   Per-REPO GitHub deploy key (public half on the bucket repo). Same model
+  #   as the Homebrew tap key above. Until set, the clone step fails with
+  #   "Permission denied (publickey)" — expected on the very first run.
+  # ─────────────────────────────────────────────────────────────────────────
+  scoop-bucket:
+    name: Publish to Scoop bucket (scoop-qmkonnect)
+    needs: [publish]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Determine version
+        id: ver
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      # Download the Inno installer + hash it (sha256sum → lowercase 64-hex,
+      # which update-manifest.ps1 validates via ^[0-9a-f]{64}$).
+      - name: Download release installer and compute SHA256
+        id: exe
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          url="https://github.com/dabstractor/qmkonnect/releases/download/v${VERSION}/QMKonnect-${VERSION}-windows-x64.exe"
+          tmp="$(mktemp)"
+          curl -fL "$url" -o "$tmp"
+          echo "sha256=$(sha256sum "$tmp" | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+          rm -f "$tmp"
+
+      # Patches version + concrete url + hash in packaging/scoop/qmkonnect.json
+      # IN THE SOURCE CHECKOUT (leaves the autoupdate $version template). Passing
+      # -Sha256 skips the script's own download. pwsh 7+ is preinstalled on
+      # ubuntu-latest; the script is cross-platform by design. PURE local update.
+      - name: Patch manifest (update-manifest.ps1)
+        working-directory: packaging/scoop
+        shell: pwsh
+        run: ./update-manifest.ps1 -Version "${{ steps.ver.outputs.version }}" -Sha256 "${{ steps.exe.outputs.sha256 }}"
+
+      - name: Configure SSH deploy key for the bucket repo
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.SCOOP_BUCKET_DEPLOY_KEY }}
+
+      # Copy the patched manifest into the bucket clone. NOTE the external repo
+      # layout: the manifest lives in a `bucket/` subdir (BucketTemplate
+      # convention), so the destination is bucket-repo/bucket/qmkonnect.json
+      # (clone dir named `bucket-repo` to avoid the confusing bucket/bucket path).
+      - name: Push patched manifest to the bucket repo
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          set -euo pipefail
+          git clone git@github.com:dabstractor/scoop-qmkonnect.git bucket-repo
+          cp packaging/scoop/qmkonnect.json bucket-repo/bucket/qmkonnect.json
+          cd bucket-repo
+          git config user.email "qmkonnect-bot@users.noreply.github.com"
+          git config user.name  "QMKonnect release automation"
+          git add bucket/qmkonnect.json
+          git commit -m "qmkonnect manifest v${VERSION}"
+          git push

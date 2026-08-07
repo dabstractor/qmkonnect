@@ -294,7 +294,7 @@
               "type": "Task",
               "id": "P1.M5.T1",
               "title": "AUR + Homebrew + Scoop CI Publishing Jobs",
-              "status": "Researching",
+              "status": "Complete",
               "description": "Add three new jobs to release.yml that publish the updated PKGBUILD, Homebrew cask, and Scoop manifest to their respective external repos after the GitHub Release is published.",
               "subtasks": [
                 {
@@ -318,7 +318,7 @@
                   "type": "Subtask",
                   "id": "P1.M5.T1.S2",
                   "title": "Add Homebrew tap + Scoop bucket publication CI jobs",
-                  "status": "Researching",
+                  "status": "Complete",
                   "story_points": 2,
                   "dependencies": [
                     "P1.M2.T1.S2",
@@ -345,7 +345,7 @@
                   "type": "Subtask",
                   "id": "P1.M5.T2.S1",
                   "title": "Add Winget publishing CI job",
-                  "status": "Planned",
+                  "status": "Researching",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M3.T2.S2"
