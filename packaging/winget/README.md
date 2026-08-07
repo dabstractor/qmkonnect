@@ -152,7 +152,7 @@ python3 -c "import yaml,sys,glob; [yaml.safe_load(open(f)) for f in glob.glob('p
 
 - **Source repo:** <https://github.com/dabstractor/qmkonnect>
 - **Install docs:** [`docs/installation.md`](../../docs/installation.md)
-  (Windows section — a Winget row is added in P1.M6.T1.S1)
+  (Windows section — Winget row)
 - **Inno installer this manifest consumes:**
   [`packaging/windows/inno/`](../windows/inno/) (`QMKonnect.iss` →
   `QMKonnect-Setup.exe`, renamed to

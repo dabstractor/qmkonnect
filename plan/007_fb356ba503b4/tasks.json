@@ -4,7 +4,7 @@
       "type": "Phase",
       "id": "P1",
       "title": "F15 — Community Package-Manager Distribution",
-      "status": "Researching",
+      "status": "Planned",
       "description": "Publish every QMKonnect release to native package/version managers users already trust: AUR and Nix flake (Linux), Homebrew (macOS), Scoop and Winget (Windows), plus cross-platform mise/asdf plugins. Each channel honors the per-user, no-admin philosophy where the channel permits. F1-F14 are already fully implemented in the v0.2.8 codebase (390 tests passing); this phase closes the last PRD feature gap (F15).",
       "milestones": [
         {
@@ -412,7 +412,7 @@
           "type": "Milestone",
           "id": "P1.M6",
           "title": "Documentation Sync",
-          "status": "Researching",
+          "status": "Complete",
           "description": "Update the project documentation to surface all community distribution channels alongside the direct installers. This is the Mode B final task that sweeps cross-cutting docs.",
           "tasks": [
             {
@@ -456,7 +456,7 @@
               "type": "Task",
               "id": "P1.M6.T2",
               "title": "Sync changeset-level documentation",
-              "status": "Researching",
+              "status": "Complete",
               "description": "Final Mode B documentation sweep: update README.md with the distribution channel list, update the PACKAGING spec section for F15, and regenerate docs/llms_full.txt.",
               "subtasks": [
                 {
@@ -485,7 +485,7 @@
                   "type": "Subtask",
                   "id": "P1.M6.T2.S2",
                   "title": "Regenerate docs/llms_full.txt and update PACKAGING spec references",
-                  "status": "Researching",
+                  "status": "Complete",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M6.T1.S1",
@@ -510,21 +510,21 @@
           "type": "Milestone",
           "id": "P1.M7",
           "title": "Native .deb/.rpm Linux Packages",
-          "status": "Researching",
+          "status": "Planned",
           "description": "PRD UPDATE (v0.2.8+): F15 expanded to include native `.deb` (Ubuntu/Debian/Mint) and `.rpm` (Fedora/RHEL/Rocky/Alma/openSUSE) packages. Both install the same FHS file set as the Arch PKGBUILD, including the XDG autostart `.desktop` (F17). Per PACKAGING.md §2/§4.3/§4.4, these distros ship a unified hidapi (>=0.14) that auto-selects hidraw at runtime, so the builds MUST NOT pass `-lhidapi-hidraw` (ARCHITECTURE.md invariant 12).",
           "tasks": [
             {
               "type": "Task",
               "id": "P1.M7.T1",
               "title": ".deb Package via cargo-deb",
-              "status": "Researching",
+              "status": "Planned",
               "description": "Create a native Debian package using cargo-deb targeting Ubuntu/Debian/Mint. Build on ubuntu-22.04 (glibc 2.35) so the runtime works on 22.04, 24.04, Debian 12, Mint 21/22+. Include maintainer scripts (postinst/prerm/postrm) mirroring the Arch qmkonnect.install hooks.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M7.T1.S1",
                   "title": "Create [package.metadata.deb] block + maintainer scripts + long-description",
-                  "status": "Planned",
+                  "status": "Researching",
                   "story_points": 2,
                   "dependencies": [
                     "P2.M6.T1.S1"
