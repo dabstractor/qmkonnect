@@ -10,6 +10,11 @@ mod windows;
 // (matches the hyprland.rs pattern); no cfg here avoids the duplicated-attribute
 // lint. PLATFORMS.md §6/§10.
 mod x11;
+// foreign-toplevel Wayland backend (PLATFORMS.md §7 — priority #1). Hand-rolled
+// wlr protocol (sctk 0.20 exposes only the ext variant, which has no activation
+// state — see wayland_ft.rs module docs for the correction).
+#[cfg(all(target_os = "linux", feature = "wayland"))]
+mod wayland_ft;
 
 // Define the WindowMonitor trait. A single `Send` trait serves every platform:
 // Hyprland's `start()` blocks on its IPC listener, so it no longer needs to keep
@@ -102,9 +107,10 @@ pub fn get_config_paths() -> Vec<std::path::PathBuf> {
 }
 
 // List currently-running foreground windows as `(class, title)` pairs.
-// Implemented for the tray-bearing platforms (macOS / Windows) and for the
-// Linux/Hyprland build (so the SNI tray's "Show Window Information" item has
-// data to surface); returns an empty list everywhere else.
+// Implemented for the tray-bearing platforms (macOS / Windows) and on Linux for
+// the foreign-toplevel Wayland backend (priority #1) and the Hyprland-IPC
+// backend (so the SNI tray's "Show Window Information" item has data to
+// surface); returns an empty list everywhere else.
 #[cfg_attr(
     not(any(target_os = "macos", target_os = "windows", feature = "linux-tray")),
     allow(dead_code)
@@ -116,13 +122,27 @@ pub fn list_foreground_windows() -> Vec<(String, String)> {
     #[cfg(target_os = "windows")]
     return windows::list_foreground_windows();
 
-    #[cfg(all(target_os = "linux", feature = "hyprland"))]
+    // foreign-toplevel is priority #1 on Linux (matches select_linux_backend
+    // ordering). Only compiled in under the `wayland` feature.
+    #[cfg(all(target_os = "linux", feature = "wayland"))]
+    return wayland_ft::list_foreground_windows();
+
+    #[cfg(all(
+        target_os = "linux",
+        not(feature = "wayland"),
+        feature = "hyprland"
+    ))]
     return hyprland::list_foreground_windows();
 
     #[cfg(not(any(
         target_os = "macos",
         target_os = "windows",
-        all(target_os = "linux", feature = "hyprland")
+        all(target_os = "linux", feature = "wayland"),
+        all(
+            target_os = "linux",
+            not(feature = "wayland"),
+            feature = "hyprland"
+        )
     )))]
     return Vec::new();
 }

@@ -71,6 +71,10 @@ fn linux_backend_candidates() -> Vec<BackendCandidate> {
 /// in P2.M1.T2.S2 before the backends in P2.M2/M3/M4).
 fn construct_backend(name: &str, verbose: bool) -> Result<Box<dyn WindowMonitor>, Box<dyn Error>> {
     match name {
+        #[cfg(feature = "wayland")]
+        "foreign-toplevel" => Ok(Box::new(
+            crate::platforms::wayland_ft::WaylandFtMonitor::new(verbose),
+        )),
         #[cfg(feature = "hyprland")]
         "hyprland" => Ok(Box::new(crate::platforms::hyprland::HyprlandMonitor::new(
             verbose,
@@ -161,7 +165,7 @@ pub fn select_linux_backend(
 // `construct_backend` arm. Undefined features today ⇒ these are not compiled.
 #[cfg(feature = "wayland")]
 fn wayland_probe(_verbose: bool) -> Result<(), String> {
-    Err("foreign-toplevel Wayland backend not yet implemented (P2.M2)".into())
+    crate::platforms::wayland_ft::probe_available(_verbose)
 }
 #[cfg(feature = "gnome")]
 fn gnome_probe(_verbose: bool) -> Result<(), String> {

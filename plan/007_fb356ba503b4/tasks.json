@@ -679,21 +679,21 @@
           "type": "Milestone",
           "id": "P2.M2",
           "title": "Foreign-toplevel Wayland Backend (src/platforms/wayland_ft.rs)",
-          "status": "Researching",
+          "status": "Complete",
           "description": "The single highest-leverage backend: one Wayland client speaking the foreign-toplevel protocols covers every wlroots-derived compositor plus KDE Plasma and COSMIC (Hyprland, Sway, Niri, River, Labwc, Wayfire, KDE Plasma 6/KWin, COSMIC/Smithay). Uses `wlr-foreign-toplevel-management-v1` for activation/focus state (the load-bearing protocol) and `ext-foreign-toplevel-list-v1` for cross-checking app_ids and populating the window-info dialog.",
           "tasks": [
             {
               "type": "Task",
               "id": "P2.M2.T1",
               "title": "Implement wayland_ft.rs backend",
-              "status": "Researching",
+              "status": "Complete",
               "description": "Create `src/platforms/wayland_ft.rs` (feature `wayland`) implementing WindowMonitor via smithay-client-toolkit's foreign-toplevel handler. spawn-and-return `start()` (dedicated EventQueue dispatch thread), per-toplevel tracking (app_id/title/state), empty-workspace -> empty WindowInfo, reconnect backoff, and list_foreground_windows() snapshot.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P2.M2.T1.S1",
                   "title": "Core wayland_ft.rs: wlr focus tracking + ext cross-check + spawn-and-return + reconnect",
-                  "status": "Researching",
+                  "status": "Complete",
                   "story_points": 5,
                   "dependencies": [
                     "P2.M1.T1.S1",
@@ -721,14 +721,14 @@
               "type": "Task",
               "id": "P2.M3.T1",
               "title": "GNOME Shell extension (packaging/gnome-shell-extension/)",
-              "status": "Researching",
+              "status": "Ready",
               "description": "Create the `qmkonnect@mulletware` GNOME Shell extension (GJS, GNOME Shell 45+) that runs in the gnome-shell process, reads `global.display.focus_window`, and republishes `(app_class, title)` over the session D-Bus. This is a SEPARATE artifact from the app binary (the app cannot load it).",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P2.M3.T1.S1",
                   "title": "Create extension.js + metadata.json + D-Bus export",
-                  "status": "Planned",
+                  "status": "Ready",
                   "story_points": 3,
                   "dependencies": [],
                   "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: PLATFORMS.md §8.1-§8.2 + PACKAGING.md §7 specify the D-Bus contract: well-known name `io.mulletware.QMKonnect` (owned <=> extension installed & enabled), object path `/io/mulletware/QMKonnect`, interface `io.mulletware.QMKonnect.WindowMonitor` with method `GetActiveWindow() -> (s app_class, s title)`, signal `ActiveWindowChanged(s app_class, s title)`, properties AppClass/Title. `app_class` = `MetaWindow.get_wm_class()` (the WM_CLASS class — parity with X11). title = `MetaWindow.get_title()`. GJS, GNOME Shell 45+ APIs. metadata.json: uuid=`qmkonnect@mulletware`, shell-version covering supported GNOME line (e.g. ['45','46','47','48','49','50']), version=QMKonnect release.\n2. INPUT: PLATFORMS.md §8.2 (enable/disable/_onFocus logic), PACKAGING.md §7 (build/zip/distribution).\n3. LOGIC: (a) Create `packaging/gnome-shell-extension/metadata.json`. (b) Create `packaging/gnome-shell-extension/extension.js`: `enable()` acquires the D-Bus name, exports the object/interface on the session bus, connects `global.display.connect('notify::focus-window', ...)`, emits initial state; `_onFocus()` reads `global.display.focus_window` -> `[w.get_wm_class() ?? '', w.get_title() ?? '']` (or ['',''] if null), dedups against last-emitted, emits `ActiveWindowChanged`; `disable()` disconnects, releases name, unexports. Fallbacks: get_wm_class() may be null -> empty class. (c) Optional `prefs.js`, `stylesheet.css`.\n4. OUTPUT: `packaging/gnome-shell-extension/{metadata.json,extension.js}` (+ optional prefs.js/stylesheet.css).\n5. DOCS: [Mode A] This IS part of the deliverable; the extension README/docs point users to extensions.gnome.org + the Release asset.",
