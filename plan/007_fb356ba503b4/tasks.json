@@ -4,7 +4,7 @@
       "type": "Phase",
       "id": "P1",
       "title": "F15 — Community Package-Manager Distribution",
-      "status": "Planned",
+      "status": "Researching",
       "description": "Publish every QMKonnect release to native package/version managers users already trust: AUR and Nix flake (Linux), Homebrew (macOS), Scoop and Winget (Windows), plus cross-platform mise/asdf plugins. Each channel honors the per-user, no-admin philosophy where the channel permits. F1-F14 are already fully implemented in the v0.2.8 codebase (390 tests passing); this phase closes the last PRD feature gap (F15).",
       "milestones": [
         {
@@ -510,21 +510,21 @@
           "type": "Milestone",
           "id": "P1.M7",
           "title": "Native .deb/.rpm Linux Packages",
-          "status": "Planned",
+          "status": "Researching",
           "description": "PRD UPDATE (v0.2.8+): F15 expanded to include native `.deb` (Ubuntu/Debian/Mint) and `.rpm` (Fedora/RHEL/Rocky/Alma/openSUSE) packages. Both install the same FHS file set as the Arch PKGBUILD, including the XDG autostart `.desktop` (F17). Per PACKAGING.md §2/§4.3/§4.4, these distros ship a unified hidapi (>=0.14) that auto-selects hidraw at runtime, so the builds MUST NOT pass `-lhidapi-hidraw` (ARCHITECTURE.md invariant 12).",
           "tasks": [
             {
               "type": "Task",
               "id": "P1.M7.T1",
               "title": ".deb Package via cargo-deb",
-              "status": "Planned",
+              "status": "Ready",
               "description": "Create a native Debian package using cargo-deb targeting Ubuntu/Debian/Mint. Build on ubuntu-22.04 (glibc 2.35) so the runtime works on 22.04, 24.04, Debian 12, Mint 21/22+. Include maintainer scripts (postinst/prerm/postrm) mirroring the Arch qmkonnect.install hooks.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M7.T1.S1",
                   "title": "Create [package.metadata.deb] block + maintainer scripts + long-description",
-                  "status": "Researching",
+                  "status": "Ready",
                   "story_points": 2,
                   "dependencies": [
                     "P2.M6.T1.S1"
@@ -540,7 +540,7 @@
                   "type": "Subtask",
                   "id": "P1.M7.T1.S2",
                   "title": "Add .deb CI job to release.yml",
-                  "status": "Planned",
+                  "status": "Ready",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M7.T1.S1"
@@ -610,21 +610,21 @@
           "type": "Milestone",
           "id": "P2.M1",
           "title": "Core Backend Selection + Config + Build Features",
-          "status": "Researching",
+          "status": "Ready",
           "description": "The foundation for F16: the `select_linux_backend` runtime dispatcher that probes each compiled-in backend in priority order, the `[linux]` config table, the new Cargo features (wayland/gnome/atspi), X11 made unconditional, and the hidapi link nuance (Arch vs Debian/Fedora). Everything else in P2 depends on this.",
           "tasks": [
             {
               "type": "Task",
               "id": "P2.M1.T1",
               "title": "select_linux_backend runtime dispatcher",
-              "status": "Researching",
+              "status": "Complete",
               "description": "Implement `select_linux_backend(verbose) -> Result<Box<dyn WindowMonitor>, Box<dyn Error>>` (in `src/platforms/mod.rs` or `linux.rs`) that probes each compiled-in backend for availability in priority order (foreign-toplevel -> GNOME -> Hyprland -> AT-SPI -> X11) and returns the first present one. Replaces the old compile-time `cfg(feature=\"hyprland\")` either/or with runtime selection so one binary works across all desktops.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P2.M1.T1.S1",
                   "title": "Implement select_linux_backend with priority probing + verbose logging + no-backend fallback",
-                  "status": "Planned",
+                  "status": "Complete",
                   "story_points": 3,
                   "dependencies": [],
                   "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: The updated PLATFORMS.md §6 defines `select_linux_backend` as the runtime selector with this priority order: (1) foreign-toplevel Wayland [feature `wayland`] — gate: `$WAYLAND_DISPLAY` resolvable AND compositor advertises `zwlr_foreign_toplevel_manager_v1`; (2) GNOME Shell extension [feature `gnome`] — gate: D-Bus name `io.mulletware.QMKonnect` owned; (3) Hyprland IPC [feature `hyprland`] — gate: `$HYPRLAND_INSTANCE_SIGNATURE` + live socket; (4) AT-SPI [feature `atspi`] — gate: a11y bus reachable; (5) X11 [always on Linux] — gate: `$DISPLAY` set AND `$WAYLAND_DISPLAY` unset AND xprop present. ARCHITECTURE.md §2.2 says `create_monitor` delegates to `select_linux_backend`. The `[linux] backend` config can override auto selection. The no-backend fallback (e.g. GNOME-Wayland without extension + a11y off) returns Err but the runner still starts tray/device-status/HID pipeline; on GNOME a one-shot notify-send fires (PLATFORMS.md §8.4).\n2. INPUT: `src/platforms/mod.rs` (create_monitor + WindowMonitor trait), the per-backend availability probes (each backend's T1). This subtask implements the dispatcher and the probe stubs; backends are wired in P2.M2-P2.M5.\n3. LOGIC: (a) In `src/platforms/mod.rs`/`linux.rs`, add `select_linux_backend(verbose)` that iterates the priority list, calls each backend's availability probe, returns the first `Ok`. (b) Each probe is a cheap check (env var + D-Bus name ownership + socket existence). (c) Honor `[linux] backend` config override (forced backend that's unavailable errors loudly with every probe result). (d) Verbose mode prints each candidate, probe result, and chosen backend. (e) On total failure (all probes fail), return Err; the runner (`runners/linux.rs`) handles it by still starting the tray/device pipeline and emitting no window events; GNOME first-run notification fires here. (f) Wire `create_monitor` to call `select_linux_backend` on Linux. Invariant 11: NEVER select X11 under a Wayland compositor (X11 gate requires `$WAYLAND_DISPLAY` unset).\n4. OUTPUT: `select_linux_backend` in `src/platforms/{mod,linux}.rs`, `create_monitor` updated, runner handles the no-backend Err gracefully.\n5. DOCS: [Mode A] Backend selection is logged verbosely; document the priority order + `[linux] backend` override in docs.",
@@ -640,14 +640,14 @@
               "type": "Task",
               "id": "P2.M1.T2",
               "title": "Config schema [linux] table + Cargo features + hidapi link nuance",
-              "status": "Researching",
+              "status": "Ready",
               "description": "Add the `[linux]` config table (`backend`, `gnome_poll_interval_ms`) to the Config struct, add the new Cargo features (`wayland`/`gnome`/`atspi`) to default, make X11 unconditional on Linux, and enforce the hidapi-link-per-distro invariant (Arch links `-lhidapi-hidraw`; Debian/Ubuntu/Fedora unified hidapi must NOT).",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P2.M1.T2.S1",
                   "title": "Add LinuxConfig struct + [linux] table to Config schema",
-                  "status": "Planned",
+                  "status": "Ready",
                   "story_points": 1,
                   "dependencies": [],
                   "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: The updated CONFIG.md §1/§1.3 adds a `LinuxConfig` struct to `Config`: `backend: Option<String>` (None/auto = runtime priority order; values: foreign-toplevel|gnome|hyprland|atspi|x11|auto) and `gnome_poll_interval_ms: Option<u64>` (default 1000). Both optional; a config without `[linux]` uses auto selection.\n2. INPUT: `src/core/mod.rs` (Config struct, parse_config).\n3. LOGIC: Add `#[serde(default)] pub linux: LinuxConfig` to Config. Add `LinuxConfig` struct with `backend: Option<String>` and `gnome_poll_interval_ms: Option<u64>` (both `#[serde(default)]`, `#[derive(Default)]`). Update `render_config_body` if it needs to emit `[linux]` hints (optional — commented hints only). `configured_filter()` and `configured_timing()` are unaffected.\n4. OUTPUT: `LinuxConfig` in `src/core/mod.rs`, wired into Config.\n5. DOCS: [Mode A] The schema is self-documenting via the `[linux]` table; add commented hints to the config template if render_config_body is extended.",
@@ -661,7 +661,7 @@
                   "type": "Subtask",
                   "id": "P2.M1.T2.S2",
                   "title": "Add wayland/gnome/atspi Cargo features, make X11 unconditional, document hidapi link nuance",
-                  "status": "Planned",
+                  "status": "Ready",
                   "story_points": 2,
                   "dependencies": [],
                   "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: The updated PACKAGING.md §2 / ARCHITECTURE.md §9 changed the default features from `['hyprland', 'macos', 'linux-tray']` to `['wayland', 'gnome', 'atspi', 'hyprland', 'macos', 'linux-tray']`. New features: `wayland` (dep smithay-client-toolkit + wayland-client), `gnome` (dep zbus), `atspi` (dep atspi). X11 is now compiled UNCONDITIONALLY on Linux (no feature flag). ARCHITECTURE.md invariant 12: Arch links `-lhidapi-hidraw` (separate lib); Debian/Ubuntu/Fedora (unified hidapi >=0.14) must NOT pass that flag.\n2. INPUT: `Cargo.toml` ([features], [dependencies], [target.'cfg(target_os = \"linux\")'].dependencies).\n3. LOGIC: (a) Add `wayland = ['dep:smithay-client-toolkit', 'dep:wayland-client']`, `gnome = ['dep:zbus']`, `atspi = ['dep:atspi']` to [features]; update `default` to include all three. (b) Add the optional deps under `[target.'cfg(target_os = \"linux\")']`. (c) X11 (`src/platforms/x11.rs`) is compiled unconditionally on Linux (no feature gate) — update `#[cfg]` attributes. (d) Document the hidapi link nuance: the Arch PKGBUILD keeps `RUSTFLAGS='-C link-arg=-lhidapi-hidraw'`; the .deb/.rpm builds (P1.M7) and Nix flake must NOT pass it (unified hidapi auto-selects hidraw). Add a comment in Cargo.toml or .cargo/config.toml documenting this.\n4. OUTPUT: Updated `Cargo.toml` features + deps; X11 unconditional; hidapi nuance documented.\n5. DOCS: [Mode A] The feature table in PACKAGING.md §2 is the reference; keep Cargo.toml comments in sync.",

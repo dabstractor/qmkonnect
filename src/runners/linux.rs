@@ -15,15 +15,14 @@ impl LinuxRunner {
 
 impl PlatformRunner for LinuxRunner {
     fn run(&mut self, _args: &[String]) -> Result<(), Box<dyn Error>> {
-        let mut monitor = platforms::create_monitor(self.verbose)?;
-
         println!("QMKonnect started");
         if self.verbose {
             println!("Verbose logging enabled");
-            println!("Using platform: {}", monitor.platform_name());
         }
 
-        // Read-only startup probe so a typo'd VID/PID is obvious immediately (#16).
+        // These run in BOTH the monitor-Ok and no-backend cases — the app stays
+        // useful even without a window backend (PLATFORMS.md §6 "No-backend
+        // fallback"): the tray + device-status poll + HID pipeline keep running.
         crate::core::notifier::startup_device_probe(self.verbose);
         // If a device is already connected at startup, run the capability handshake
         // now (poll-thread reconnects are handled in linux_tray.rs / tray.rs).
@@ -40,65 +39,116 @@ impl PlatformRunner for LinuxRunner {
             process::exit(0);
         })?;
 
-        // Hyprland: the monitor's start() blocks the calling thread on the IPC
-        // event listener. There is no GUI loop to run alongside it.
-        #[cfg(all(target_os = "linux", feature = "hyprland"))]
-        {
-            // Register the StatusNotifierItem tray (if enabled) before blocking
-            // on the IPC listener. ksni owns its D-Bus thread; we only need to
-            // keep the handle alive for the process lifetime. Failure (e.g. no
-            // session bus) is logged, not fatal.
-            #[cfg(feature = "linux-tray")]
-            let _tray_handle = crate::linux_tray::spawn(self.verbose);
+        // Tray — IDENTICAL in both the Ok and Err branches; spawned first so the
+        // icon is up before we block/park.
+        //
+        // cfg coupling (tray.rs): tray.rs is compiled for
+        // `cfg(not(all(target_os="linux", feature="hyprland")))`. Under the
+        // default build (hyprland ON) tray.rs is ABSENT on Linux, so
+        // `crate::tray::setup_tray` must be gated on BOTH `not(linux-tray)` AND
+        // `not(hyprland)`. `linux_tray::spawn` is fine under hyprland (separate
+        // SNI module that owns its own D-Bus thread).
+        #[cfg(feature = "linux-tray")]
+        let _tray_handle = crate::linux_tray::spawn(self.verbose);
+        #[cfg(all(not(feature = "linux-tray"), not(feature = "hyprland")))]
+        crate::tray::setup_tray(self.verbose);
 
-            monitor.start()?;
-        }
-
-        // Non-Hyprland Linux (X11): run the monitor in a background thread and
-        // either drive the system-tray event loop on this (main) thread, or —
-        // when the SNI tray is in use — block here since ksni already runs on
-        // its own D-Bus thread.
-        #[cfg(all(target_os = "linux", not(feature = "hyprland")))]
-        {
-            // The SNI tray (if enabled) runs on its own thread; keep the handle
-            // alive for the process lifetime.
-            #[cfg(feature = "linux-tray")]
-            let _tray_handle = crate::linux_tray::spawn(self.verbose);
-
-            let monitor_handle = std::thread::spawn(move || {
-                if let Err(e) = monitor.start() {
-                    eprintln!("Monitor error: {}", e);
-                }
-            });
-
-            #[cfg(not(feature = "linux-tray"))]
-            {
-                crate::tray::setup_tray(self.verbose);
+        // The merged runtime path. `create_monitor` delegates to
+        // `select_linux_backend`, which probes each compiled-in backend at runtime
+        // and returns `Err` when none is available. We do NOT propagate that `Err`
+        // with `?` — the no-backend case keeps the tray + device pipeline alive.
+        match platforms::create_monitor(self.verbose) {
+            Ok(mut monitor) => {
                 if self.verbose {
-                    println!("System tray icon initialized");
+                    println!("Using platform: {}", monitor.platform_name());
+                }
+                if monitor.start_blocks_calling_thread() {
+                    // Hyprland: start() blocks the calling thread on the IPC
+                    // event listener. There is no GUI loop to run alongside it.
+                    monitor.start()?;
+                } else {
+                    // Spawn-and-return backends (X11, and the future foreign-
+                    // toplevel / GNOME / AT-SPI): run the monitor on a worker
+                    // thread and keep main alive via the tray loop or park.
+                    #[cfg(feature = "linux-tray")]
+                    let monitor_verbose = self.verbose;
+                    let _monitor_handle = std::thread::spawn(move || {
+                        if let Err(e) = monitor.start() {
+                            eprintln!("Monitor error: {}", e);
+                        }
+                    });
+
+                    // When the SNI tray is enabled there is no blocking GUI loop
+                    // to drive (ksni owns its D-Bus thread), so park main;
+                    // Ctrl+C / SIGTERM still exits via the handler above.
+                    #[cfg(feature = "linux-tray")]
+                    {
+                        if monitor_verbose {
+                            println!("StatusNotifierItem tray active; blocking on main thread");
+                        }
+                        loop {
+                            std::thread::park();
+                        }
+                    }
+                    // (under not(linux-tray) AND not(hyprland): tray::setup_tray
+                    // above already drives a blocking loop — fall through.)
                 }
             }
+            Err(e) => {
+                // No window backend available (every probe failed). The app is NOT
+                // useless: the tray + device-status poll + HID pipeline are all
+                // already running above. Fire the GNOME one-shot extension hint,
+                // then keep main alive. PLATFORMS.md §6 / §8.4.
+                eprintln!(
+                    "No Linux window backend available; running tray + device pipeline only. ({e})"
+                );
+                maybe_gnome_first_run_notify(self.verbose);
 
-            // When the SNI tray is enabled there is no blocking GUI loop to
-            // drive, so park the main thread; Ctrl+C / SIGTERM still exits the
-            // process via the handler above. The loop guards against spurious
-            // unparks.
-            #[cfg(feature = "linux-tray")]
-            {
-                if self.verbose {
-                    println!("StatusNotifierItem tray active; blocking on main thread");
-                }
+                // Keep main alive so the tray + poll thread keep running. Under
+                // linux-tray, park main (ksni owns its D-Bus thread). Under
+                // not(linux-tray) AND not(hyprland), tray::setup_tray above is
+                // already the blocking loop — fall through. Under hyprland+
+                // not(linux-tray) there is no tray loop at all, so park main
+                // explicitly to keep the device pipeline alive.
+                #[cfg(feature = "linux-tray")]
                 loop {
                     std::thread::park();
                 }
+                #[cfg(all(feature = "hyprland", not(feature = "linux-tray")))]
+                loop {
+                    std::thread::park();
+                }
+                #[cfg(all(not(feature = "linux-tray"), not(feature = "hyprland")))]
+                {
+                    // tray::setup_tray above is the blocking loop; nothing to do.
+                }
             }
-
-            // The tray exited (user quit); let the monitor wind down with the process.
-            // We deliberately don't join: the monitor thread is torn down on exit.
-            drop(monitor_handle);
         }
 
         println!("Monitor stopped, exiting.");
         Ok(())
+    }
+}
+
+/// Fire a one-shot `notify-send` hint on GNOME sessions with no window backend
+/// (PLATFORMS.md §8.4). Guarded by `$XDG_CURRENT_DESKTOP` containing "GNOME"
+/// (case-insensitive). Because this is only called from the no-backend `Err`
+/// branch (entered at most once per process), the one-shot is automatic — no
+/// dedup state needed. Reuses `platforms::notify` (the existing notify-send
+/// shell-out that swallows failure).
+fn maybe_gnome_first_run_notify(verbose: bool) {
+    let gnome = std::env::var("XDG_CURRENT_DESKTOP")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_ascii_uppercase().contains("GNOME"))
+        .unwrap_or(false);
+    if gnome {
+        if verbose {
+            println!("GNOME session with no window backend — firing one-shot extension hint");
+        }
+        crate::platforms::notify(
+            "QMKonnect needs the GNOME Shell extension",
+            "Window detection requires the QMKonnect GNOME Shell extension — install it from extensions.gnome.org (see docs).",
+        );
     }
 }

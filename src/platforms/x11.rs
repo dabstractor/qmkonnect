@@ -1,4 +1,4 @@
-#![cfg(all(target_os = "linux", not(feature = "hyprland")))]
+#![cfg(target_os = "linux")]
 use crate::core::notifier;
 use crate::core::types::WindowInfo;
 use crate::platforms::WindowMonitor;
@@ -74,6 +74,53 @@ impl X11Monitor {
         }
 
         Ok(Some(WindowInfo::new(app_class, title)))
+    }
+}
+
+/// Availability probe for the X11 backend (PLATFORMS.md §6). Returns `Ok` ONLY
+/// when all three hold:
+///   1. `$DISPLAY` is set AND non-empty;
+///   2. `$WAYLAND_DISPLAY` is **unset** (or empty) — X11 is NEVER selected under
+///      a Wayland compositor (Invariant 11, ARCHITECTURE.md §10): XWayland sets
+///      `$DISPLAY` but reports focus unreliably for native Wayland windows;
+///   3. `xprop` is on PATH (the X11 monitor shells out to `xprop`).
+///
+/// An empty env value is treated as unset (matches `get_config_paths()`).
+/// Side-effect-free (no env mutation) so a re-probe is safe.
+pub(crate) fn probe_available(_verbose: bool) -> Result<(), String> {
+    let display = std::env::var("DISPLAY").ok().filter(|s| !s.is_empty());
+    if display.is_none() {
+        return Err("$DISPLAY is not set".into());
+    }
+    // Invariant 11 (ARCHITECTURE.md §10): X11 is NEVER selected under a Wayland
+    // compositor. XWayland sets $DISPLAY but reports focus unreliably for native
+    // Wayland windows, so picking X11 there would silently report wrong windows.
+    if std::env::var("WAYLAND_DISPLAY")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .is_some()
+    {
+        return Err(
+            "Wayland session ($WAYLAND_DISPLAY set) — X11 is never selected under a Wayland \
+             compositor (XWayland focus is unreliable for native windows; PLATFORMS.md §6/§10)"
+                .into(),
+        );
+    }
+    // xprop presence WITHOUT depending on a live X server: `xprop -version`
+    // (and every other xprop invocation) itself tries to open $DISPLAY and
+    // fails when it can't, so it can't tell "installed" from "display
+    // reachable". Resolve the binary on PATH instead (works headless / under
+    // Wayland / on a CI box). A missing binary ⇒ not installed ⇒ the gate
+    // fails. NOT `xprop -root` (that needs a running X server).
+    match std::process::Command::new("which")
+        .arg("xprop")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+    {
+        Ok(s) if s.success() => Ok(()),
+        Ok(_) => Err("`xprop` not found on PATH (install xorg-xprop)".into()),
+        Err(_) => Err("`which` not available to verify `xprop`".into()),
     }
 }
 

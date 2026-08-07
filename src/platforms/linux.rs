@@ -1,8 +1,176 @@
 #![cfg(target_os = "linux")]
+// The `wayland`/`gnome`/`atspi` features don't exist yet (they land in
+// P2.M1.T2.S2). Their `#[cfg(feature = "…")]` candidate rows + probe stubs are
+// therefore simply not compiled today; each future backend task (P2.M2/M3/M4)
+// replaces its stub. Silence the check-cfg warning for the not-yet-defined
+// feature values here (the proper Cargo.toml `[lints]` check-cfg declaration
+// is part of T2.S2's Cargo.toml edit, which owns the feature definitions).
+#![allow(unexpected_cfgs)]
 use std::error::Error;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+
+use crate::platforms::WindowMonitor;
+
+// ---------------------------------------------------------------------------
+// Runtime backend selector (PLATFORMS.md §6) — replaces the former compile-time
+// `cfg(feature="hyprland")` either/or in `create_monitor`. Probes each
+// compiled-in backend in a fixed priority order and returns the first present
+// one; an optional forced override errors LOUDLY (with every probe result) when
+// unavailable. On `Err` the runner keeps the tray + device pipeline alive
+// (PLATFORMS.md §6 "No-backend fallback"); the GNOME one-shot notify fires
+// there (see runners/linux.rs).
+// ---------------------------------------------------------------------------
+
+/// A probe function: `Ok` = this backend is available right now, `Err(reason)` =
+/// why not. Plain `fn` pointer (not a closure) so the candidate list needs no
+/// lifetimes / captures.
+type ProbeFn = fn(verbose: bool) -> Result<(), String>;
+
+/// A compiled-in backend candidate: its name + its availability probe.
+/// Construction is a SEPARATE match (see [`construct_backend`]) so a stub probe
+/// never has to name an unwritten backend type.
+struct BackendCandidate {
+    name: &'static str,
+    probe: ProbeFn,
+}
+
+/// Priority-ordered list of compiled-in backends (PLATFORMS.md §6). Each
+/// `#[cfg(feature = "…")]` row is simply absent when its feature is off; the
+/// feature-undefined stub probes (wayland/gnome/atspi) are not compiled today.
+/// X11 is always present and ALWAYS LAST (lowest priority; never under Wayland
+/// via its own probe gate).
+#[cfg(target_os = "linux")]
+fn linux_backend_candidates() -> Vec<BackendCandidate> {
+    [
+        #[cfg(feature = "wayland")]
+        ("foreign-toplevel", wayland_probe as ProbeFn),
+        #[cfg(feature = "gnome")]
+        ("gnome", gnome_probe as ProbeFn),
+        #[cfg(feature = "hyprland")]
+        (
+            "hyprland",
+            crate::platforms::hyprland::probe_available as ProbeFn,
+        ),
+        #[cfg(feature = "atspi")]
+        ("atspi", atspi_probe as ProbeFn),
+        // X11 is unconditional on Linux (always last — lowest priority; never
+        // under Wayland via its own probe).
+        ("x11", crate::platforms::x11::probe_available as ProbeFn),
+    ]
+    .into_iter()
+    .map(|(name, probe)| BackendCandidate { name, probe })
+    .collect()
+}
+
+/// Construct the chosen backend's monitor. Only backends that actually exist
+/// have arms; a not-yet-wired name (a stub whose probe somehow returned `Ok`)
+/// hits the catch-all `Err`. Kept separate from the probe list so stub rows
+/// never reference unwritten backend types (no breakage when the features land
+/// in P2.M1.T2.S2 before the backends in P2.M2/M3/M4).
+fn construct_backend(name: &str, verbose: bool) -> Result<Box<dyn WindowMonitor>, Box<dyn Error>> {
+    match name {
+        #[cfg(feature = "hyprland")]
+        "hyprland" => Ok(Box::new(crate::platforms::hyprland::HyprlandMonitor::new(
+            verbose,
+        ))),
+        "x11" => Ok(Box::new(crate::platforms::x11::X11Monitor::new(verbose))),
+        other => Err(format!(
+            "backend '{other}' was selected but its construction is not wired in this build"
+        )
+        .into()),
+    }
+}
+
+/// Runtime Linux backend selector (PLATFORMS.md §6). `forced` overrides the
+/// priority order (default `auto`); a forced backend that is unavailable errors
+/// LOUDLY with every probe result. `None` ⇒ auto first-available.
+///
+/// This is what `create_monitor` delegates to on Linux; the `[linux] backend`
+/// config value is wired into `forced` by P2.M1.T2.S1 (today `create_monitor`
+/// passes `None`).
+pub fn select_linux_backend(
+    verbose: bool,
+    forced: Option<&str>,
+) -> Result<Box<dyn WindowMonitor>, Box<dyn Error>> {
+    let candidates = linux_backend_candidates();
+    let names: Vec<&str> = candidates.iter().map(|c| c.name).collect();
+
+    if let Some(want) = forced {
+        if verbose {
+            println!("select_linux_backend: forced backend '{want}'");
+        }
+        // Loud diagnostic: run EVERY probe so the user sees why the forced one
+        // failed (PLATFORMS.md §6: "errors loudly with every probe result").
+        let mut diag: Vec<String> = Vec::new();
+        for c in &candidates {
+            let r = (c.probe)(verbose);
+            diag.push(format!(
+                "  {}: {}",
+                c.name,
+                r.as_ref().err().map(|e| e.as_str()).unwrap_or("available")
+            ));
+        }
+        match candidates.iter().find(|c| c.name == want) {
+            Some(c) => match (c.probe)(verbose) {
+                Ok(()) => construct_backend(want, verbose),
+                Err(reason) => Err(format!(
+                    "forced backend '{want}' is unavailable ({reason}). Every probe result:\n{}",
+                    diag.join("\n")
+                )
+                .into()),
+            },
+            None => Err(format!(
+                "forced backend '{want}' is not compiled into this binary (compiled-in: [{}])",
+                names.join(", ")
+            )
+            .into()),
+        }
+    } else {
+        for c in &candidates {
+            if verbose {
+                println!("select_linux_backend: probing '{}'…", c.name);
+            }
+            match (c.probe)(verbose) {
+                Ok(()) => {
+                    if verbose {
+                        println!("  → '{name}' available, selected", name = c.name);
+                    }
+                    return construct_backend(c.name, verbose);
+                }
+                Err(reason) => {
+                    if verbose {
+                        println!("  → '{name}' unavailable: {reason}", name = c.name);
+                    }
+                }
+            }
+        }
+        Err(format!(
+            "no Linux window backend available (probed: [{}])",
+            names.join(", ")
+        )
+        .into())
+    }
+}
+
+// Feature-gated probe STUBS for the backends that don't exist yet (P2.M2/M3/M4).
+// These are SELF-CONTAINED (no external-module refs) so that adding the features
+// in P2.M1.T2.S2 does NOT break the build before the real backends land. Each
+// future backend task REPLACES its stub with a real probe + adds a
+// `construct_backend` arm. Undefined features today ⇒ these are not compiled.
+#[cfg(feature = "wayland")]
+fn wayland_probe(_verbose: bool) -> Result<(), String> {
+    Err("foreign-toplevel Wayland backend not yet implemented (P2.M2)".into())
+}
+#[cfg(feature = "gnome")]
+fn gnome_probe(_verbose: bool) -> Result<(), String> {
+    Err("GNOME Shell-extension backend not yet implemented (P2.M3)".into())
+}
+#[cfg(feature = "atspi")]
+fn atspi_probe(_verbose: bool) -> Result<(), String> {
+    Err("AT-SPI backend not yet implemented (P2.M4)".into())
+}
 
 /// Path of the on-demand, config-driven fallback udev rule. Only written when a
 /// user sets VID/PID (to disambiguate among multiple QMK boards, or target a
@@ -575,5 +743,238 @@ KERNEL==\"hidraw*\", SUBSYSTEM==\"hidraw\", \\
 ENV{ID_QMKONNECT}==\"1\", GROUP=\"input\", MODE=\"0660\", TAG+=\"uaccess\", \\
 SYMLINK+=\"qmkonnect_device\", TAG+=\"systemd\", ENV{SYSTEMD_USER_WANTS}+=\"qmkonnect.service\"\n";
         assert!(!is_rule_globally_dangerous(static_rule));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// select_linux_backend + probe tests (PLATFORMS.md §6 / ARCHITECTURE.md §10).
+//
+// These manipulate PROCESS-GLOBAL env vars ($DISPLAY, $WAYLAND_DISPLAY,
+// $HYPRLAND_INSTANCE_SIGNATURE, $XDG_RUNTIME_DIR), so the whole crate MUST
+// run single-threaded (`cargo test --bin qmkonnect -- --test-threads=1`,
+// Invariant 8). Each test restores the env it touched so a later test starts
+// from a clean baseline.
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod select_tests {
+    use super::*;
+    #[cfg(feature = "hyprland")]
+    use std::os::unix::net::UnixListener;
+
+    /// True iff `xprop` is on PATH. The X11 probe's third gate depends on it;
+    /// tests that require xprop skip (early-pass) when it's absent so a CI box
+    /// without xprop doesn't fail spuriously. Resolves the binary on PATH
+    /// (rather than `xprop -version`, which needs a live $DISPLAY).
+    fn xprop_present() -> bool {
+        std::process::Command::new("which")
+            .arg("xprop")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    }
+
+    /// Snapshot of an env var (or `None` if unset) for save/restore around a test.
+    fn env_snapshot(key: &str) -> Option<Option<String>> {
+        Some(std::env::var(key).ok())
+    }
+
+    /// Restore an env var to its snapshotted state.
+    fn env_restore(key: &str, snap: Option<Option<String>>) {
+        match snap {
+            Some(Some(val)) => std::env::set_var(key, val),
+            Some(None) => std::env::remove_var(key),
+            None => {}
+        }
+    }
+
+    // ---------------- x11 probe (Invariant 11 is the headline gate) ---------------
+
+    #[test]
+    fn x11_probe_err_when_display_unset() {
+        let snap_d = env_snapshot("DISPLAY");
+        let snap_w = env_snapshot("WAYLAND_DISPLAY");
+        std::env::remove_var("DISPLAY");
+        std::env::remove_var("WAYLAND_DISPLAY");
+        let r = crate::platforms::x11::probe_available(false);
+        env_restore("DISPLAY", snap_d);
+        env_restore("WAYLAND_DISPLAY", snap_w);
+        assert!(r.is_err(), "X11 probe must fail when $DISPLAY is unset");
+        assert!(
+            r.unwrap_err().contains("DISPLAY"),
+            "the Err reason must name $DISPLAY"
+        );
+    }
+
+    #[test]
+    fn x11_probe_err_when_wayland_display_set() {
+        // THE headline regression (Invariant 11): X11 is NEVER selected under a
+        // Wayland compositor, even if $DISPLAY is set (XWayland sets it but
+        // reports focus unreliably for native windows).
+        let snap_d = env_snapshot("DISPLAY");
+        let snap_w = env_snapshot("WAYLAND_DISPLAY");
+        std::env::set_var("DISPLAY", ":0");
+        std::env::set_var("WAYLAND_DISPLAY", "wayland-0");
+        let r = crate::platforms::x11::probe_available(false);
+        env_restore("DISPLAY", snap_d);
+        env_restore("WAYLAND_DISPLAY", snap_w);
+        assert!(
+            r.is_err(),
+            "X11 probe must fail under Wayland ($WAYLAND_DISPLAY set)"
+        );
+        let msg = r.unwrap_err();
+        assert!(
+            msg.contains("Wayland") || msg.contains("WAYLAND"),
+            "the Err reason must mention the Wayland gate; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn x11_probe_err_when_wayland_display_empty_treated_as_unset() {
+        // An empty $WAYLAND_DISPLAY must NOT gate X11 off (treat Ok("") as unset,
+        // matching get_config_paths()). Still needs xprop to reach Ok.
+        if !xprop_present() {
+            return;
+        }
+        let snap_d = env_snapshot("DISPLAY");
+        let snap_w = env_snapshot("WAYLAND_DISPLAY");
+        std::env::set_var("DISPLAY", ":0");
+        std::env::set_var("WAYLAND_DISPLAY", "");
+        let r = crate::platforms::x11::probe_available(false);
+        env_restore("DISPLAY", snap_d);
+        env_restore("WAYLAND_DISPLAY", snap_w);
+        assert!(
+            r.is_ok(),
+            "empty $WAYLAND_DISPLAY must be treated as unset; got: {r:?}"
+        );
+    }
+
+    #[test]
+    fn x11_probe_ok_when_display_set_and_wayland_unset_with_xprop() {
+        if !xprop_present() {
+            return;
+        }
+        let snap_d = env_snapshot("DISPLAY");
+        let snap_w = env_snapshot("WAYLAND_DISPLAY");
+        std::env::set_var("DISPLAY", ":0");
+        std::env::remove_var("WAYLAND_DISPLAY");
+        let r = crate::platforms::x11::probe_available(false);
+        env_restore("DISPLAY", snap_d);
+        env_restore("WAYLAND_DISPLAY", snap_w);
+        assert!(
+            r.is_ok(),
+            "X11 probe must pass with $DISPLAY set, no Wayland, xprop present"
+        );
+    }
+
+    // ---------------- hyprland probe (hermetic: TempDir + UnixListener) ---------------
+
+    #[cfg(feature = "hyprland")]
+    #[test]
+    fn hyprland_probe_err_when_no_signature() {
+        let snap_s = env_snapshot("HYPRLAND_INSTANCE_SIGNATURE");
+        let snap_r = env_snapshot("XDG_RUNTIME_DIR");
+        std::env::remove_var("HYPRLAND_INSTANCE_SIGNATURE");
+        let r = crate::platforms::hyprland::probe_available(false);
+        env_restore("HYPRLAND_INSTANCE_SIGNATURE", snap_s);
+        env_restore("XDG_RUNTIME_DIR", snap_r);
+        assert!(r.is_err());
+        assert!(r.unwrap_err().contains("HYPRLAND_INSTANCE_SIGNATURE"));
+    }
+
+    #[cfg(feature = "hyprland")]
+    #[test]
+    fn hyprland_probe_ok_with_a_live_socket() {
+        // CLONE the existing hyprland_socket_is_live_* test shape: TempDir + a
+        // bound UnixListener at $XDG_RUNTIME_DIR/hypr/<sig>/.socket.sock.
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let sig = "deadbeef";
+        let hypr_dir = dir.path().join("hypr").join(sig);
+        std::fs::create_dir_all(&hypr_dir).expect("mkdir hypr/<sig>");
+        let socket = hypr_dir.join(".socket.sock");
+        let _listener = UnixListener::bind(&socket).expect("bind socket");
+
+        let snap_s = env_snapshot("HYPRLAND_INSTANCE_SIGNATURE");
+        let snap_r = env_snapshot("XDG_RUNTIME_DIR");
+        std::env::set_var("HYPRLAND_INSTANCE_SIGNATURE", sig);
+        std::env::set_var("XDG_RUNTIME_DIR", dir.path());
+        let r = crate::platforms::hyprland::probe_available(false);
+        env_restore("HYPRLAND_INSTANCE_SIGNATURE", snap_s);
+        env_restore("XDG_RUNTIME_DIR", snap_r);
+        // keep _listener alive until here
+        drop(_listener);
+        assert!(r.is_ok(), "live socket ⇒ Ok; got: {r:?}");
+    }
+
+    // ---------------- select_linux_backend: forced + auto paths ---------------
+
+    #[test]
+    fn select_forced_unknown_backend_is_loud_err() {
+        let r = select_linux_backend(false, Some("nonsense"));
+        let msg = match r {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("unknown-forced backend must error, not construct a monitor"),
+        };
+        assert!(
+            msg.contains("nonsense"),
+            "unknown-forced err must name the requested backend; got: {msg}"
+        );
+        assert!(
+            msg.contains("compiled-in"),
+            "unknown-forced err must list the compiled-in backends; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn select_forced_x11_under_wayland_is_loud_err() {
+        // Forced-unavailable must error LOUDLY and include every probe result
+        // (PLATFORMS.md §6). X11 under Wayland is unavailable (Invariant 11).
+        let snap_d = env_snapshot("DISPLAY");
+        let snap_w = env_snapshot("WAYLAND_DISPLAY");
+        let snap_s = env_snapshot("HYPRLAND_INSTANCE_SIGNATURE");
+        std::env::set_var("DISPLAY", ":0");
+        std::env::set_var("WAYLAND_DISPLAY", "wayland-0");
+        std::env::remove_var("HYPRLAND_INSTANCE_SIGNATURE");
+        let r = select_linux_backend(false, Some("x11"));
+        env_restore("DISPLAY", snap_d);
+        env_restore("WAYLAND_DISPLAY", snap_w);
+        env_restore("HYPRLAND_INSTANCE_SIGNATURE", snap_s);
+        assert!(r.is_err(), "forced X11 under Wayland must error loudly");
+        let msg = match r {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("forced X11 under Wayland must error loudly"),
+        };
+        assert!(
+            msg.contains("Every probe result"),
+            "forced-unavailable err must list every probe result; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn select_auto_picks_first_available() {
+        // Craft env so X11 is the only available (no Hyprland sig, DISPLAY set,
+        // no Wayland, xprop present). The dispatcher must pick it.
+        if !xprop_present() {
+            return;
+        }
+        let snap_d = env_snapshot("DISPLAY");
+        let snap_w = env_snapshot("WAYLAND_DISPLAY");
+        let snap_s = env_snapshot("HYPRLAND_INSTANCE_SIGNATURE");
+        let snap_r = env_snapshot("XDG_RUNTIME_DIR");
+        std::env::set_var("DISPLAY", ":0");
+        std::env::remove_var("WAYLAND_DISPLAY");
+        std::env::remove_var("HYPRLAND_INSTANCE_SIGNATURE");
+        std::env::remove_var("XDG_RUNTIME_DIR");
+        let r = select_linux_backend(false, None);
+        env_restore("DISPLAY", snap_d);
+        env_restore("WAYLAND_DISPLAY", snap_w);
+        env_restore("HYPRLAND_INSTANCE_SIGNATURE", snap_s);
+        env_restore("XDG_RUNTIME_DIR", snap_r);
+        assert!(r.is_ok(), "auto must pick X11 when it's the only available");
+        assert_eq!(
+            r.unwrap().platform_name(),
+            crate::platforms::x11::X11Monitor::new(false).platform_name()
+        );
     }
 }

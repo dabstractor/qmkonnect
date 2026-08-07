@@ -55,6 +55,13 @@ impl WindowMonitor for HyprlandMonitor {
         "Hyprland"
     }
 
+    /// Hyprland's `start()` blocks the calling thread on the IPC event listener
+    /// (it owns its own reconnect loop). The Linux runner checks this to decide
+    /// whether to block-on-start or spawn-and-park. PLATFORMS.md §11.
+    fn start_blocks_calling_thread(&self) -> bool {
+        true
+    }
+
     fn start(&mut self) -> Result<(), Box<dyn Error>> {
         // Wait for Hyprland to become available (handles boot race condition)
         wait_for_hyprland(self.verbose)?;
@@ -295,6 +302,40 @@ fn hyprland_socket_is_live(path: &Path) -> bool {
         let _ = tx.send(reachable);
     });
     rx.recv_timeout(SOCKET_PROBE_TIMEOUT).unwrap_or(false)
+}
+
+/// Availability probe for the Hyprland backend (PLATFORMS.md §6). Side-effect-
+/// free: reads `$HYPRLAND_INSTANCE_SIGNATURE` + `$XDG_RUNTIME_DIR`, checks the
+/// declared instance's socket is live, and returns `Ok`/`Err(reason)`. Does NOT
+/// self-heal env (the recovery scan + `env::set_var` stays in
+/// [`check_hyprland_environment`], which runs in `start()` where a retry won't
+/// double-mutate). This keeps a forced-backend re-probe or a future re-selection
+/// free of env side effects.
+pub(crate) fn probe_available(_verbose: bool) -> Result<(), String> {
+    let sig = std::env::var("HYPRLAND_INSTANCE_SIGNATURE")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "$HYPRLAND_INSTANCE_SIGNATURE is not set".to_string())?;
+    let runtime = std::env::var("XDG_RUNTIME_DIR")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "$XDG_RUNTIME_DIR is not set".to_string())?;
+    let socket = PathBuf::from(&runtime)
+        .join("hypr")
+        .join(&sig)
+        .join(".socket.sock");
+    if !socket.exists() {
+        return Err(format!(
+            "no Hyprland socket at {} (instance {sig})",
+            socket.display()
+        ));
+    }
+    if !hyprland_socket_is_live(&socket) {
+        return Err(format!(
+            "Hyprland socket exists but no listener (crashed instance {sig}?)"
+        ));
+    }
+    Ok(())
 }
 
 /// Resolve the Hyprland instance to talk to and guarantee

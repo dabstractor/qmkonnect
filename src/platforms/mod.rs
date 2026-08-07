@@ -4,7 +4,11 @@ mod linux;
 mod macos;
 #[cfg(target_os = "windows")]
 mod windows;
-#[cfg(all(target_os = "linux", not(feature = "hyprland")))]
+// X11 is unconditional on Linux now: the runtime selector `select_linux_backend`
+// probes it (last in priority order, never under Wayland). The file-level
+// `#![cfg(target_os = "linux")]` in x11.rs is the authoritative gate
+// (matches the hyprland.rs pattern); no cfg here avoids the duplicated-attribute
+// lint. PLATFORMS.md §6/§10.
 mod x11;
 
 // Define the WindowMonitor trait. A single `Send` trait serves every platform:
@@ -20,6 +24,17 @@ pub trait WindowMonitor: Send {
         // Default no-op; platform impls override where a real stop exists.
         Ok(())
     }
+
+    /// True iff `start()` BLOCKS the calling thread (e.g. Hyprland's IPC
+    /// listener loop). `false` (the default) means `start()` spawns its own
+    /// worker thread and returns promptly (X11 / foreign-toplevel / GNOME /
+    /// AT-SPI). The Linux runner branches on this so it can park main / drive
+    /// the tray for spawn-and-return backends (PLATFORMS.md §6, ARCHITECTURE.md
+    /// §2.2/§11). The default matches every current+future backend except
+    /// Hyprland, which overrides to `true`.
+    fn start_blocks_calling_thread(&self) -> bool {
+        false
+    }
 }
 
 // Export Linux module's functions
@@ -31,16 +46,14 @@ use std::error::Error;
 // Return a platform-specific monitor implementation
 pub fn create_monitor(verbose: bool) -> Result<Box<dyn WindowMonitor>, Box<dyn Error>> {
     // Platform-specific implementations
-    #[cfg(all(target_os = "linux", feature = "hyprland"))]
+    #[cfg(target_os = "linux")]
     {
-        use hyprland::HyprlandMonitor;
-        Ok(Box::new(HyprlandMonitor::new(verbose)))
-    }
-
-    #[cfg(all(target_os = "linux", not(feature = "hyprland")))]
-    {
-        use x11::X11Monitor;
-        Ok(Box::new(X11Monitor::new(verbose)))
+        // On Linux the runtime selector probes each compiled-in backend
+        // (select_linux_backend, PLATFORMS.md §6) and returns the first present
+        // one — or `Err` when none is available (the runner then keeps the tray
+        // + device pipeline alive). TODO(P2.M1.T2.S1): wire `[linux] backend`
+        // from core::cached_config() into the `forced` arg below.
+        linux::select_linux_backend(verbose, None)
     }
 
     #[cfg(target_os = "macos")]
