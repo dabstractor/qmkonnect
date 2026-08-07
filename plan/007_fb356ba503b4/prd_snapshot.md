@@ -87,10 +87,12 @@ QMKonnect is one node in a small ecosystem. A dev agent must understand all of:
 5. **Per-user, no-admin install.** No elevation anywhere; per-user installer on
    Windows, user systemd service on Linux, app bundle on macOS.
 6. **Native package-manager distribution.** Beyond the direct installers, ship
-   through the channels users already trust — **AUR** and a **Nix** flake on
-   Linux, **Homebrew** on macOS, **Scoop** and **Winget** on Windows, plus
-   cross-platform **mise**/**asdf** version-manager plugins — each honoring the
-   per-user, no-admin philosophy where the channel permits.
+   through the channels users already trust — **AUR**, a **Nix** flake, and
+   native **.deb**/**.rpm** packages on Linux, **Homebrew** on macOS, **Scoop**
+   and **Winget** on Windows, plus cross-platform **mise**/**asdf**
+   version-manager plugins — each honoring the per-user, no-admin philosophy
+   where the channel permits (system packages like .deb/.rpm/AUR install via the
+   distro's root-owned packager, the norm for system-level udev/systemd wiring).
 
 ### 2.2 Non-Goals (explicitly out of scope for the beta)
 
@@ -98,9 +100,9 @@ QMKonnect is one node in a small ecosystem. A dev agent must understand all of:
   relaxed by the Host-Side Window Rules feature — see `HOST_RULES.md` —
   where the host optionally matches rules and stacks a layer + callbacks on top
   of the board's.)*
-- X11 support as a first-class target (a fallback `xprop`-polling monitor
-  exists but Hyprland is the supported Linux surface).
-- Other Wayland compositors (Sway, KDE-Wayland, GNOME, …) — Hyprland only.
+- **Non-systemd Linux init systems** (Artix/Void/Alpine/Gentoo OpenRC/runit):
+  covered by the XDG autostart `.desktop` + the Wayland/X11 backends, but no
+  native service unit is shipped for them (community-contributed).
 - Code signing / notarization of distributed binaries (unsigned Windows,
   ad-hoc-signed macOS). The build scripts *support* a stable Developer ID.
 - A cross-platform settings GUI toolkit. Each platform uses its native surface
@@ -119,8 +121,9 @@ QMKonnect is one node in a small ecosystem. A dev agent must understand all of:
   persona; the reference keymap in this PRD is exactly that user.
 - **QMK hobbyist** who runs qmk_notifier and wants a turnkey desktop notifier
   without hand-editing config or writing a script.
-- **Tinkerer on a non-Hyprland desktop** — partially served today; a clear
-  roadmap exists (see §12 and `PLATFORMS.md`).
+- **User on a mainstream Linux desktop** (Ubuntu/Fedora GNOME, KDE Plasma,
+  COSMIC, XFCE/MATE/Cinnamon/Budgie/LXQt) — fully served by the runtime-
+  selected multi-backend monitor (`PLATFORMS.md` §6).
 
 ---
 
@@ -142,7 +145,9 @@ QMKonnect is one node in a small ecosystem. A dev agent must understand all of:
 | **F12** | **Named callback registry** + typed Raw HID commands (`QUERY_INFO` / `QUERY_CALLBACK` / `APPLY_HOST_CONTEXT`) with a capability handshake | `HOST_RULES.md` |
 | **F13** | **Two-tier device discovery + capability selection:** `0xFF60` presence then `0x81 0x9F` `QUERY_INFO` probe; truthful three-state tray status; live discovered-device Settings picker; broadcast to all capable boards | `DEVICE_DISCOVERY.md` |
 | **F14** | **VIA coexistence guarantee:** the always-on QMKonnect opens every HID handle shared / non-seize and reads only around its own writes, so the intermittently-used VIA app can always open the device | `DEVICE_DISCOVERY.md` §6 |
-| **F15** | **Community package-manager distribution:** publish every release to **AUR**, **Homebrew**, **Scoop**, **Winget**, a **Nix** flake, and **mise**/**asdf** plugins, so users install via their native package/version manager alongside the direct installers (F8) | `PACKAGING.md` |
+| **F15** | **Community package-manager distribution:** publish every release to **AUR**, native **.deb**/**.rpm** packages, **Homebrew**, **Scoop**, **Winget**, a **Nix** flake, and **mise**/**asdf** plugins, so users install via their native package/version manager alongside the direct installers (F8) | `PACKAGING.md` |
+| **F16** | **Cross-DE Linux window monitor:** runtime-selected backend — foreign-toplevel Wayland (wlr + ext protocols) → GNOME (Shell extension over D-Bus) → Hyprland IPC → AT-SPI → X11 — so one binary works on GNOME, KDE Plasma, COSMIC, Hyprland, Sway, Niri, the wlroots family, and the X11 DE tail | `PLATFORMS.md` §6–§10 |
+| **F17** | **Universal Linux autostart:** XDG autostart `.desktop` alongside the systemd user service, so login-autostart works on systemd **and** non-systemd distros (MX/Artix/Void/Gentoo) | `LINUX.md` §6 · `PACKAGING.md` §4.7 |
 
 ---
 
@@ -152,18 +157,19 @@ QMKonnect is one node in a small ecosystem. A dev agent must understand all of:
 |---|---|---|---|---|---|
 | **Windows** | 10 / 11, **x64 only** | Per-user tray app (`windows_subsystem="windows"`) | Inno `.exe` (primary, no admin) · Scoop · Winget | HKCU `Run` (default on) | Static CRT link → no VC++ Redistributable |
 | **macOS** | 13 Ventura+ (for SMAppService) | Menu-bar app bundle (`LSUIElement`) | `.dmg` (primary) · Homebrew Cask | `SMAppService` (default on) | Screen Recording permission needed for titles |
-| **Linux** | Hyprland (Wayland) | systemd user service + SNI tray | AUR · Nix flake · PKGBUILD/binary | systemd `BindsTo` device | udev rule grants permissions; SNI bar required to *see* the icon |
+| **Linux** | GNOME / KDE Plasma / COSMIC / Hyprland / Sway / Niri / wlroots (Wayland); XFCE / MATE / Cinnamon / Budgie / LXQt (X11) | systemd user service + SNI tray | AUR · Nix flake · .deb/.rpm · PKGBUILD/binary | systemd `BindsTo` device + XDG autostart `.desktop` | udev rule grants permissions; SNI bar required to *see* the icon (GNOME: AppIndicator extension) |
 
 > **Distribution channels (F15):** each platform also ships through its native
 > package managers — Windows: **Scoop** + **Winget**; macOS: **Homebrew** (cask);
-> Linux: **AUR** + **Nix** flake — alongside the direct installers above.
-> **mise** and **asdf** version-manager plugins cross-cut every platform,
-> installing the release binary into the manager's prefix. Per-channel packaging
-> and the per-OS autostart/udev wiring each channel performs live in
-> `PACKAGING.md`.
+> Linux: **AUR** + **Nix** flake + native **.deb**/**.rpm** — alongside the
+> direct installers above. **mise** and **asdf** version-manager plugins
+> cross-cut every platform, installing the release binary into the manager's
+> prefix. Per-channel packaging and the per-OS autostart/udev wiring each channel
+> performs live in `PACKAGING.md`.
 
-Not supported: 32-bit Windows, Windows ≤ 8.1, X11 as a primary target, other
-Wayland compositors. The Rust **MSRV is 1.88** (enforced by `rust-version`).
+Not supported: 32-bit Windows, Windows ≤ 8.1. (Linux: every major DE/Wayland
+compositor + the X11 tail is now supported — F16.) The Rust **MSRV is 1.88**
+(enforced by `rust-version`).
 
 ---
 
@@ -316,14 +322,19 @@ failures degrade silently and recover automatically.)
 - **Host-side window rules.** Edit layer/callback rules in `rules.toml` on the host — no reflash — stacking
   on top of the board's `DEFINE_*` rules. Fully specified in `HOST_RULES.md`; it
   spans the `qmk-notifier` crate, the `qmk_notifier` firmware, and this app.
-- **Linux surface is narrow** (Hyprland-only). Broader Wayland + X11 is planned.
+- **Broad Linux coverage is shipped (F16/F17):** the runtime-selected
+  multi-backend monitor covers GNOME (Shell extension), KDE Plasma, COSMIC,
+  Hyprland, Sway, Niri, the wlroots family, and the X11 DE tail; XDG autostart
+  + .deb/.rpm/AUR/Nix extend install reach. Residuals: AT-SPI is best-effort;
+  the GNOME extension must be installed by the user (the app links to it);
+  non-systemd distros get login-autostart only.
 - **Binaries are unsigned** (Windows) / ad-hoc signed, not notarized (macOS).
   This causes the macOS Screen-Recording re-prompt loop on every rebuild; a
   stable Developer ID + notarization is the intended fix. Distribution-channel
   impact (F15): **Winget** prompts "unverified publisher"; **Homebrew** ships
   via a custom tap until notarization qualifies it for the official cask;
-  **Scoop**, **Nix** (builds from source), **AUR**, and **mise**/**asdf** are
-  unaffected (they don't enforce code-signing).
+  **Scoop**, **Nix** (builds from source), **AUR**, native **.deb**/**.rpm**, and
+  **mise**/**asdf** are unaffected (they don't enforce code-signing).
 - **Settings UX** is native-per-platform today (Win32 / NSAlert / zenity+GTK);
   a richer cross-platform UI is future work.
 - **Architecture unification**: three near-duplicate runners and a dual-trait
@@ -402,12 +413,15 @@ qmkonnect/
 │   │   ├── notifier.rs        # Notifier trait, QmkNotifier, debouncer, device filter, probes
 │   │   └── types.rs           # WindowInfo { app_class, title }
 │   ├── platforms/
-│   │   ├── mod.rs             # WindowMonitor trait + dispatchers (config paths, list windows)
+│   │   ├── mod.rs             # WindowMonitor trait + dispatchers + select_linux_backend (config paths, list windows)
 │   │   ├── windows.rs         # WinEventHook + polling fallback + window enumeration
 │   │   ├── macos.rs           # NSWorkspace observer + CGWindowList + enumeration
-│   │   ├── hyprland.rs        # EventListener IPC + reconnect + poll burst + enumeration
-│   │   ├── linux.rs           # udev rule render/repair/reload, config paths, root-aware resolve
-│   │   └── x11.rs             # xprop-polling fallback monitor
+│   │   ├── wayland_ft.rs      # foreign-toplevel Wayland backend (wlr + ext protocols) — feature `wayland`
+│   │   ├── gnome.rs           # GNOME Shell-extension D-Bus client backend — feature `gnome`
+│   │   ├── atspi.rs           # AT-SPI a11y-bus fallback backend — feature `atspi`
+│   │   ├── hyprland.rs        # EventListener IPC + reconnect + poll burst + enumeration (legacy; superseded by wayland_ft)
+│   │   ├── linux.rs           # udev rule render/repair/reload, config paths, root-aware resolve, backend probes
+│   │   └── x11.rs             # xprop-polling fallback monitor (lowest priority; never under Wayland)
 │   ├── runners/
 │   │   ├── mod.rs             # PlatformRunner trait + create_runner
 │   │   ├── windows.rs         # single-instance mutex + tray-app/console modes
@@ -454,6 +468,13 @@ Each platform implements `WindowMonitor` (trait in `mod.rs`) and a set of free
 functions dispatched from `mod.rs`: `get_config_paths()`, `create_config_dir()`,
 `list_foreground_windows()`. See `SPEC_PLATFORMS.md`.
 
+**On Linux** `create_monitor()` delegates to `select_linux_backend()` (in
+`linux.rs`/`mod.rs`), which probes each compiled-in backend for availability in
+priority order — foreign-toplevel → GNOME → Hyprland → AT-SPI → X11 — and returns
+the first present one (`PLATFORMS.md` §6). The runner then treats the chosen
+backend uniformly as a `Box<dyn WindowMonitor>`; the blocking-vs-spawn
+ distinction is handled per-backend (§3/§6).
+
 ### 2.3 `runners/` — process lifecycle (per-OS)
 
 Each platform implements `PlatformRunner`. A runner wires together: singleton
@@ -498,6 +519,9 @@ who owns the main thread**:
 | **macOS** | The Core Foundation run loop (`CFRunLoopRun`) **and** the `tao` event loop both want main | Monitor runs on a **background thread** (`CFRunLoopRun` blocks there); tray/`tao` owns main |
 | **Hyprland** | A blocking Unix-socket IPC listener — no GUI loop at all | Monitor's `start()` blocks the calling thread; tray (ksni) runs on its own D-Bus thread |
 | **X11** | No GUI loop needed | Monitor polls in a background thread; tray (`tray.rs`, non-SNI) or a park loop owns main |
+| **foreign-toplevel (Wayland)** | No GUI loop — a Wayland `EventQueue` dispatch loop | `start()` spawns the dispatch thread and **returns** (non-blocking); tray (ksni) on its own D-Bus thread; runner parks main |
+| **GNOME (extension client)** | No GUI loop — zbus signal subscription | Monitor runs on a background thread + a drift-poll thread; ksni owns its D-Bus thread; runner parks main |
+| **AT-SPI** | No GUI loop — a11y-bus event subscription | as GNOME |
 
 The codebase resolves this with:
 1. A single `Send` `WindowMonitor` trait (the former non-`Send` variant existed
@@ -692,6 +716,9 @@ string path (§5.4). The host-side matcher is ported into `src/core/pattern.rs`
 | Windows monitor | hook delivered on message loop thread; 100 ms polling thread | `AtomicBool G_VERBOSE`, `AtomicIsize G_HOOK`, `Mutex<Option<(String,String)>> LAST_WINDOW_INFO` | replaced former `static mut` (UB) |
 | macOS monitor | background thread running `CFRunLoopRun` | `AtomicBool VERBOSE` | tray/`tao` owns main |
 | Hyprland monitor | calling thread blocks on `EventListener::start_listener`; optional `poll_interval_ms` poller thread; transient poll-burst threads | `Arc<Mutex<Option<WindowState>>>` | reconnect backoff is local to `start()` |
+| foreign-toplevel monitor | dedicated `EventQueue` dispatch thread (spawn-and-return `start()`) | `Arc<Mutex<Option<(String,String)>>>` | reconnect backoff reuses Hyprland's constants |
+| GNOME monitor | zbus signal subscription thread + 1000 ms drift-poll thread | last-emitted cell | NameOwnerChanged watch re-acquires state |
+| AT-SPI monitor | a11y-bus event thread + 1000 ms poll thread | last-emitted cell | best-effort; a11y may be off |
 | Device-status poll | background thread | `EventLoopProxy<UserEvent>` (macOS/Win) / `handle.update()` (Linux ksni) | UI mutated only on main thread (muda `!Send`) |
 | qmk-notifier device cache | caller | `LazyLock<Mutex<Option<DeviceCache>>>` | invalidated on any write error |
 
@@ -776,10 +803,17 @@ strip = true
 
 **MSRV Rust 1.88** (enforced via `rust-version`; image 0.25.x is the floor).
 
-**Feature flags** (default = `["hyprland", "macos", "linux-tray"]`):
-- `hyprland` — Hyprland IPC monitor (default-on Linux).
+**Feature flags** (default = `["wayland", "gnome", "atspi", "hyprland", "macos", "linux-tray"]`):
+- `wayland` — foreign-toplevel Wayland backend (smithay-client-toolkit); covers Hyprland/Sway/Niri/wlroots/KDE/COSMIC.
+- `gnome` — GNOME Shell-extension D-Bus client backend (zbus).
+- `atspi` — AT-SPI a11y-bus fallback backend.
+- `hyprland` — Hyprland IPC monitor (legacy; superseded by `wayland` on Hyprland, retained as a fallback).
 - `macos` — the Cocoa/CoreGraphics deps.
 - `linux-tray` — ksni SNI + GTK window-info dialog (default-on Linux).
+
+X11 is compiled unconditionally on Linux (no feature flag). The Linux monitor
+backends are **runtime-selected** by `select_linux_backend` (`PLATFORMS.md` §6),
+not compile-time `cfg` — so the default binary works on every desktop.
 
 `--no-default-features` yields the minimal trayless service build. Features are
 inert off-platform (e.g. `macos` on Linux), so plain `cargo build --release`
@@ -813,6 +847,16 @@ produces the full app with a tray on every OS.
     drains around a write — never a seize, never a perpetual blocking read. The
     always-on QMKonnect must never lock out the intermittently-used VIA app
     (`DEVICE_DISCOVERY.md` §6).
+11. **Never select the X11 backend under a Wayland compositor.**
+    `select_linux_backend` gates X11 on `$WAYLAND_DISPLAY` being **unset**;
+    XWayland sets `$DISPLAY` but reports focus unreliably for native Wayland
+    windows, so picking it under GNOME/KDE/COSMIC-Wayland would silently report
+    wrong windows (`PLATFORMS.md` §6/§10).
+12. **Hidapi link differs per distro.** Arch links `-lhidapi-hidraw` (separate
+    lib); Debian/Ubuntu/Fedora (unified hidapi ≥0.14) must **not** pass that flag
+    (the unified lib auto-selects the hidraw backend at runtime). Getting this
+    wrong breaks usage/usage_page matching on the .deb/.rpm.
+    (`PACKAGING.md` §2.)
 
 ---
 
@@ -1702,8 +1746,12 @@ pub trait WindowMonitor: Send {
     fn stop(&mut self) -> Result<(), Box<dyn Error>> { Ok(()) } // default no-op
 }
 
-// Dispatchers (return the right platform's impl):
-pub fn create_monitor(verbose: bool) -> Box<dyn WindowMonitor>;
+// Dispatchers (return the right platform's impl). On Linux `create_monitor`
+// delegates to `select_linux_backend`, which probes each compiled-in backend
+// for availability in priority order and returns the first that responds (§6):
+//   foreign-toplevel → GNOME → Hyprland → AT-SPI → X11
+pub fn create_monitor(verbose: bool) -> Result<Box<dyn WindowMonitor>, Box<dyn Error>>;
+pub fn select_linux_backend(verbose: bool) -> Result<Box<dyn WindowMonitor>, Box<dyn Error>>;  // Linux only
 pub fn get_config_paths() -> Vec<PathBuf>;
 pub fn create_config_dir() -> Result<PathBuf, Box<dyn Error>>;
 pub fn list_foreground_windows() -> Vec<(String, String)>;  // (class, title)
@@ -1720,6 +1768,9 @@ verbose)` — never formats or sends the HID payload itself.
 | **macOS** | the app's **`localizedName`** | `[NSWorkspace.frontmostApplication localizedName]` |
 | **Hyprland** | the client's **`initial_class`** | `hyprland::data::Client::get_active().initial_class` |
 | **X11** | `WM_CLASS` **class** (2nd field), fallback to instance (1st) | `xprop -id <wid> WM_CLASS` |
+| **Wayland** (foreign-toplevel) | the toplevel's **`app_id`** (`.desktop` basename, e.g. `firefox`, `org.gnome.Nautilus`) | `wlr-foreign-toplevel-management-v1` handle `app_id` event (§7) |
+| **GNOME** (Shell extension) | `MetaWindow.get_wm_class()` (the WM_CLASS class — same value X11 reports) | republished over D-Bus by the `qmkonnect@mulletware` extension (§8) |
+| **AT-SPI** (fallback) | the focused accessible's **application `Name`** (readable name, *unreliable*) | `org.a11y.atspi.Application` → `Name` (§9) |
 
 > Users discover these exact strings via the "Show Window Information" dialog
 > (`SPEC_UI.md` §3) and match them in firmware (`DEFINE_SERIAL_LAYERS` /
@@ -1735,6 +1786,9 @@ verbose)` — never formats or sends the HID payload itself.
 | macOS | `CGWindowListCopyWindowInfo` → `kCGWindowName` for the frontmost app's window | **Requires Screen Recording** (§4.2); empty without it |
 | Hyprland | `Client::get_active().title` | |
 | X11 | `xprop … _NET_WM_NAME` | |
+| Wayland (foreign-toplevel) | toplevel `title` event | |
+| GNOME (extension) | `MetaWindow.get_title()` over D-Bus | |
+| AT-SPI (fallback) | focused accessible's `Name` (unreliable) | |
 
 ### 1.3 Empty-workspace semantics
 
@@ -1743,6 +1797,9 @@ verbose)` — never formats or sends the HID payload itself.
   (no app focused ⇒ neutral keymap).
 - **Windows / macOS:** no focus event is generated for "no window", so the
   keyboard retains the last-reported app until the next real focus change.
+- **Wayland (foreign-toplevel) / GNOME / Hyprland:** an empty workspace (no
+  toplevel carries the `activated` state / `focus_window` is null) reports the
+  empty `WindowInfo` → firmware deactivates any active layer (same as Hyprland).
 
 ### 1.4 Window filtering (`should_ignore_window`, Windows/macOS)
 
@@ -1952,32 +2009,256 @@ active window moved to front (so `.next()` reports the focused window).
 
 ---
 
-## 6. X11 Monitor (`src/platforms/x11.rs`) — fallback, non-default build
+## 6. Linux Backend Selection (`select_linux_backend`)
 
-- Built only with `--no-default-features` (no `hyprland`).
+Linux has five monitor backends (§5 Hyprland, §7 foreign-toplevel, §8 GNOME,
+§9 AT-SPI, §10 X11). `platforms::create_monitor` delegates to
+`select_linux_backend(verbose)`, which probes each compiled-in backend for
+availability in **priority order** and returns the first that is present as
+`Box<dyn WindowMonitor>`. This replaces the old compile-time
+`cfg(feature="hyprland")` either/or: **every backend is compiled in by default
+and the right one is chosen at runtime**, so a single binary works across GNOME,
+KDE Plasma, COSMIC, Hyprland, Sway, Niri, the wlroots family, and the X11 DE
+tail.
+
+Priority (first available wins):
+
+| # | Backend | Feature | Availability probe |
+|---|---|---|---|
+| 1 | **foreign-toplevel** (Wayland) | `wayland` | `$WAYLAND_DISPLAY` resolvable **and** the compositor advertises the `zwlr_foreign_toplevel_manager_v1` global |
+| 2 | **GNOME** (Shell extension) | `gnome` | the D-Bus well-known name `io.mulletware.QMKonnect` is owned on the session bus (§8) |
+| 3 | **Hyprland** (IPC) | `hyprland` | `$HYPRLAND_INSTANCE_SIGNATURE` + a live socket (§5). *Superseded by #1 on Hyprland; retained as a fallback when the `wayland` feature is off.* |
+| 4 | **AT-SPI** (a11y bus) | `atspi` | the a11y bus is reachable (`org.a11y.Bus` owned or `$ATSPI_BUS_ADDRESS`) |
+| 5 | **X11** | *(always on Linux)* | `$DISPLAY` set **and `$WAYLAND_DISPLAY` unset** and `xprop` present — *never* under a Wayland compositor (XWayland focus is unreliable; §10) |
+
+**Config override:** `[linux] backend = "foreign-toplevel" | "gnome" | "hyprland" | "atspi" | "x11" | "auto"` (default `auto`) in `config.toml` (`CONFIG.md` §1.3). A forced backend that is unavailable errors loudly with every probe result; `auto` is the normal path.
+
+**Logging:** in verbose mode the selector prints each candidate, its probe
+result, and the chosen backend, so a "why did it pick X?" question is always
+answerable from the log.
+
+**No-backend fallback (the GNOME-Wayland-without-extension case):** if every
+probe fails (e.g. GNOME on Wayland with the extension uninstalled and a11y off),
+`select_linux_backend` returns `Err`. The runner still starts the tray +
+device-status poll + HID pipeline (the app is not useless — it shows connection
+state and the Settings/rules UIs), but emits no window events until a backend
+becomes available. On GNOME specifically a one-shot `notify-send` fires pointing
+the user at the extension (§8.4).
+
+**Feature gating:** backends whose feature is off are absent from the binary
+(their table row is skipped at compile time). `default =
+["wayland","gnome","atspi","hyprland","macos","linux-tray"]`; X11 is
+unconditionally compiled on Linux. `--no-default-features` yields a trayless
+service build with only the X11 backend.
+
+---
+
+## 7. Foreign-toplevel Wayland Backend (`src/platforms/wayland_ft.rs`, feature `wayland`)
+
+The single highest-leverage backend: one Wayland client speaking the
+foreign-toplevel protocols covers every wlroots-derived compositor **plus KDE
+Plasma and COSMIC**.
+
+### 7.1 Protocols
+- **`wlr-foreign-toplevel-management-unstable-v1`** — the **load-bearing**
+  protocol. It is the one that reports **activation/focus state** (the `state`
+  event's `activated` flag), which is how QMKonnect knows *which* toplevel is
+  focused. Bind `zwlr_foreign_toplevel_manager_v1` and track each
+  `zwlr_foreign_toplevel_handle_v1`.
+- **`ext-foreign-toplevel-list-v1`** — the upstream successor (merged into
+  `wayland-protocols` staging in 2024). It lists toplevels
+  (`app_id`/`title`/`identifier`) but **does not report activation**. Bind it
+  when present and use it only to populate `list_foreground_windows()` (the tray
+  "Show Window Information" dialog) and to cross-check `app_id`s — never as the
+  focus source.
+
+### 7.2 Coverage (activation via wlr-foreign-toplevel)
+
+| Compositor | wlr-foreign-toplevel | Notes |
+|---|---|---|
+| Hyprland | ✅ | so this backend also covers Hyprland — §5 IPC is the legacy fallback |
+| Sway | ✅ | |
+| Niri | ✅ | (+ its own `niri msg` JSON IPC, not used) |
+| River, Labwc, Wayfire | ✅ | wlroots family |
+| KDE Plasma 6 (KWin) | ✅ | also implements `ext-foreign-toplevel-list-v1` |
+| COSMIC (Smithay) | ✅ | verify on current COSMIC; also implements `ext-foreign-toplevel-list-v1` |
+| GNOME (Mutter) | ❌ | neither protocol → falls through to §8 |
+
+> **If a compositor advertises only `ext-foreign-toplevel-list-v1` (no wlr
+global):** there is no activation source, so this backend cannot determine focus.
+The selector treats the wlr global as the availability gate; a compositor
+without it is **not** covered by this backend and falls through. (Watch the
+upstream `ext` family — a future activation-reporting extension would let us
+drop the wlr dependency.)
+
+### 7.3 Implementation
+- **Crate:** `smithay-client-toolkit` (feature `foreign-toplevel`) provides the
+  wlr-protocol `ForeignToplevelManager`/`ForeignToplevelHandler`. For the `ext`
+  protocol, generate bindings from the staging `wayland-protocols` XML with
+  `wayland-scanner` (or use sctk if a given version exposes it). Pin sctk; pick
+  the API surface it offers.
+- **Thread model:** `start()` **spawns** a dedicated thread running the
+  `EventQueue` dispatch loop and **returns immediately** (unlike Hyprland's
+  blocking listener). The monitor owns an `Arc<Mutex<Option<(String,String)>>>`
+  last-state cell shared with the event thread. The runner parks main / drives
+  the tray separately (same shape as the X11/non-Hyprland runner — §11).
+- **Per-toplevel tracking:** on the manager's `toplevel` event create a handle;
+  cache its `app_id`, `title`, and `state` bitmask; update on
+  `title`/`app_id`/`state` events; remove on `closed`; commit on `done`. After
+  each `done`, recompute the toplevel whose `state` includes `activated`; if it
+  differs from the last reported `(app_class,title)`, emit `notify_qmk`.
+- **`app_class` = the toplevel's `app_id`** (typically the `.desktop` basename:
+  `firefox`, `org.gnome.Nautilus`, `code`, `google-chrome`). Reverse-DNS
+  `app_id`s are passed through verbatim — users match what the window-info dialog
+  shows.
+- **Empty workspace:** when no toplevel carries the `activated` state → emit
+  `WindowInfo { app_class:"", title:"" }` (deactivates layers), mirroring §1.3.
+- **Reconnect:** on wl_display error (compositor crash/restart), reconnect with
+  backoff reusing the Hyprland §5.3 constants (`INITIAL_RECONNECT_MS=100`,
+  `MAX_RECONNECT_MS=10_000`, ×3, reset after `STABLE_CONNECTION_THRESHOLD=5 s`).
+- **`list_foreground_windows()`:** snapshot all tracked toplevels as
+  `(app_id, title)`, the activated one first.
+
+### 7.4 Why it also replaces the Hyprland IPC backend
+Hyprland implements `wlr-foreign-toplevel-management-v1`, so this backend
+reports the same active window the Hyprland IPC backend does, via the standard
+protocol. The Hyprland-IPC backend (§5) is **retained** behind the `hyprland`
+feature for one release cycle as a fallback and for its Hyprland-specific
+scratchpad poll-burst behavior; it is **not** in the default selection path when
+`wayland` is compiled in (priority #1 wins). It may be removed once this backend
+proves stable on Hyprland.
+
+---
+
+## 8. GNOME Backend — Shell Extension + D-Bus Client
+
+GNOME (Mutter) implements neither foreign-toplevel protocol and exposes no
+client API for the active window, so the active window is read **inside
+`gnome-shell`** by a small extension and republished over the session D-Bus,
+where QMKonnect subscribes. This is the same approach every "active window on
+GNOME" app uses.
+
+**Two deliverables:**
+1. **`qmkonnect@mulletware` GNOME Shell extension** (`packaging/gnome-shell-extension/`) — runs in the `gnome-shell` process; the only thing that can read `global.display.focus_window`.
+2. **`src/platforms/gnome.rs`** (feature `gnome`) — the desktop-side D-Bus client; subscribes to the extension's signal and notifies QMK.
+
+### 8.1 The D-Bus contract (owned by both halves)
+- Well-known name: **`io.mulletware.QMKonnect`** (owned ⇔ extension is installed & enabled).
+- Object path: **`/io/mulletware/QMKonnect`**.
+- Interface: **`io.mulletware.QMKonnect.WindowMonitor`**:
+  - method **`GetActiveWindow() → (s app_class, s title)`** — synchronous current-state read.
+  - signal **`ActiveWindowChanged(s app_class, s title)`** — emitted on focus transition (and on `enable()` for the initial state).
+  - read properties `AppClass:s`, `Title:s` — for `org.freedesktop.DBus.Properties` polling.
+- `app_class` = **`MetaWindow.get_wm_class()`** (the WM_CLASS *class* — the same string the X11 backend reports, e.g. `Firefox`, `Gnome-terminal`), chosen for parity with the firmware-pattern world. `title` = `MetaWindow.get_title()`.
+
+### 8.2 The extension (`packaging/gnome-shell-extension/`)
+- GJS, GNOME Shell 45+ APIs (`global.display`, `Meta.Window`). `metadata.json`:
+  `uuid = "qmkonnect@mulletware"`, `shell-version` covering the supported GNOME
+  line (e.g. `["45","46","47","48","49","50"]`), `version` = the QMKonnect
+  release, `url`/`settings-schema` optional.
+- `enable()`: acquire `io.mulletware.QMKonnect`; export the object/interface on
+  the session bus; connect `global.display.connect('notify::focus-window', …)`;
+  emit the initial state.
+- `_onFocus()`: `let w = global.display.focus_window;` → `w ? [w.get_wm_class() ?? "", w.get_title() ?? ""] : ["",""]`; dedup against last-emitted; emit `ActiveWindowChanged`.
+- `disable()`: disconnect, release the name, unexport.
+- Fallbacks: `get_wm_class()` may be `null` for some apps → empty class (the
+  title still carries info); `get_description()` is not used (unreliable).
+
+### 8.3 The client (`src/platforms/gnome.rs`, feature `gnome`)
+- `zbus` session connection. Subscribe to `ActiveWindowChanged` (zbus proxy
+  signal / `add_match`); on signal → dedup → `notify_qmk`.
+- **Drift-correcting poll thread** (default **1000 ms**, hot-config via
+  `[linux] gnome_poll_interval_ms`, `CONFIG.md` §1.3): calls `GetActiveWindow`
+  and dedups — catches any missed signal (mirrors the macOS/Hyprland poll
+  design). Always spawned.
+- **NameOwnerChanged watch:** if the extension is toggled (name appears /
+  disappears) mid-session, the monitor re-acquires initial state from
+  `GetActiveWindow`; if the name goes away the backend reports empty and the
+  §6 "no-backend" posture applies.
+
+### 8.4 First-run UX on GNOME
+If the session is GNOME (`$XDG_CURRENT_DESKTOP` contains `GNOME`) **and** the
+extension name is not owned at startup, fire a one-shot desktop notification
+(via `platforms::notify`, `LINUX.md`): *"QMKonnect needs the GNOME Shell
+extension for window detection — install it from extensions.gnome.org (see
+docs)."* The daemon keeps running (tray + device status); the AT-SPI backend may
+run meanwhile (§9) as a best-effort interim. The notification fires at most once
+per launch.
+
+### 8.5 Distribution of the extension
+Built as **`qmkonnect@mulletware.shell-extension.zip`** (the EGO upload format:
+top-level `metadata.json` + `extension.js` + optional `prefs.js` + sources).
+Published on **extensions.gnome.org** and attached to each GitHub Release. CI
+(`PACKAGING.md` §9) builds the zip from `packaging/gnome-shell-extension/`. The
+QMKonnect app **does not** install/load it (it cannot run inside gnome-shell);
+it only points users to it.
+
+---
+
+## 9. AT-SPI Fallback Backend (`src/platforms/atspi.rs`, feature `atspi`)
+
+The last-ditch backend for any compositor with accessibility enabled — primarily
+a **GNOME fallback when the extension isn't installed** and an emergency path
+elsewhere. **Best-effort, not primary** (see limitations).
+
+- **Crate:** `atspi` (zbus to the a11y bus).
+- **Mechanism:** subscribe to `object:state-changed:focused` events; track the
+  focused accessible. `app_class` = the focused accessible's **application
+  `Name`** (`org.a11y.atspi.Application` → `Name`); `title` = the focused
+  accessible's `Name`.
+- **Poll fallback:** every 1000 ms query the a11y registry's focused object and
+  dedup (same shape as §8.3).
+- **Availability:** the a11y bus is present (`org.a11y.Bus` owned or
+  `$ATSPI_BUS_ADDRESS`). Most distros ship a11y **off** until the user enables
+  "Assistive Technology / Screen Reader" in Settings — document that enabling
+  a11y is required for this backend.
+- **Known limitations (why it's not the GNOME primary):**
+  - `app_class` is the app's *readable* name, not `WM_CLASS` — usually fine
+    (`"Firefox"`) but inconsistent for Electron/sandboxed apps (`"python3"`,
+    `"chrome"`, or empty).
+  - Titles vary (the focused *accessible*, not the toplevel, is reported).
+  - Apps that don't expose a11y (some games, some Qt apps without the bridge)
+    are invisible.
+  - Use the GNOME Shell extension (§8) for reliable GNOME support.
+
+---
+
+## 10. X11 Monitor (`src/platforms/x11.rs`)
+
+The lowest-priority backend; compiled in on **every** Linux build (no longer
+`--no-default-features`-only). Selected only for genuine X11 sessions.
+
 - `get_active_window_info()`: `xprop -root _NET_ACTIVE_WINDOW` → window id →
   `xprop -id <wid> WM_CLASS _NET_WM_NAME`. `WM_CLASS` second field (class) is
   preferred; first field (instance) is the fallback. `0x0` ⇒ empty workspace.
 - **Fails loudly** if `xprop` is missing (never emits placeholder strings — #14).
 - Polls every **500 ms** on a background thread (X11 focus changes are
   user-driven; latency is acceptable for a fallback).
+- **Never selected under Wayland:** the selector gates X11 on
+  `$WAYLAND_DISPLAY` being **unset**, because under a Wayland compositor
+  `$DISPLAY` is set by XWayland but its notion of focus is unreliable for native
+  Wayland windows (§6 priority #5). This prevents the "picked X11 on
+  GNOME-Wayland and reported wrong windows" trap.
 
 ---
 
-## 7. Where Each Monitor Runs (thread summary)
+## 11. Where Each Monitor Runs (thread summary)
 
 | Monitor | Thread | Why |
 |---|---|---|
 | Windows | hook on message-loop thread (main, via `tao`); 100 ms poll thread | `WINEVENT_OUTOFCONTEXT` needs a pumped loop |
 | macOS | background thread (`CFRunLoopRun` blocks) | tray/`tao` owns main |
 | Hyprland | calling thread (`start_listener` blocks); optional poller thread | no GUI loop |
+| foreign-toplevel (Wayland) | background thread (`EventQueue` dispatch loop); spawn-and-return `start()` | no blocking listener; runner parks main / drives tray |
+| GNOME (extension client) | zbus signal subscription on a background thread; 1000 ms drift poll thread | no GUI loop; tray/ksni owns its D-Bus thread |
+| AT-SPI | a11y-bus event subscription on a background thread; 1000 ms poll thread | as above |
 | X11 | background thread | tray/park owns main |
 
 (Full concurrency table in `SPEC_ARCHITECTURE.md` §6.)
 
 ---
 
-## 8. Internal Window Filtering Reference (Windows)
+## 12. Internal Window Filtering Reference (Windows)
 
 The full ignore-list and the empty-title allowlist live in
 `should_ignore_window` (`src/platforms/windows.rs`). When adding a new app that
@@ -1987,7 +2268,7 @@ covered.
 
 ---
 
-*Continue with `SPEC_UI.md`.* | Per-OS window monitoring (Windows WinEventHook, macOS NSWorkspace, Hyprland IPC, X11), window filtering, config paths, permissions. |
+*Continue with `SPEC_UI.md`.* | Per-OS window monitoring (Windows WinEventHook, macOS NSWorkspace, **Linux runtime backend selection: foreign-toplevel Wayland / GNOME Shell extension / AT-SPI / Hyprland IPC / X11**), window filtering, config paths, permissions. |
 | # SPEC — Tray / Menu-Bar UI, Dialogs & Autostart
 
 > Companion to `PRD.md` / `SPEC_ARCHITECTURE.md`. The full user-facing surface:
@@ -2535,6 +2816,26 @@ service is the recommended path for hotplug auto-start.
 > The full `linux-tray` build does not have this limitation: its poll thread's
 > `PresenceTracker` re-handshakes on any capable-board transition.
 
+### 6.3 XDG autostart `.desktop` — the universal fallback (F17)
+
+Alongside the systemd user service, every Linux package ships an XDG autostart
+entry at `/etc/xdg/autostart/qmkonnect.desktop` (`PACKAGING.md` §4.7). Every
+DE session manager honors `~/.config/autostart/` (and `/etc/xdg/autostart/`), so
+this starts the daemon at **login on every desktop — systemd or not** (MX,
+Artix, Void, Gentoo). It is the load-bearing autostart path on non-systemd
+distros and a belt-and-suspenders on systemd ones.
+
+- **Trade-off vs the service:** the `.desktop` starts at login only; it loses
+  the systemd `BindsTo` plug/unplug lifecycle (start on plug, stop on unplug).
+  On systemd distros the service remains primary; the `.desktop` is redundant
+  but harmless (the single-instance story is owned by the tray/runner, not by
+  the launcher).
+- **Contents:** `Type=Application`, `Exec=qmkonnect`, `Icon=input-keyboard`,
+  `Terminal=false`, `NoDisplay=true` (autostart-only — not in app menus).
+- **Disable:** copy to `~/.config/autostart/qmkonnect.desktop` with
+  `Hidden=true`, or remove the system file — same convention as every other
+  autostart app.
+
 ---
 
 ## 7. SNI Tray (`src/linux_tray.rs`, feature `linux-tray`)
@@ -2567,6 +2868,23 @@ zbus variant-deserialization coupling. `parse_color_scheme` is unit-tested.
 The "Show Window Information" notification uses `notify-send` (shelled out)
 because `notify-rust`'s blocking `show()` spawns a nested tokio runtime, which
 panics inside ksni's handler thread.
+
+### 7.4 GNOME: the SNI holdout (AppIndicator)
+Stock **GNOME** dropped SNI/AppIndicator support years ago, so the ksni item is
+**invisible** on a default GNOME session — the daemon still runs headless
+(`spawn()` returns `None` gracefully on no SNI host; `UI.md` §1.2). Two honest
+options, both already covered by the code, so no GNOME-specific tray is built:
+
+- **Install the *AppIndicator and KStatusNotifierItem Support* GNOME extension**
+  (the standard repackaging of the old KStatusNotifier bridge). With it, ksni's
+  item renders normally in the top bar. This is the documented GNOME path.
+- **Run trayless.** The daemon, device-status, and rules/settings are fully
+  functional without a tray icon — only the click menu is unavailable (use the
+  CLI flags: `--list-devices`, `--validate-rules`, etc.).
+
+Do **not** build a GNOME-native tray. The window-detection story on GNOME is the
+Shell extension (`PLATFORMS.md` §8), which is independent of the tray; the two
+are solved separately.
 
 ---
 
@@ -2627,6 +2945,13 @@ pub struct Config {
     #[serde(default)] pub usage:          Option<u16>,  // default 0x61 at use site
     #[serde(default = "default_debounce_ms")]      pub debounce_ms: u64,      // 50
     #[serde(default = "default_poll_interval_ms")] pub poll_interval_ms: u64, // 0
+    #[serde(default)] pub linux: LinuxConfig,                               // [linux] table
+}
+
+#[derive(serde::Deserialize, serde::Serialize, Default)]
+pub struct LinuxConfig {
+    #[serde(default)] pub backend:             Option<String>, // None = auto (select_linux_backend priority order)
+    #[serde(default)] pub gnome_poll_interval_ms: Option<u64>, // None = 1000
 }
 ```
 
@@ -2664,6 +2989,28 @@ thread), so editing the file (or saving the Settings dialog) takes effect
 within ~3 s — no restart. (On Hyprland this includes enabling the poller via
 `0 → N` live: the poll thread is always spawned and just sleeps while
 disabled.)
+
+### 1.3 Linux monitor backend (`[linux]`)
+
+The Linux monitor backend is chosen by `select_linux_backend` (`PLATFORMS.md`
+§6). The `[linux]` table optionally overrides the auto selection and the GNOME
+backend's drift-poll cadence. **Both fields are optional**; a config without a
+`[linux]` table (or with `backend = "auto"`) uses the runtime priority order
+(foreign-toplevel → GNOME → Hyprland → AT-SPI → X11).
+
+```toml
+[linux]
+backend = "auto"                 # auto | foreign-toplevel | gnome | hyprland | atspi | x11
+gnome_poll_interval_ms = 1000    # GNOME backend drift-poll cadence (ms)
+```
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `linux.backend` | `Option<String>` | `"auto"` | Force a specific backend (for debugging / unusual setups). A forced backend that is unavailable errors loudly with every probe result. |
+| `linux.gnome_poll_interval_ms` | `Option<u64>` | `1000` | GNOME backend's drift-correcting poll cadence (ms); hot-re-read each tick (like `poll_interval_ms`). |
+
+> `backend` is diagnostic in normal use — auto selection is correct on every
+> supported desktop. Use it only to pin a backend when reproducing an issue.
 
 ---
 
@@ -2813,8 +3160,10 @@ Windows/macOS, the monitor on Linux).
 *Continue with `SPEC_PACKAGING.md`.* | TOML schema, defaults, render body, config paths per OS, CLI flag reference. |
 | # SPEC — Build, Packaging & Release
 
-> Companion to `PRD.md`. Cargo build profile, the per-platform installers (Inno
-> Setup / Arch PKGBUILD / macOS DMG), the CI release workflow, code signing, and
+> Companion to `PRD.md`. Cargo build profile, the per-platform installers
+> (Inno / PKGBUILD / DMG), the **community package-manager channels**
+> (AUR / `.deb` / `.rpm` / Nix flake / Homebrew / Scoop / Winget / mise+asdf),
+> the GNOME Shell extension artifact, the CI release workflow, code signing, and
 > the committed dev test loop. Covers `Cargo.toml`, `.cargo/config.toml`,
 > `release.toml`, `.github/workflows/release.yml`, and `packaging/`.
 
@@ -2850,20 +3199,33 @@ dependency on Windows (cost: ~135 KB larger exe).
 
 ```toml
 [features]
-default    = ["hyprland", "macos", "linux-tray"]
-hyprland   = ["dep:hyprland"]
-macos      = ["dep:objc", "dep:core-foundation", "dep:core-graphics", "dep:dispatch"]
-linux-tray = ["dep:ksni", "dep:gtk"]
+default   = ["wayland", "gnome", "atspi", "hyprland", "macos", "linux-tray"]
+# Linux window-monitor backends (runtime-selected by select_linux_backend,
+# PLATFORMS.md §6). All default-on so a single binary works everywhere;
+# turn a backend off to shrink the binary / drop a dep.
+wayland   = ["dep:smithay-client-toolkit", "dep:wayland-client"]   # foreign-toplevel (covers Hyprland/Sway/Niri/wlroots/KDE/COSMIC)
+gnome     = ["dep:zbus"]                                            # GNOME Shell-extension D-Bus client
+atspi     = ["dep:atspi"]                                           # a11y-bus fallback
+hyprland  = ["dep:hyprland"]                                        # legacy Hyprland-IPC backend (superseded by wayland)
+linux-tray = ["dep:ksni", "dep:gtk"]                                # StatusNotifierItem tray
+macos     = ["dep:objc", "dep:core-foundation", "dep:core-graphics", "dep:dispatch"]
 
 [[bin]] name = "qmkonnect"        path = "src/main.rs"
 [[bin]] name = "qmkonnect-hid-id" path = "src/bin/hid_id.rs"   # pure std; udev helper
 ```
 
-- Plain `cargo build --release` produces the **full app with a tray** on every OS
-  (off-platform features are inert no-ops).
-- `--no-default-features` yields the minimal trayless service build.
-- **Linux Arch build** links `-lhidapi-hidraw` (not `-lhidapi-libusb`) so
-  usage/usage_page matching works: `RUSTFLAGS="-C link-arg=-lhidapi-hidraw" cargo build --release`.
+- Plain `cargo build --release` produces the **full app with every Linux backend
+  + a tray** on every OS (off-platform features are inert no-ops).
+- `--no-default-features` yields the minimal trayless service build (X11-only
+  monitor).
+- **Linux hidapi link nuance (must-preserve):** Arch ships `libhidapi-hidraw`
+  *separate* from `libhidapi-libusb`, so the **Arch PKGBUILD links
+  `-lhidapi-hidraw`** explicitly (usage/usage_page matching requires the hidraw
+  backend). **Debian/Ubuntu and Fedora ship a *unified* hidapi (≥0.14)** that
+  folds both backends into one `libhidapi.so` and auto-selects hidraw at runtime,
+  so the **`.deb` and `.rpm` builds must NOT pass `-lhidapi-hidraw`** — linking
+  the unified lib keeps usage/usage_page matching working. (Same note as the Nix
+  flake's `hidrawFlag` caveat.)
 
 ---
 
@@ -2878,124 +3240,352 @@ linux-tray = ["dep:ksni", "dep:gtk"]
   upgrade identity (constant across versions).
 - **Files:** `qmkonnect.exe`, `Icon.ico`, `IconTray-dark.png` → `{app}`.
 - **`[Registry]`** writes the **HKCU `Run` value `"QMKonnect"`** (default-on
-  autostart; `uninsdeletevalue`). This is the **single source of truth** shared
-  with `src/autostart.rs` and `install.ps1` — keep the value name identical.
+  autostart; `uninsdeletevalue`). Single source of truth shared with
+  `src/autostart.rs` and `install.ps1`.
 - **`[Icons]`** Start Menu shortcut (manual launch).
 - **`[Code] KillRunningInstance`** in `InitializeSetup`/`InitializeUninstall`:
-  `taskkill /IM qmkonnect.exe /F /T` so the single-instance mutex releases and
-  the exe can be overwritten.
-- **`[Run]`** launches the app after an *interactive* install (`skipifsilent`
-  avoids a tray-less background process on `/VERYSILENT`).
+  `taskkill /IM qmkonnect.exe /F /T` so the single-instance mutex releases.
+- **`[Run]`** launches the app after an *interactive* install (`skipifsilent`).
 - Version injected from `Cargo.toml` (`#define MyAppVersion`).
 
-### 3.2 `install.ps1` / `uninstall.ps1` (the PowerShell equivalent)
-`install.ps1`: stops any running instance, copies exe + icon assets to
-`%LOCALAPPDATA%\Programs\QMKonnect`, Start Menu `.lnk`, writes the HKCU `Run`
-value, registers an Add/Remove-Programs uninstall entry (DisplayName/Version/
-Publisher/InstallLocation/UninstallString), launches the app.
-
-`uninstall.ps1`: `Remove-ItemProperty … Run -Name QMKonnect`, removes the
-install dir + shortcuts.
+### 3.2 `install.ps1` / `uninstall.ps1` (PowerShell equivalent)
+`install.ps1`: stops running instance, copies exe + icon assets, Start Menu
+`.lnk`, writes the HKCU `Run` value, registers an Add/Remove-Programs uninstall
+entry, launches the app. `uninstall.ps1`: clears Run value, removes dir +
+shortcuts.
 
 ### 3.3 The legacy WiX MSI (Session-0 service) — NOT shipped
-`packaging/windows/installer.wxs` + `build-installer.ps1` (needs WiX v3) build
-an MSI that installs a **Session-0 service**. A service **cannot** show a tray
-icon in the interactive session, so this is the wrong vehicle for the tray app.
-It remains as a legacy build path only; the **tray app + Inno installer is what
-ships**. CI's `windows` job (`.github/workflows/release.yml`) runs the Inno
-path (`packaging/windows/inno/build.ps1`) and uploads the resulting
-`QMKonnect-<ver>-windows-x64.exe` as the primary Windows artifact — the WiX
-path is not referenced by CI.
+`packaging/windows/installer.wxs` + `build-installer.ps1` build a Session-0
+service MSI that **cannot show a tray icon** in the interactive session. Retained
+as a legacy build path only; **the tray app + Inno installer is what ships**. CI
+runs the Inno path, not WiX.
 
 ### 3.4 Runtime dependencies
-**None.** The release binary statically links the C runtime (`+crt-static`), so
-`QMKonnect-Setup.exe` runs on any clean Windows 10/11 x64 machine. Toolchain
-prereq: **Visual Studio Build Tools** with *Desktop development with C++*
-(MSVC + Windows SDK); use the default `stable-x86_64-pc-windows-msvc` host, not
-`gnu`, or the `windows`-crate link step fails.
+**None.** Static CRT link (`+crt-static`) → runs on any clean Windows 10/11 x64.
+Toolchain prereq: **Visual Studio Build Tools** with *Desktop development with
+C++* (MSVC + Windows SDK); default `stable-x86_64-pc-windows-msvc`, not `gnu`.
 
 ---
 
 ## 4. Linux Packaging
 
-### 4.1 Arch PKGBUILD (`packaging/linux/arch/`)
+The Linux artifact set is shared by every channel — a single binary
+(`qmkonnect`), the udev helper (`qmkonnect-hid-id`), the static udev rule, the
+systemd user service template, and (new) an XDG autostart `.desktop`. Every
+package installs the same files to the same FHS paths:
+
+| File | Path |
+|---|---|
+| app binary | `/usr/bin/qmkonnect` |
+| udev helper | `/usr/lib/udev/qmkonnect-hid-id` |
+| static udev rule | `/usr/lib/udev/rules.d/69-qmkonnect-rawhid.rules` |
+| systemd user service (template) | `/usr/lib/systemd/user/qmkonnect.service.template` |
+| systemd user service (instantiated) | `/usr/lib/systemd/user/qmkonnect.service` (written by `postinst`) |
+| **XDG autostart (new)** | `/etc/xdg/autostart/qmkonnect.desktop` |
+| docs | `/usr/share/doc/qmkonnect/` |
+
+### 4.1 Arch PKGBUILD — source (`packaging/linux/arch/`)
 - `build()`: `RUSTFLAGS="-C link-arg=-lhidapi-hidraw" cargo build --release`
-  (builds both `qmkonnect` and `qmkonnect-hid-id`).
-- `package()` installs:
-  - `qmkonnect` → `/usr/bin/qmkonnect`
-  - `qmkonnect-hid-id` → `/usr/lib/udev/qmkonnect-hid-id`
-  - `69-qmkonnect-rawhid.rules` → `/usr/lib/udev/rules.d/`
-  - `qmkonnect.service.template` → `/usr/lib/systemd/user/` (instantiated by `post_install`)
-- `depends=('systemd' 'hidapi' 'libusb' 'zenity' 'libnotify')`.
+  (Arch's separate hidraw lib — §2).
+- `package()` installs binary, helper, static rule, service template.
+- `depends=('systemd' 'hidapi' 'libusb' 'zenity' 'libnotify')`;
+  `makedepends=('cargo' 'rust' 'libx11' 'libxcb' 'systemd-libs' 'pkg-config')`.
 - `backup=("usr/lib/systemd/user/qmkonnect.service.template")` — only the
-  (user-instantiated) template is preserved across upgrades; the static rule
-  and helper are package-owned; the on-demand `99-qmkonnect.rules` is user-generated.
+  (user-instantiated) template is preserved across upgrades.
 - `options=(!strip)`.
 
-### 4.2 `qmkonnect.install` (pacman hooks)
-- `post_install`: instantiate the service template; `udevadm control --reload-rules && udevadm trigger`;
-  `systemctl --global enable qmkonnect.service`; print zero-config next-steps.
-- `post_upgrade`: re-instantiate the template + reload udev. **Does not** call
-  `qmkonnect --reload` (needs root + a config that may not exist yet).
-- `post_remove`: `systemctl --global disable`; stop+disable per-user services;
-  `rm -f /etc/udev/rules.d/99-qmkonnect.rules` + the instantiated service; reload udev.
+### 4.2 AUR (`qmkonnect-bin`) (`packaging/linux/aur/`)
+- `-bin` PKGBUILD: downloads the pre-built GitHub release tarball
+  (`qmkonnect-<ver>-linux-x86_64.tar.gz`, staged by the CI `linux-binary` job —
+  §4.6) — no Rust toolchain or build deps. Installs the same four files as the
+  source PKGBUILD.
+- `qmkonnect.install` (pacman hooks): `post_install` instantiates the service
+  template, reloads udev, `systemctl --global enable`, prints zero-config
+  next-steps; `post_upgrade` re-instantiates + reloads; `post_remove` disables
+  globally, stops/disables per-user services, removes the on-demand
+  `/etc/udev/rules.d/99-qmkonnect.rules` + instantiated service, reloads udev.
+- `publish.sh` + `.SRCINFO` + README drive AUR publication (CI/§9 can automate).
+- Sibling `qmkonnect-git` (source, VCS) is a community option — point contributors
+  at it.
 
-### 4.3 Other distros (binary install)
-Install the binary + the static rule + helper + (optional) service template by
-hand — documented in `docs/installation.md`:
+### 4.3 `.deb` via cargo-deb (`packaging/debian/`) — NEW
+
+Target: **Ubuntu / Debian / Linux Mint** (and derivatives). Built with
+[`cargo-deb`](https://github.com/kornelski/cargo-deb) from a
+`[package.metadata.deb]` block in `Cargo.toml`.
+
+```toml
+[package.metadata.deb]
+name = "qmkonnect"
+maintainer = "Mulletware <noreply@mulletware>"
+copyright = "2025, Mulletware"
+license-file = ["LICENSE", "0"]
+extended-description-file = "packaging/debian/long-description.txt"
+depends = "libhidapi-hidraw0, libxdo3, zenity, libnotify-bin, systemd"
+section = "utils"
+priority = "optional"
+assets = [
+  ["target/release/qmkonnect",                   "usr/bin/",                         "755"],
+  ["target/release/qmkonnect-hid-id",            "usr/lib/udev/",                    "755"],
+  ["packaging/linux/udev/69-qmkonnect-rawhid.rules", "usr/lib/udev/rules.d/",        "644"],
+  ["packaging/linux/systemd/qmkonnect.service.template", "usr/lib/systemd/user/",   "644"],
+  ["packaging/linux/xdg/qmkonnect.desktop",      "etc/xdg/autostart/",               "644"],
+  ["README.md",                                  "usr/share/doc/qmkonnect/",         "644"],
+]
+maintainer-scripts = "packaging/debian/"
+```
+
+- **Build:** build the binary **without** `-lhidapi-hidraw` (Debian's unified
+  hidapi auto-selects hidraw — §2), then `cargo deb`. Build on the **oldest
+  supported LTS** (`ubuntu-22.04`) so the glibc (2.35) runtime works on 22.04,
+  24.04, Debian 12, Mint 21/22+.
+- **Maintainer scripts** (`packaging/debian/{postinst,prerm,postrm}`) mirror the
+  Arch `qmkonnect.install` logic:
+  - `postinst`: instantiate the service template → `qmkonnect.service`;
+    `udevadm control --reload-rules && udevadm trigger`;
+    `systemctl --global enable qmkonnect.service`; ensure the `input` group
+    exists (`addgroup --system input` if missing); print zero-config next-steps.
+  - `prerm`: no-op (let the running service continue until reboot/stop).
+  - `postrm`: `systemctl --global disable`; stop+disable per-user services;
+    remove the instantiated service + any `/etc/udev/rules.d/99-qmkonnect.rules`;
+    reload udev.
+- **`depends`:** `libhidapi-hidraw0` (the hidraw backend the unified lib dlopens),
+  `libxdo3`, `zenity`, `libnotify-bin`, `systemd`. Build-deps (CI apt step):
+  `libhidapi-dev libxdo-dev pkg-config`.
+- **Output:** `target/debian/qmkonnect_<ver>_amd64.deb`, renamed by CI to
+  `qmkonnect-<ver>-linux-amd64.deb` for the GitHub Release.
+- **Distribution:** attach the binary `.deb` to the Release (works on
+  Ubuntu/Debian/Mint via `sudo dpkg -i` / `sudo apt install ./…`). An optional
+  **Launchpad PPA** (source build) is documented for `apt update`-style upgrades
+  but is not required for v1 — the release `.deb` is the primary artifact.
+
+### 4.4 `.rpm` via cargo-generate-rpm (`packaging/rpm/`) — NEW
+
+Target: **Fedora / RHEL / Rocky / Alma / openSUSE**. Built with
+[`cargo-generate-rpm`](https://github.com/cat-in-136/cargo-generate-rpm) from a
+`[package.metadata.generate-rpm]` block in `Cargo.toml`.
+
+```toml
+[package.metadata.generate-rpm]
+name = "qmkonnect"
+license = "MIT"
+summary = "Cross-platform window activity notifier for QMK keyboards"
+release = "1"
+vendor = "Mulletware"
+url = "https://github.com/dabstractor/qmkonnect"
+# Unified hidapi on Fedora/RHEL ⇒ do NOT add an -lhidapi-hidraw link flag (§2).
+require-local = { "hidapi" >= "0.10", "libxdo", "zenity", "libnotify", "systemd" }
+assets = [
+  { source = "target/release/qmkonnect",                 dest = "/usr/bin/qmkonnect",            mode = "755" },
+  { source = "target/release/qmkonnect-hid-id",          dest = "/usr/lib/udev/qmkonnect-hid-id",mode = "755" },
+  { source = "packaging/linux/udev/69-qmkonnect-rawhid.rules", dest = "/usr/lib/udev/rules.d/69-qmkonnect-rawhid.rules", mode = "644" },
+  { source = "packaging/linux/systemd/qmkonnect.service.template", dest = "/usr/lib/systemd/user/qmkonnect.service.template", mode = "644" },
+  { source = "packaging/linux/xdg/qmkonnect.desktop",    dest = "/etc/xdg/autostart/qmkonnect.desktop", mode = "644" },
+]
+# maintainer scripts (mirror the Debian/Arch hooks — instantiate service,
+# reload udev, systemctl --global enable on install; reverse on erase).
+post_install_script = "packaging/rpm/postin"     # file ref
+post_uninstall_script = "packaging/rpm/postun"   # file ref
+```
+
+- **Build:** build the binary **without** `-lhidapi-hidraw` (Fedora's unified
+  hidapi — §2), then `cargo generate-rpm`. Build on **Fedora** (covers Fedora +
+  RHEL 9/Rocky 9/Alma 9 — glibc 2.34+). A second RHEL-8/older-glibc build on
+  AlmaLinux 8 is optional; document it only if RHEL 8 demand appears.
+- **`require` (Fedora unified):** `hidapi` (provides both backends), `libxdo`,
+  `zenity`, `libnotify`, `systemd`. Build-deps (CI dnf step): `hidapi-devel
+  libxdo-devel pkgconfig`.
+- **openSUSE** largely shares this spec (`HIDAPI`, `libxdo-devel`,
+  `libnotify-tools`, `zenity`); an OBS submit is a community follow-on.
+- **Output:** `target/generate-rpm/qmkonnect-<ver>-1.x86_64.rpm`, renamed
+  `qmkonnect-<ver>-linux-x86_64.rpm` for the Release.
+
+### 4.5 Nix flake (`flake.nix`, repo root)
+QMKonnect ships a [Nix flake](https://nixos.wiki/wiki/Flakes) that builds **from
+source** against pinned Nixpkgs for `x86_64-linux` and `aarch64-linux`, producing
+both binaries plus the static udev rule + systemd user service (rewritten to the
+Nix store path). The flake also exposes a `nixosModules.default` NixOS module
+(`services.qmkonnect.enable`) that registers the udev rule
+(`services.udev.packages`), the user service (`systemd.packages`), and `PATH`.
+
+```sh
+nix profile install github:dabstractor/qmkonnect   # non-NixOS
+nix run github:dabstractor/qmkonnect               # ad-hoc
+nix build github:dabstractor/qmkonnect             # → ./result/bin/qmkonnect
+nix develop github:dabstractor/qmkonnect           # dev shell (all system libs)
+```
+
+The flake links the hidraw backend via `hidrawFlag`, with the documented
+unified-hidapi escape hatch (if the Nixpkgs revision ships unified hidapi ≥0.14
+and the build fails on `-lhidapi-hidraw`, drop the `hidrawFlag` line — usage
+matching still works, §2). Non-NixOS users install the udev rule + helper
+manually (the README walks through it). Full detail: `packaging/nix/README.md`.
+
+### 4.6 Generic tarball + `install.sh`
+The CI `linux-binary` job stages a portable tarball
+`qmkonnect-<ver>-linux-x86_64.tar.gz` (top-level dir holding the two binaries +
+the static rule + the service template). This is the artifact the AUR `-bin`
+PKGBUILD fetches **and** the input to a documented from-source install for any
+distro without a native package:
 ```bash
 cargo build --release
 sudo install -m755 target/release/qmkonnect        /usr/local/bin/qmkonnect
 sudo install -m755 target/release/qmkonnect-hid-id /usr/lib/udev/qmkonnect-hid-id
 sudo install -m644 packaging/linux/udev/69-qmkonnect-rawhid.rules /usr/lib/udev/rules.d/
+sudo install -m644 packaging/linux/xdg/qmkonnect.desktop /etc/xdg/autostart/
 sudo udevadm control --reload && sudo udevadm trigger
 ```
+
+### 4.7 XDG autostart `.desktop` (`packaging/linux/xdg/qmkonnect.desktop`) — NEW
+The **universal autostart fallback** alongside systemd (`LINUX.md` §6). Every DE
+session manager honors `~/.config/autostart/` (and `/etc/xdg/autostart/`), so a
+single shipped file starts the daemon at login on every desktop — systemd or not
+(MX, Artix, Void, Gentoo). It loses the systemd plug/unplug lifecycle (login-only
+start) but gains universal coverage.
+
+```ini
+[Desktop Entry]
+Type=Application
+Name=QMKonnect
+Comment=Send the foreground window to your QMK keyboard
+Exec=qmkonnect
+Icon=input-keyboard
+Terminal=false
+X-GNOME-Autostart-enabled=true
+Categories=Utility;
+# Not shown in application menus (autostart-only):
+NoDisplay=true
+```
+
+- Ship it at `/etc/xdg/autostart/qmkonnect.desktop` in **every** Linux package
+  (.deb/.rpm/PKGBUILD/AUR/tarball) so login-autostart works out of the box even
+  where the systemd `SYSTEMD_USER_WANTS` path is disabled.
+- `Exec=qmkonnect` relies on `/usr/bin` (or the Nix store path) being on `PATH`
+  in the session; packages install to `/usr/bin` so this is satisfied. The Nix
+  module and the `.desktop` are independent (NixOS uses systemd; the `.desktop`
+  is for non-systemd or as a belt-and-suspenders).
+- The user disables it by copying to `~/.config/autostart/` with
+  `Hidden=true`, or by deleting the system file — same convention as every other
+  autostart app.
+
+### 4.8 Runtime dependencies per distro (summary)
+
+| Distro family | Runtime pkgs | Notes |
+|---|---|---|
+| Arch | `hidapi libusb zenity libnotify systemd libxdo` | link `-lhidapi-hidraw` |
+| Debian/Ubuntu/Mint | `libhidapi-hidraw0 libxdo3 zenity libnotify-bin systemd` | unified hidapi; **no** `-lhidapi-hidraw` |
+| Fedora/RHEL/Rocky | `hidapi libxdo zenity libnotify systemd` | unified hidapi; **no** `-lhidapi-hidraw` |
+| openSUSE | `HIDAPI libxdo libnotify-tools zenity systemd` | shared with Fedora spec |
+| NixOS | (provided by Nixpkgs via the flake) | |
 
 ---
 
 ## 5. macOS Packaging
 
 ### 5.1 `packaging/macos/build.sh`
-- `cargo build --release`.
-- Assembles `QMKonnect.app/Contents/{MacOS/qmkonnect, Resources/{Icon.icns, IconTemplate.png}}`.
-- Generates `Info.plist`:
-  ```xml
-  CFBundleExecutable    = qmkonnect
-  CFBundleIdentifier    = io.mulletware.qmkonnect
-  CFBundleName          = QMKonnect
-  CFBundleIconFile      = Icon.icns
-  LSUIElement           = true        # menu-bar-only: no Dock, no CMD-Tab
-  ```
-- **Codesign:** `codesign --deep --force --sign "$CODESIGN_IDENTITY"` where
-  `$CODESIGN_IDENTITY` defaults to `-` (ad-hoc). For distribution, set
-  `CODESIGN_IDENTITY="Developer ID Application: … (TEAMID)"` for a stable,
-  TCC-persistent signature.
+- `cargo build --release`. Assembles `QMKonnect.app/Contents/{MacOS,Resources}`.
+- Generates `Info.plist` (`CFBundleIdentifier=io.mulletware.qmkonnect`,
+  `LSUIElement=true` — menu-bar-only).
+- **Codesign:** `--sign "$CODESIGN_IDENTITY"` where `$CODESIGN_IDENTITY`
+  defaults to `-` (ad-hoc); a stable Developer ID stops the TCC re-prompt loop.
 - Builds `QMKonnect.dmg` (UDZO) with an `/Applications` symlink.
 
-### 5.2 `clean.sh` — run BEFORE every reinstall
-The #1 cause of "I rebuilt but nothing changed":
-1. `pkill -f QMKonnect.app`.
-2. Eject any mounted `QMKonnect` DMGs.
-3. `lsregister -u` stale copies (`/Applications`, `~/.Trash`).
-4. `rm -rf` old bundles.
-5. `tccutil reset ScreenCapture io.mulletware.qmkonnect` (ad-hoc `cdhash`
-   changes every build → TCC re-prompts even though Settings shows it granted).
+### 5.2 `clean.sh` (run BEFORE every reinstall)
+Stop app → eject stale DMGs → `lsregister -u` stale copies → `rm -rf` old bundles
+→ `tccutil reset ScreenCapture io.mulletware.qmkonnect`.
 
 ### 5.3 `install.sh` / `uninstall.sh`
-- `install.sh`: mount the DMG, copy `QMKonnect.app` to `/Applications`.
-- `uninstall.sh`: remove the app, the **Launch at Login** `SMAppService` entry,
-  and per-user config.
+Mount DMG → copy to `/Applications`. Uninstall removes the app, the SMAppService
+login entry, and per-user config.
 
 ### 5.4 Test via `open /Applications/QMKonnect.app`
-**Never** test the menu bar by running `target/release/qmkonnect` directly —
-outside a real bundle the menu-bar icon and template path don't work. The raw
-binary is fine for CLI subcommands.
+Never test the menu bar via the raw `target/release/qmkonnect` — the bundle
+context is required for the menu-bar icon + template path.
 
 ---
 
-## 6. The Dev Test Loop (`AGENTS.md`)
+## 6. Cross-Platform Package-Manager Channels (F15)
 
-### 6.1 macOS
+Beyond the native installers, every release is published to the package managers
+users already trust. Each channel's manifest is templated on `version` + a hash
+placeholder that CI fills from the real release artifact (`PACKAGING.md` §9).
+
+### 6.1 Homebrew Cask (`packaging/homebrew/Casks/qmkonnect.rb`)
+- Distributes the macOS `.dmg` via a **custom tap**
+  (`brew tap mulletware/qmkonnect https://github.com/dabstractor/homebrew-qmkonnect`,
+  `brew install --cask qmkonnect`) until notarization qualifies it for the
+  official `homebrew-cask` repo (PRD §12).
+- CI patches `version` + `sha256` (the `:no_check` placeholder) on each tagged
+  release and pushes to the tap (`update-cask.sh`). `livecheck` follows GitHub
+  releases. Cask `caveats` document Screen Recording + the ad-hoc-signature
+  Gatekeeper workaround (`xattr -dr com.apple.quarantine` / `--no-quarantine`).
+- Validate locally: `brew audit --cask --new-cask ./qmkonnect.rb`, `ruby -c`.
+
+### 6.2 Scoop (`packaging/scoop/qmkonnect.json`)
+- Windows manifest, per-user (no admin). `"innosetup": true` ⇒ Scoop extracts via
+  `innounp` (**the Inno installer logic does NOT run**: no HKCU Run autostart, no
+  ARP entry). Document this trade-off; autostart must be enabled from the tray's
+  "Open at Login" toggle after install.
+- CI fills the 64-zero `hash` placeholder (`update-manifest.ps1`). `checkver` +
+  `autoupdate` follow GitHub releases. Published to a Scoop bucket (README +
+  `bucket-README.md`).
+
+### 6.3 Winget (`packaging/winget/*.yaml`)
+- Three manifests (`dabstractor.QMKonnect.yaml` package, `.installer.yaml`,
+  `.locale.en-US.yaml`) wrapping the **Inno installer** (`InstallerType: inno`,
+  `Scope: user`, per-user — no UAC). `InstallerSha256` is a 64-zero placeholder
+  CI fills (`submit.ps1`).
+- Published to `microsoft/winget-pkgs` via PR (the `submit.ps1` helper). Unsigned
+  installer ⇒ Windows shows an "unverified publisher" prompt (PRD §12).
+- `UpgradeBehavior: install`; `Silent: /VERYSILENT`, `SilentWithProgress: /SILENT`.
+
+### 6.4 mise + asdf (`packaging/asdf/`)
+- One plugin (`github.com/dabstractor/asdf-qmkonnect`) serves **both** managers:
+  mise runs an asdf plugin's `bin/*` unchanged (`packaging/asdf/mise.toml` is a
+  documentation example, not consumed at runtime). `bin/download` fetches the
+  GitHub release asset per OS/arch; `bin/install` places it in the manager's
+  prefix; `bin/list-all` lists releases via the GitHub API.
+- Cross-platform (Linux/macOS/Windows-WSL). Installs the **binary only**; the
+  platform autostart + (on Linux) the udev rule are set up separately by the user
+  (documented). `publish.sh` cuts plugin releases.
+
+> **Why these and not Flatpak/AppImage as primary?** Flatpak's sandbox blocks
+> `/dev/hidraw` and portals don't cover HID — wrong model for a HID daemon.
+> AppImage still needs the system udev rule + autostart wiring, so it offers no
+> real win over the generic tarball. Both are explicitly out of scope as primary
+> channels (the generic tarball + native packages cover every distro).
+
+---
+
+## 7. The GNOME Shell Extension Artifact (`packaging/gnome-shell-extension/`)
+
+GNOME (Mutter) cannot report the active window to clients, so a tiny GNOME Shell
+extension (`qmkonnect@mulletware`) reads `global.display.focus_window` inside
+`gnome-shell` and republishes it over the session D-Bus, where the desktop app's
+GNOME backend (`src/platforms/gnome.rs`) subscribes (`PLATFORMS.md` §8). This is
+a **separate deliverable** from the app binary — the app cannot load it.
+
+- **Contents:** `metadata.json` (`uuid`, `shell-version`, `version`), `extension.js`
+  (`enable`/`disable`/`_onFocus` — §8.2 of PLATFORMS.md), optional `prefs.js`,
+  `stylesheet.css`. D-Bus interface introspection XML under the package for
+  reference.
+- **D-Bus contract:** name `io.mulletware.QMKonnect`, path
+  `/io/mulletware/QMKonnect`, interface `io.mulletware.QMKonnect.WindowMonitor`
+  (method `GetActiveWindow`→(ss), signal `ActiveWindowChanged`(ss), properties
+  `AppClass`/`Title`). `app_class` = `MetaWindow.get_wm_class()`.
+- **Build:** zip the directory as `qmkonnect@mulletware.shell-extension.zip`
+  (the extensions.gnome.org upload format). CI (§9) builds the zip and attaches
+  it to the Release.
+- **Distribution:** published on **extensions.gnome.org** (EGO) + the Release
+  asset. The app's first-run notification (§8.4) links users to it. The
+  `shell-version` array must be bumped per supported GNOME line on each release
+  (EGO gates compatibility by it).
+
+---
+
+## 8. The Dev Test Loop (`AGENTS.md`)
+
+### 8.1 macOS
 ```bash
 cargo test --bin qmkonnect -- --test-threads=1   # shared debouncer state
 cd packaging/macos && ./clean.sh && ./build.sh && ./install.sh
@@ -3003,54 +3593,75 @@ open /Applications/QMKonnect.app                  # grant the one Screen-Recordi
 ```
 If the icon looks dimmed/unclickable, the main thread is wedged →
 `sample <pid> 2 | grep -i mutex` (healthy = `nextEventMatchingMask`). Always
-rebuild before sampling (a stale binary misleads).
+rebuild before sampling.
 
-### 6.2 Windows (PowerShell)
+### 8.2 Windows (PowerShell)
 ```powershell
 cargo test --bin qmkonnect -- --test-threads=1
 cargo build --release
 taskkill /IM qmkonnect.exe /F     # mandatory — single-instance mutex
 .\target\release\qmkonnect.exe     # run in YOUR session, never via sc/services.msc
 ```
-Exclude `target\`, `~/.cargo`, and the project dir from Windows Defender
-(real-time scanning makes builds crawl). The Inno installer:
+Exclude `target\`, `~/.cargo`, and the project dir from Defender. Inno installer:
 `powershell -NoProfile -ExecutionPolicy Bypass -File packaging\windows\inno\build.ps1`
 → `packaging\windows\inno\Output\QMKonnect-Setup.exe`.
 
-### 6.3 Linux
+### 8.3 Linux
 ```bash
 cargo test --bin qmkonnect -- --test-threads=1
 cargo build --release                       # builds qmkonnect + qmkonnect-hid-id
 cargo clippy --all-targets -- -D warnings
-# package: cd packaging/linux/arch && makepkg -f && sudo pacman -U qmkonnect-*.pkg.tar.zst
+# Arch:   cd packaging/linux/arch && makepkg -f && sudo pacman -U qmkonnect-*.pkg.tar.zst
+# .deb:   cargo install cargo-deb && cargo deb   →  target/debian/qmkonnect_*.deb
+# .rpm:   cargo install cargo-generate-rpm && cargo generate-rpm → target/generate-rpm/*.rpm
 ```
+Backend smoke test: `qmkonnect -v` prints which backend `select_linux_backend`
+chose and why each other candidate was skipped (PLATFORMS.md §6).
 
 ---
 
-## 7. CI Release (`.github/workflows/release.yml`)
+## 9. CI Release (`.github/workflows/release.yml`)
 
 **Triggers:** push of a `v*` tag (builds **and** publishes) or `workflow_dispatch`
 (builds **without** publishing — dry-run the whole pipeline and download real
 artifacts before cutting a tag).
 
 - `qmk-notifier` is a pinned git dep (`tag = "vX.Y.Z"`), so a plain
-  `actions/checkout` of this repo suffices.
+  `actions/checkout` suffices. Version is read from `cargo metadata` (single
+  source of truth in `Cargo.toml`); all manifest versions/hashes are injected.
 - **macOS job:** `cargo build`, `packaging/macos/build.sh`. If repo var
-  `ENABLE_MACOS_NOTARIZE=true` + `APPLE_*` secrets: import Developer ID cert,
-  set `CODESIGN_IDENTITY`, then `notarytool submit … --wait` + `stapler staple`.
-  Renames `QMKonnect-<ver>-macos.dmg`, uploads artifact.
+  `ENABLE_MACOS_NOTARIZE=true` + `APPLE_*` secrets: import Developer ID cert, set
+  `CODESIGN_IDENTITY`, `notarytool submit … --wait` + `stapler staple`. Renames
+  `QMKonnet-<ver>-macos.dmg`, uploads artifact. **Publish:** the Homebrew job
+  patches the cask (`version`+`sha256`) and pushes to the tap.
 - **Windows job:** `cargo build`, install Inno Setup,
   `packaging/windows/inno/build.ps1` → `QMKonnect-<ver>-windows-x64.exe`
-  (uploaded as the primary Windows artifact). The legacy WiX MSI path
-  (`build-installer.ps1`) is not invoked by CI.
-- **Linux job:** Arch build via `makepkg`/docker → `.pkg.tar.zst` + standalone
-  binary.
-- Version is read from `cargo metadata` (single source of truth in `Cargo.toml`);
-  installer/PKGBUILD versions are injected from it (no `pre-release-replacements`).
+  (primary Windows artifact). **Publish:** Scoop job fills the manifest `hash`
+  and commits to the bucket; Winget job opens/updates the `winget-pkgs` PR with
+  the real `InstallerSha256`.
+- **Linux binary job:** plain release build, stage
+  `qmkonnet-<ver>-linux-x86_64.tar.gz` (binaries + static rule + service
+  template). Uploaded as an artifact and fetched by the AUR `-bin` PKGBUILD.
+- **Arch job:** `makepkg`/docker → `qmkonnect-<ver>-x86_64.pkg.tar.zst`.
+- **`.deb` job (NEW):** on `ubuntu-22.04` — `apt` install `libhidapi-dev
+  libxdo-dev pkg-config`, `cargo install cargo-deb`, `cargo deb` (**no**
+  `-lhidapi-hidraw`), rename to `qmkonnect-<ver>-linux-amd64.deb`, upload.
+- **`.rpm` job (NEW):** on Fedora — `dnf` install `hidapi-devel libxdo-devel
+  pkg-config`, `cargo install cargo-generate-rpm`, `cargo generate-rpm` (**no**
+  `-lhidapi-hidraw`), rename to `qmkonnect-<ver>-linux-x86_64.rpm`, upload.
+- **Nix job:** `nix build .#` (x86_64 + aarch64) to verify the flake; the flake
+  is consumed in-place from the repo (no artifact to publish).
+- **GNOME extension job (NEW):** zip `packaging/gnome-shell-extension/` →
+  `qmkonnect@mulletware.shell-extension.zip`, attach to the Release. (EGO upload
+  is a manual maintainer step; CI just builds the zip.)
+- **asdf/mise job:** on tag, `packaging/asdf/publish.sh` cuts a plugin release
+  tagging the new version.
+
+> The legacy WiX MSI path (`build-installer.ps1`) is **not** invoked by CI.
 
 ---
 
-## 8. Release Chore (`release.toml` + `cargo-release`)
+## 10. Release Chore (`release.toml` + `cargo-release`)
 
 QMKonnect is a **binary app**, never published to crates.io (`publish = false`).
 `cargo release <level>` (e.g. `cargo release 0.3.0`):
@@ -3065,13 +3676,14 @@ Pushing the tag triggers `release.yml`. **Nothing tags or publishes on its own**
 
 ---
 
-## 9. Build Outputs (gitignored, never commit)
-`target/`, `QMKonnect.app/`, `*.dmg`, `*.msi`, `*.exe` installers,
-`arch/pkg/`, `docs/_site/`. Regenerated by the build scripts.
+## 11. Build Outputs (gitignored, never commit)
+`target/`, `QMKonnect.app/`, `*.dmg`, `*.msi`, `*.exe` installers, `*.deb`,
+`*.rpm`, `*.pkg.tar.zst`, `arch/pkg/`, `*.shell-extension.zip`, `docs/_site/`.
+Regenerated by the build scripts/CI.
 
 ---
 
-*Continue with `SPEC_FIRMWARE.md`.* | Cargo build profile, per-platform installers (Inno/PKGBUILD/DMG), **community package-manager channels (AUR / Homebrew / Scoop / Winget / Nix flake / mise+asdf)**, CI release workflow, code signing, the dev test loop. |
+*Continue with `SPEC_FIRMWARE.md`.* | Cargo build profile, per-platform installers (Inno/PKGBUILD/DMG), **community package-manager channels (AUR / .deb / .rpm / Homebrew / Scoop / Winget / Nix flake / mise+asdf)**, CI release workflow, code signing, the dev test loop. |
 | # SPEC — Firmware Integration (qmk_notifier module)
 
 > Companion to `PRD.md` / `SPEC_PROTOCOL.md`. The **keyboard-side** contract: the
