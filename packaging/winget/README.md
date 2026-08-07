@@ -163,3 +163,105 @@ python3 -c "import yaml,sys,glob; [yaml.safe_load(open(f)) for f in glob.glob('p
   (Windows Scoop), [`packaging/homebrew/README.md`](../homebrew/README.md)
   (macOS Homebrew), [`packaging/linux/aur/README.md`](../linux/aur/README.md)
   (Linux AUR)
+
+## Publishing to microsoft/winget-pkgs (for maintainers)
+
+Winget packages do **not** ship from this repo — they live in the community
+[`microsoft/winget-pkgs`](https://github.com/microsoft/winget-pkgs) repository, under
+`manifests/d/dabstractor/QMKonnect/<version>/`. Each release is published by opening a **pull request**
+to that repo; the winget-pkgs maintainers review and merge it. This section documents the two supported
+publishing paths and the required GitHub PAT. (The end-user install side — `winget install
+dabstractor.QMKonnect`, the "unverified publisher" warning — is covered above.)
+
+### The GitHub PAT (required for both paths)
+
+A **classic** personal access token with the **`public_repo`** scope, stored as the
+**`WINGET_GITHUB_TOKEN`** Actions secret in
+[`dabstractor/qmkonnect`](https://github.com/dabstractor/qmkonnect). Create it at
+<https://github.com/settings/tokens> (Tokens (classic)) → check **`public_repo`**.
+
+Why a separate PAT (not the default `${{ secrets.GITHUB_TOKEN }}`): both `wingetcreate` and the
+`winget-releaser` action **auto-fork** `microsoft/winget-pkgs` into a namespace owned by the token
+(`<owner>/winget-pkgs`), push a branch to that fork, and open a PR `fork → microsoft:main`. The default
+`GITHUB_TOKEN` is scoped to `dabstractor/qmkonnect` only and **cannot** fork or push to an external
+repo. **Never log the token** — `submit.ps1` passes it via argv and redacts it (`--token ***`) in its
+own log line.
+
+### First release (one-time, manual, interactive)
+
+`wingetcreate update` (and the `winget-releaser` action) only work **after** the package already exists
+in winget-pkgs. The very first version must be submitted by hand, once:
+
+```powershell
+# On a Windows host (wingetcreate is Windows-first):
+winget install Microsoft.WingetCreate   # if not already installed
+wingetcreate new `
+    https://github.com/dabstractor/qmkonnect/releases/download/v0.2.8/QMKonnect-0.2.8-windows-x64.exe `
+    --token $env:WINGET_GITHUB_TOKEN --submit
+```
+
+`wingetcreate new` downloads the installer, computes its SHA256, and interactively prompts for the
+package metadata. Fill it from the manifest triplet in `packaging/winget/`
+(`dabstractor.QMKonnect.{yaml,locale.en-US.yaml,installer.yaml}`) — same `PackageIdentifier`
+(`dabstractor.QMKonnect`), `Publisher` (`Mulletware`), `PackageName` (`QMKonnet`), license (`MIT`),
+tags (`qmk, keyboard, hid, tray`), `InstallerType: inno`, `Scope: user`, and the
+`/VERYSILENT` / `/SILENT` silent switches. It then opens the initial PR; once the winget-pkgs
+maintainers merge it, `dabstractor.QMKonnect` is live and **all subsequent releases are automated**.
+
+### Each subsequent release — two options
+
+**Option A — `submit.ps1` (wingetcreate CLI; CI runs on `windows-latest`):**
+
+[`packaging/winget/submit.ps1`](submit.ps1) downloads the release `.exe`, computes its SHA256, and
+invokes `wingetcreate update dabstractor.QMKonnect --urls "<url>|<sha256>" --version <ver> --token <PAT>
+--submit`, which opens the per-release PR.
+
+```powershell
+# Review mode (generate the manifest locally for inspection — NO PR; the safe default):
+./packaging/winget/submit.ps1 -Version 0.2.8
+# Submit mode (open the PR to winget-pkgs):
+./packaging/winget/submit.ps1 -Version 0.2.8 -Submit -Token $env:WINGET_GITHUB_TOKEN
+# Skip the download if you already have the hash:
+./packaging/winget/submit.ps1 -Version 0.2.8 -Sha256 <64-hex> -Submit -Token $env:WINGET_GITHUB_TOKEN
+./packaging/winget/submit.ps1 -Help
+```
+
+The CI release workflow wires this in **P1.M5.T2.S1**: a `winget` job on `windows-latest` runs
+`winget install Microsoft.WingetCreate` then `submit.ps1 -Submit -Token $env:WINGET_GITHUB_TOKEN` after
+the GitHub Release publishes.
+
+**Option B — `vedantmgoyal9/winget-releaser@v2` action (Komac under the hood; CI runs on `ubuntu-latest`):**
+
+The alternative (what P1.M5.T2.S1 may use instead of Option A) is the
+[`vedantmgoyal9/winget-releaser@v2`](https://github.com/vedantmgoyal9/winget-releaser) action, which
+auto-finds the installer in the GitHub Release via a regex, computes its hash, and opens the PR. Minimal
+CI snippet (P1.M5.T2.S1 owns the real workflow file):
+
+```yaml
+winget:
+  runs-on: ubuntu-latest
+  if: github.event_name == 'push'   # tag pushes only (after the GitHub Release publishes)
+  steps:
+    - uses: vedantmgoyal9/winget-releaser@v2
+      with:
+        identifier: dabstractor.QMKonnect
+        # NOTE: 'version' is INTENTIONALLY OMITTED. The action defaults to the release tag with the
+        # leading 'v' stripped (v0.2.8 -> 0.2.8). Do NOT pass `version: ${{ github.event.release.tag_name }}`
+        # — that yields 'v0.2.8' VERBATIM (the action's else-branch does not strip it), which winget rejects.
+        installers-regex: 'QMKonnect-.*-windows-x64\.exe$'
+        token: ${{ secrets.WINGET_GITHUB_TOKEN }}   # classic PAT, public_repo scope
+        release-repository: dabstractor/qmkonnect
+```
+
+> ⚠️ **Both options fail until the first manual `wingetcreate new` (above) is merged.** They update an
+> existing winget-pkgs entry; they cannot create the first one. The `winget-releaser` action pre-flights
+> the package's presence and errors with *"Package dabstractor.QMKonnect does not exist in the
+> winget-pkgs repository. Please add at least one version of the package before using this action."*
+
+### Versioning truth
+`submit.ps1` (Option A) takes a **bare** version (`0.2.8`, no leading `v`) and **rejects** a leading
+`v`. Release tags are `v0.2.8`; the winget `PackageVersion` and the asset filename are bare. The
+`winget-releaser` action (Option B) strips the leading `v` automatically ONLY when `version` is omitted
+(see the NOTE in the snippet above). The version always comes from `Cargo.toml` (the single source of
+truth) via `cargo metadata` in CI — see `plan/007_fb356ba503b4/architecture/external_deps.md`
+§"Version Source of Truth".

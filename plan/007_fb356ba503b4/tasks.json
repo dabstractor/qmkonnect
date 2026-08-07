@@ -153,7 +153,7 @@
           "type": "Milestone",
           "id": "P1.M3",
           "title": "Windows Community Channels (Scoop + Winget)",
-          "status": "Researching",
+          "status": "Complete",
           "description": "Create the Scoop app manifest (JSON) and Winget package manifest (YAML) for the Windows Inno installer. Both download the `QMKonnect-{version}-windows-x64.exe` release artifact. Scoop ships via a custom bucket; Winget via automated PRs to microsoft/winget-pkgs.",
           "tasks": [
             {
@@ -199,7 +199,7 @@
               "type": "Task",
               "id": "P1.M3.T2",
               "title": "Winget Package Manifest",
-              "status": "Researching",
+              "status": "Complete",
               "description": "Create the Winget package manifest (YAML) for the Inno Setup installer, with automated PR submission to microsoft/winget-pkgs on each release.",
               "subtasks": [
                 {
@@ -222,7 +222,7 @@
                   "type": "Subtask",
                   "id": "P1.M3.T2.S2",
                   "title": "Create Winget publishing automation via wingetcreate",
-                  "status": "Researching",
+                  "status": "Complete",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M3.T2.S1"
@@ -255,7 +255,7 @@
                   "type": "Subtask",
                   "id": "P1.M4.T1.S1",
                   "title": "Create asdf plugin scripts (install, list-all, download)",
-                  "status": "Planned",
+                  "status": "Researching",
                   "story_points": 2,
                   "dependencies": [],
                   "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: asdf plugins are shell-script based, living in a separate repo named `asdf-{toolname}`. The three required scripts are: `bin/list-all` (prints available versions), `bin/download` (fetches the release artifact for a given version + OS/arch), `bin/install` (extracts to `$ASDF_INSTALL_PATH`). Release artifacts per platform: macOS=`QMKonnect-{ver}-macos.dmg` (need to extract .app from DMG), Windows=`QMKonnect-{ver}-windows-x64.exe`, Linux=`qmkonnect-{ver}-linux-x86_64.tar.gz` (contains qmkonnect + qmkonnect-hid-id + udev + systemd). mise is fully asdf-compatible: `mise plugin add qmkonnet https://github.com/dabstractor/asdf-qmkonnect` works without any plugin changes. See plan/007_fb356ba503b4/architecture/external_deps.md §6-7.\n2. INPUT: GitHub Releases API: `https://api.github.com/repos/dabstractor/qmkonnect/releases` for version listing. Release artifact naming patterns (from CI release.yml): macOS DMG, Windows exe, Linux tarball.\n3. LOGIC: Create `packaging/asdf/bin/list-all` — scrapes GitHub API for tags, prints space-separated versions. Create `packaging/asdf/bin/download` — maps `uname -s`/`uname -m` to artifact name, downloads via `curl`, validates SHA256 if sidecar exists. Create `packaging/asdf/bin/install` — extracts the platform-appropriate artifact to `$ASDF_INSTALL_PATH/bin/` (Linux: tar extract; macOS: mount DMG + copy qmkonnect binary from the .app bundle; note: the raw binary works for CLI but not menu-bar without the bundle context — document this caveat). Also create `packaging/asdf/lib/utils.bash` for shared helper functions.\n4. OUTPUT: `packaging/asdf/bin/{list-all,download,install}`, `packaging/asdf/lib/utils.bash`.\n5. DOCS: [Mode A] Create packaging/asdf/README.md (the plugin repo README) documenting: asdf setup (`asdf plugin add qmkonnect https://github.com/dabstractor/asdf-qmkonnect`, `asdf install qmkonnect latest`, `asdf global qmkonnect latest`), mise setup (`mise plugin add qmkonnect ...`, `mise install qmkonnect@latest`), and the macOS caveat that the raw binary lacks bundle context for the menu-bar icon. This rides WITH the work.",
