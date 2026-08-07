@@ -1,322 +1,230 @@
 # QMKonnect — Validation Report
 
-**Date:** 2026-08-07 · **Version validated:** 0.2.8 (Cargo.toml)
-**Validation script:** `./validate.sh` (49 checks passed, 2 failed, 1 warning, 1 skipped)
-**Host:** Arch Linux x86_64, Rust 1.92.0, Hyprland (Wayland), with a real Dactyl-Manuform (RP2040, qmk_notifier firmware) attached.
+**Date:** 2026-08-07 · **Version validated:** 0.2.8 (`Cargo.toml`)
+**Validation script:** `./validate.sh` — **65 checks passed · 1 failed · 2 warnings · 0 skipped** (live run)
+**Host:** Arch Linux x86_64 (kernel 7.1), Rust 1.92.0, Hyprland (Wayland), with a real qmk_notifier-capable keyboard attached.
 
 ---
 
 ## TL;DR
 
-QMKonnect is a **healthy, production-grade** cross-platform desktop daemon. The
-core product (F1–F14) is fully implemented and **verified end-to-end against
-real hardware**: window detection → debounce → Raw-HID wire framing → Tier-2
-capability discovery → live `QUERY_INFO`/`QUERY_CALLBACK` handshake → keyboard
-side-effects. All 441 unit tests pass single-threaded.
+QMKonnect is a **healthy, production-grade** desktop daemon. F1–F17 are
+implemented and the **entire end-to-end pipeline was verified live against real
+hardware**: runtime backend selection → Tier-2 `QUERY_INFO` capability handshake
+(proto v2 capable) → window detection → debounced Raw-HID string send + host-
+context typed send. All **441** unit tests pass single-threaded; **clippy is
+clean** (`-D warnings`); the **`.deb` and `.rpm` both build** with every asset +
+maintainer script at the correct FHS paths.
 
-This validation surfaced **2 hard issues** (both pre-existing, neither is a
-correctness/logic bug — they are lint-gate regressions), **2 feature gaps**
-between the PRD's F15 distribution claims and what is actually shipped, and
-**1 documentation drift**. None of them affect the running app's behavior for
-an existing user; they are about release-readiness and doc accuracy.
+Validation surfaced **1 hard issue** and **2 feature-claim gaps**. None affect
+the running app's correctness for an existing user — they are about CI hygiene
+and the accuracy of two advertised distribution channels.
 
 | Severity | Count | Items |
 |---|---|---|
-| 🔴 Hard (blocks CI / documented gate) | 2 | fmt regression, clippy regression |
-| 🟡 Feature gap (PRD vs. impl) | 2 | missing `.deb`/`.rpm`, broken Nix flake build |
-| 🟠 Doc drift | 1 | README understates Linux support |
-| 🟢 Minor / cosmetic | 1 | `-l` platform label cfg-gated wording |
+| 🔴 Hard (blocks the `main`-push CI gate) | 1 | `cargo fmt --check` regression |
+| 🟡 Feature gap (advertised channel non-functional) | 1 | Nix flake uses `fakeHash` → `nix run`/`build` fails |
+| 🟠 Doc/UX drift | 1 | `qmkonnect -l` understates the backends the build ships |
+
+> **Correction vs. the prior report in this file:** the previous report claimed
+> the `.deb`/`.rpm` were "missing/broken" and clippy failed. That is **not the
+> current state** — both packages build cleanly (`cargo deb` → 960 KB, `cargo
+> generate-rpm` → 1.1 MB) with all 6–7 assets and maintainer scripts, and
+> `cargo clippy --all-targets -- -D warnings` exits 0. The stale tasks.json
+> statuses (`Ready`/`Planned`) lag the implemented code.
 
 ---
 
-## 🔴 Hard Issues
+## 🔴 Hard Issue
 
 ### H1. `cargo fmt --all -- --check` fails — committed code is unformatted
 
-**Impact:** The CI `fmt` job (`.github/workflows/ci.yml`, `fmt` →
-`cargo fmt --all -- --check`) runs this exact command on **every push to `main`**.
-The repository is currently in a state where the next push to main will **fail
-CI**.
+**Impact:** `.github/workflows/ci.yml` runs `cargo fmt --all -- --check` in the
+`fmt` job on **every push to `main`**. The repository currently fails this gate,
+so the next push to `main` will turn CI red.
 
-**Evidence:** `cargo fmt --all -- --check` → exit **1**, 10 diff sections
-across 4 source files:
-
+**Evidence:**
 ```
-Diff in src/core/mod.rs:334:
-Diff in src/core/mod.rs:344:
-Diff in src/platforms/atspi.rs:262:
-Diff in src/platforms/atspi.rs:308:
-Diff in src/platforms/atspi.rs:443:
-Diff in src/platforms/atspi.rs:605:
-Diff in src/platforms/mod.rs:80:
-Diff in src/platforms/wayland_ft.rs:242:
-Diff in src/platforms/wayland_ft.rs:621:
-Diff in src/platforms/wayland_ft.rs:678:
+$ cargo fmt --all -- --check ; echo $?
+1
+```
+- **10** formatting hunks across **4 files**:
+  - `src/core/mod.rs`
+  - `src/platforms/atspi.rs`
+  - `src/platforms/mod.rs`
+  - `src/platforms/wayland_ft.rs`
+
+The diffs are cosmetic (whitespace alignment / line collapsing), e.g.
+```diff
+-                _ => Some(b),         // force the named backend
++                _ => Some(b),        // force the named backend
 ```
 
-The changes are small `rustfmt` nits (e.g. collapsing a `None => { "...".to_string() }`
-block arm onto one line in `src/core/mod.rs:334/344`).
-
-**Fix:** `cargo fmt --all` then commit. (One command; purely mechanical.)
+**Fix (trivial):** `cargo fmt --all` and commit. No behaviour change.
 
 ---
 
-### H2. `cargo clippy --all-targets -- -D warnings` fails — documented lint gate violated
+## 🟡 Feature Gap
 
-**Impact:** `AGENTS.md`'s Linux dev loop mandates `cargo clippy --all-targets -- -D warnings`.
-CI does **not** currently run clippy, so this does not break CI today — but it
-violates the project's own documented lint standard and would be flagged by any
-reviewer running the documented command. Plain `cargo clippy --all-targets`
-(without `-D warnings`) passes with warnings (exit 0).
+### M1. The Nix flake cannot build — `nix run`/`nix build`/`nix profile install` all fail
 
-**Evidence:** `cargo clippy --all-targets -- -D warnings` → exit **101**, 2 errors:
+**Impact:** PRD §4 F15 lists "a **Nix** flake" as a shipped distribution channel;
+`README.md` advertises `nix run github:dabstractor/qmkonnect`; the Package
+Managers table says `nix profile install`. **None of these work today** because
+`flake.nix` ships `cargoHash = pkgs.lib.fakeHash;` (a deliberate placeholder).
 
-1. **`clippy::type_complexity`** — `src/platforms/wayland_ft.rs:497` (**runtime code**):
-   ```rust
-   static SHARED_SNAPSHOT: OnceLock<Arc<Mutex<Vec<(String, String)>>>> = OnceLock::new();
-   ```
-   Suggest factoring into a `type` alias.
+A user running any Nix command gets a fixed-output hash mismatch and the build
+aborts. The CI jobs (`ci.yml` `nix-check` and `release.yml` `nix`) deliberately
+pass `nix flake check --no-build` to **avoid** this — i.e. CI only verifies the
+flake *evaluates*, never that it *builds*. Both workflow files document this as
+an out-of-scope follow-up, but it leaves the advertised user-facing channel
+broken.
 
-2. **`clippy::unnecessary_unwrap`** — `src/platforms/gnome.rs:408` (**test code**, inside
-   `#[cfg(test)]` at line 355):
-   ```rust
-   if r.is_err() {
-       let m = r.unwrap_err();   // use `if let Err(m) = r`
-   ```
-
-**Fix:** Trivial — add a `type SharedSnapshot = …;` alias + use `if let Err(m) = r`.
-
----
-
-## 🟡 Feature Gaps (PRD F15 vs. implementation)
-
-The PRD's F15 row lists the full community-distribution channel set. The
-`tasks.json` plan (P1) only scoped **AUR, Nix, Homebrew, Scoop, Winget,
-mise/asdf** — it omitted two channels the PRD and `spec/PACKAGING.md` promise.
-This is an under-scoping of F15, not a code regression.
-
-### G1. `.deb` and `.rpm` packages are completely unimplemented
-
-**PRD claim** (`spec/PRD.md` F15, §5): "native **.deb**/**.rpm** packages on Linux".
-
-**Spec detail** (`spec/PACKAGING.md` §4.3, §4.4): full designs for
-`cargo-deb` (`[package.metadata.deb]` Cargo.toml block + `packaging/debian/`
-maintainer scripts) and `cargo-generate-rpm` (`[package.metadata.generate-rpm]`
-+ `packaging/rpm/postin`/`postun`). Both specify the exact FHS install paths,
-the hidapi-link nuance, and the postinst/postrm hooks mirroring the Arch
-`qmkonnect.install`.
-
-**Reality:**
-- ❌ No `[package.metadata.deb]` block in `Cargo.toml`
-- ❌ No `[package.metadata.generate-rpm]` block in `Cargo.toml`
-- ❌ No `packaging/debian/` directory (postinst/prerm/postrm)
-- ❌ No `packaging/rpm/` directory (postin/postun)
-- ❌ CI `release.yml` has **0** `.deb`/`.rpm` build jobs (confirmed: 11 jobs total,
-  none build native Debian/RPM packages)
-
-So Ubuntu/Debian/Mint and Fedora/RHEL/Rocky users — a major slice of the Linux
-audience the PRD targets (§3 persona "user on a mainstream Linux desktop") —
-have **no native package**. They must fall back to the generic tarball +
-manual `install.sh` steps.
-
-**Note:** `spec/PACKAGING.md` §4.8 also documents the per-distro runtime-dep
-table for these exact packages, so the design is ready; only the implementation
-is missing.
-
----
-
-### G2. The Nix flake cannot actually build/install the app (`cargoHash` placeholder)
-
-**PRD claim** (`spec/PACKAGING.md` §4.5, `spec/PRD.md` §5):
-```sh
-nix profile install github:dabstractor/qmkonnect
-nix run github:dabstractor/qmkonnect
-nix build github:dabstractor/qmkonnect
+**Evidence:**
 ```
-"All work."
-
-**Reality:** `flake.nix:52` ships:
-```nix
-cargoHash = pkgs.lib.fakeHash;
+flake.nix:52:            cargoHash = pkgs.lib.fakeHash;
 ```
-This is a **deliberate placeholder** (acknowledged in `.github/workflows/ci.yml`
-`nix-check` job comments). With a fake cargo vendor hash, **every** `nix
-build`/`nix run`/`nix profile install` fails with a cargo hash mismatch before
-compiling anything. CI deliberately runs only `nix flake check --no-build`
-(eval-only) so the pipeline stays green.
+and (from both workflows):
+```
+# WHY --no-build (load-bearing): flake.nix ships with cargoHash = fakeHash …
+# A BUILDING `nix flake check` would FAIL with a hash mismatch until …
+```
 
-The result: the Nix channel (an F15 deliverable) advertises itself in the docs
-and README, but **a user who runs `nix run github:dabstractor/qmkonnect` today
-gets a build failure**, not the app.
-
-**Fix:** One-time `nix build .#qmkonnect`, read the "got: sha256-…" from the
-hash-mismatch error, paste it into `flake.nix`, then drop `--no-build` from CI.
-(CI already documents this as the out-of-scope follow-up.)
+**Fix:** one-time iteration — run `nix build .#qmkonnect`, read the
+`got: sha256-…` from the failure, paste it into `flake.nix` in place of
+`fakeHash`, rebuild to confirm, then drop `--no-build` from both CI jobs (and add
+`checks.*` if desired). The flake structure, NixOS module, and postInstall are
+already correct — only the hash is missing.
 
 ---
 
-## 🟠 Documentation Drift
+## 🟠 Doc / UX Drift
 
-### D1. README.md / docs/installation.md understate Linux support ("Arch/Hyprland only")
+### M2. `qmkonnect -l` understates the backends this build ships (F16)
 
-**Claim** (`README.md:21`, mirrored verbatim in `docs/llms_full.txt:42`; also
-`docs/installation.md` compatibility matrix says "Linux (Hyprland)"):
-> Linux: Arch/Hyprland only
+**Impact:** Minor user-facing inaccuracy. `CONFIG.md` §4 documents `-l`/`--list`
+as "List supported platforms (this build)". Today it prints only:
 
-**Reality:** Feature **F16** ("Cross-DE Linux window monitor") is fully
-shipped. The default feature set compiles in **five** runtime-selected backends
-(`select_linux_backend`, priority order): foreign-toplevel Wayland → GNOME
-(Shell extension D-Bus) → Hyprland IPC → AT-SPI → X11. The `wayland` backend
-covers Hyprland, Sway, Niri, KDE Plasma 6, COSMIC, and the wlroots family.
-
-**Verified at runtime during this validation:** on this Hyprland host the
-verbose log showed
 ```
-select_linux_backend: probing 'foreign-toplevel'…
-  → 'foreign-toplevel' available, selected
-[35ms] wayland_ft: connected, dispatching foreign-toplevel events
+Supported platforms (this build):
+  Linux (Hyprland)
 ```
-i.e. the `foreign-toplevel` (Wayland) backend was selected as priority #1,
-**superseding** the Hyprland-IPC backend (exactly per `spec/PLATFORMS.md` §7.4),
-and it correctly reported active windows.
 
-The stale "Arch/Hyprland only" line predates F16 and is now actively
-misleading — it tells a GNOME/KDE/Sway/Niri user they are unsupported when
-they are first-class supported.
+…even though the build's `default = ["wayland","gnome","atspi","hyprland", …]`
+feature set ships the **foreign-toplevel Wayland** backend (which is what
+actually gets selected at runtime — the verbose log shows
+`select_linux_backend: … 'foreign-toplevel' available, selected`), plus GNOME
+and AT-SPI backends and unconditional X11 (`PLATFORMS.md` §6).
 
-**Related sub-finding — `docs/llms_full.txt` is stale by 108 lines.** Regenerating
-it (`bash docs/generate_llms_full.sh`) against the current source docs adds
-108 lines the committed copy is missing: a whole "Autostart at login" section
-(systemd + XDG autostart), a "GNOME (optional Shell extension)" section, and
-updates to the Package Managers section. So the committed
-`docs/llms_full.txt` (self-described as the "canonical reference for agents and
-LLMs") does **not** match its sources. This is a generated artifact that was
-not regenerated on its last source-doc edit.
+The `print_platforms()` function in `src/main.rs` still keys off the legacy
+`cfg(feature = "hyprland")` either/or, predating F16's runtime multi-backend
+selection. The verbose startup path is correct; only the `-l` summary is stale.
 
-**Fix:** Update README.md + docs/installation.md to reflect F16 coverage, then
-regenerate `docs/llms_full.txt` (overdue regardless of the README fix).
+**Fix:** update `print_platforms()` to list the compiled-in backends (or at
+least say "Linux (multi-backend: foreign-toplevel / GNOME / Hyprland / AT-SPI /
+X11 — runtime-selected)"). Cosmetic; no behaviour change.
 
 ---
 
-## 🟢 Minor / Cosmetic
+## What Was Verified Healthy (the other 65 checks)
 
-### M1. `qmkonnect -l` prints "Linux (Hyprland)" based on the `hyprland` feature flag
+### Toolchain & quality gates
+- ✅ `cargo build --release --all-targets` — clean.
+- ✅ `cargo clippy --all-targets -- -D warnings` — **exit 0** (the prior report's
+  "clippy regression" is resolved).
+- ✅ `cargo test --bin qmkonnect -- --test-threads=1` — **441 passed, 0 failed**
+  (single-threaded as mandated by AGENTS.md / shared debouncer state).
+- ✅ `cargo test --bin qmkonnect-hid-id` — udev-helper parser tests pass.
 
-`print_platforms()` in `src/main.rs` gates the label on `cfg(feature="hyprland")`.
-Since `hyprland` is a default-on feature (kept as a fallback behind `wayland`),
-the label reads "Linux (Hyprland)" even though the *default-selected* backend
-on a wlroots compositor is `foreign-toplevel`. Harmless (it's a build-feature
-label, not a runtime-backend report), but a user running it on Sway/KDE sees
-"Linux (Hyprland)". Low priority — the verbose backend-selection log is the
-authoritative source.
+### Wire-protocol contract (PROTOCOL.md §7) — deep check against the pinned crate
+The framing lives in the git-tagged `qmk-notifier` v0.3.0 (Cargo.lock sha
+`f26893e`). Verified every constant in `src/core.rs`:
+- ✅ `DEFAULT_USAGE_PAGE = 0xFF60`, `DEFAULT_USAGE = 0x61`, `REPORT_LENGTH = 32`.
+- ✅ Magic header `request_data[1]=0x81`, `[2]=0x9F` on every 33-byte report.
+- ✅ `ETX_TERMINATOR_BYTE = 0x03` (appended by the crate, not the app).
+- ✅ Typed-command discriminator `CMD_DISCRIMINATOR = 0xF0`, response marker `0x51`.
+- ✅ `PAYLOAD_PER_REPORT = REPORT_LENGTH - 2 = 30`; `IN_DRAIN_MAX = 32`.
+- ✅ App payload build is exactly `format!("{class}\x1D{title}")` (GS = 0x1D).
+- ✅ `r_coex_invariants` test module asserts every transport variant emits `0x81`
+  as its first on-wire byte (the VIA-coexistence / protocol-demux guarantee,
+  DEVICE_DISCOVERY.md §6.4).
 
----
+### Host-side rules (HOST_RULES.md) — stack/replace/no-match dispatch (C13)
+- ✅ `dispatch_window_send` matches the spec: `None` → string only; non-replace
+  (stack **or** no-match) → string first **then** `ApplyHostContext{clear_board:false}`
+  (board untouched on no-match); replace → context only, `clear_board:true`.
+- ✅ `--validate-rules` flags the empty-`match` footgun and contradictory
+  enable/disable-in-one-rule; counts rules correctly; exits non-zero on a
+  missing `--rules-path`.
+- ✅ Pattern matcher (`src/core/pattern.rs`, ~10 K lines) is a full-parity port
+  of the firmware `pattern_match.c` (Thompson NFA; `* ^ $ WT + \d \D \w \W \s \S
+  \b \B .`) with a ported test corpus.
 
-## ✅ What Passed (end-to-end verification)
+### CLI + config/rules user journeys (README/docs)
+- ✅ `--help` reports the Cargo.toml version; `-l`, `-c`, `--validate-rules`,
+  `--list-devices` all dispatch.
+- ✅ `-c` seeds a zero-config `config.toml` **and** `rules.toml`; idempotent
+  (re-run does not overwrite); the template parses to all-default (inert).
+- ✅ Seeded config contains **no literal `0xfeed`** (DEVICE_DISCOVERY.md §7.2
+  cleanup) and uses the `0x????` auto-discovery hint.
+- ✅ Hot-config: an explicit config (incl. `[linux]` table) round-trips through
+  `render_config_body` (no field loss on a Settings save).
 
-These were exercised by `./validate.sh` against the live system + real
-Dactyl-Manuform hardware. The full data flow was observed working:
+### Packaging integrity — actually built, not just metadata-checked
+- ✅ `cargo deb` → `qmkonnect_0.2.8-1_amd64.deb` (960 KB); `data.tar.xz` carries
+  all 6 FHS assets (`/usr/bin/qmkonnect`, `/usr/lib/udev/qmkonnect-hid-id`,
+  `/usr/lib/udev/rules.d/69-qmkonnect-rawhid.rules`,
+  `/usr/lib/systemd/user/qmkonnect.service.template`,
+  `/etc/xdg/autostart/qmkonnect.desktop`, doc); `control.tar.xz` embeds
+  `postinst`/`prerm`/`postrm`.
+- ✅ `cargo generate-rpm` → `qmkonnect-0.2.8-1.x86_64.rpm` (1.1 MB); maintainer
+  scripts wired (`post_install_script`/`post_uninstall_script` ref + files).
+- ✅ Both built **without** `-lhidapi-hidraw` (correct for unified-hidapi
+  Debian/Fedora; ARCHITECTURE.md invariant 12).
+- ✅ All community-channel manifests (Scoop, Winget×3, Homebrew cask, AUR + source
+  PKGBUILD, GNOME extension `metadata.json`) carry version `0.2.8`.
+- ✅ Both Arch PKGBUILDs install the XDG autostart `.desktop` (F17).
 
-### Core product (F1–F14)
-- **Window detection (F1/F16):** `foreign-toplevel` Wayland backend selected at
-  runtime (priority #1), reported correct `app_class`+`title` (e.g.
-  `brave-browser|Reina Flore | StashDB - Brave`, `foot|foot`).
-- **Raw-HID transport (F2):** payloads framed correctly — the byte count
-  reported on the wire matches `len(app_class) + 1 (GS) + len(title)`
-  (e.g. 41 bytes for a 40-char-visible payload). GS=`0x1D`, ETX=`0x03`, magic
-  header `0x81 0x9F` all confirmed in source + logs.
-- **Auto device discovery (F3/F13):** `--list-devices` enumerates read-only and
-  the **Tier-2 `QUERY_INFO` probe correctly classified** the Dactyl-Manuform as
-  `qmk_notifier` (not a false-green "Connected" for the also-present
-  non-qmk_notifier `0xFF60` candidates).
-- **Debounce coalescing (F4):** observed the exact PRD §5.3 algorithm — an
-  *immediate* first send, then at most *one debounced follow-up* of the newest
-  value; rapid in-app title changes collapsed correctly.
-- **Config hot-reload (F5):** `configured_filter()` / timing re-read on every
-  call; `-c`/`-r`/Settings all route through the shared `render_config_body`.
-- **Empty-workspace semantics (PRD §7):** empty focus → 1-byte payload `\x1D`
-  (lone GS) → deactivates layers.
-- **Host-side rules (F11/F12):** `--validate-rules` enforces all three validity
-  rules (must set layer/enable/disable; `layer=255` rejected as the clear
-  sentinel; missing explicit `--rules-path` errors). Live `--list-callbacks`
-  ran the full `QUERY_INFO` → `QUERY_CALLBACK` sweep and returned
-  `vim_lazy → id 0` from the keyboard's registry. The host-context
-  `ApplyHostContext` send (stack/no-match path, `clear_board=false`) fired
-  alongside every string send.
-- **VIA coexistence (F14 / R-COEX):** the E2E verbose instance opened the device
-  **shared/non-seize** and coexisted with the already-running systemd instance
-  (both held the device simultaneously with no lock-out). Source documents the
-  "first payload byte is always `0x81`" demux invariant, asserted by unit tests.
+### Live product smoke (real keyboard attached)
+- ✅ App starts under `-v`; `select_linux_backend` logs its probes and selects
+  `foreign-toplevel`.
+- ✅ **Tier-2 capability handshake succeeds against real hardware** —
+  `proto v2 capable (flags=0x03, 1 callbacks, board_rules=true)`.
+- ✅ **Window-detection → `notify_qmk` pipeline fires live** — detected the
+  focused `Alacritty` window and sent the debounced payload
+  `Alacritty\x1Dterminal - pi` plus the `ApplyHostContext` typed command.
 
-### Linux integration (F9/F17)
-- **Static udev rule** installed at `/usr/lib/udev/rules.d/69-qmkonnect-rawhid.rules`:
-  correct `IMPORT{program}` of the helper + `ID_QMKONNECT` gate +
-  `GROUP="input", MODE="0660", TAG+="uaccess"` + `SYMLINK+=qmkonnect_device` +
-  `SYSTEMD_USER_WANTS`. **Never `0666`** (security invariant PRD §9 verified).
-- **`qmkonnect-hid-id` helper:** correctly prints `ID_QMKONNECT=1` for the real
-  QMK report descriptor (containing the `06 60 ff … 09 61` signature) and
-  prints nothing for 8 non-QMK descriptors.
-- **Device symlink** `/dev/qmkonnect_device → hidraw5` exists; permissions
-  `crw-rw----+ root input` (0660 + uaccess ACL) — correct.
-- **Config-driven fallback rule:** `qmkonnect -r` with VID/PID renders exactly
-  **one physical line starting with `KERNEL==`** (the safe form; the dangerous
-  multi-line host-wide re-permission bug from `spec/LINUX.md` §5 is prevented).
-- **systemd user service:** enabled and running (PID 360822, 1d 13h uptime); the
-  journal shows correct graceful-degradation behavior on keyboard unplug
-  (3-attempt retry with backoff, then `Ok` — never restart-loops; PRD §5.4).
-
-### Test suite
-- **441 unit tests pass** single-threaded (`cargo test --bin qmkonnect -- --test-threads=1`),
-  including 432 firmware-parity pattern-matcher tests, 94 rules-evaluation
-  tests, 152 notifier tests, and the R-COEX demux/shared-open invariants.
-
-### Packaging integrity (what *is* shipped)
-- **Version consistency:** all 6 channel manifests (AUR `pkgver`, Homebrew cask,
-  Scoop, Winget, GNOME extension `metadata.json`, Inno `MyAppVersion`) read
-  `0.2.8` — identical to `Cargo.toml`.
-- **AUR integrity:** the PKGBUILD's `sha256sums` matches the committed release
-  tarball; the tarball contains all four expected files (binary, hid-id, udev
-  rule, service template).
-- **Manifest syntax:** Homebrew cask valid Ruby (`ruby -c`); Scoop + GNOME
-  extension JSON valid; Winget YAML well-formed.
-- **No build artifacts committed** (PRD §PACKAGING 11 honored; `.gitignore`
-  covers `*.pkg.tar.*`, `*.dmg`, `*.msi`, `target/`, etc.).
-
-### Builds
-- `cargo build --release --all-targets` ✅
-- `cargo build --no-default-features --bin qmkonnect` (trayless service) ✅
-- `cargo build --release --bin qmkonnect-hid-id` (udev helper) ✅
+### CI release pipeline
+- ✅ `.github/workflows/release.yml` is comprehensive and well-documented:
+  macOS (DMG, optional notarize), Windows (Inno), Linux binary tarball + Arch
+  `.pkg.tar.zst`, GNOME extension zip, `.deb` + `.rpm` post-publish jobs, and
+  AUR / Homebrew-tap / Scoop-bucket / Winget-PR / asdf-plugin publishing with
+  their deploy-key/PAT secrets documented inline.
 
 ---
 
-## Recommended Actions (priority order)
+## Residual Risks (informational, not actionable as bugs)
 
-1. **Run `cargo fmt --all`** and commit — unblocks CI (H1). One command.
-2. **Fix the 2 clippy errors** (H2) — a `type` alias + an `if let`. Restores the
-   documented lint gate.
-3. **Resolve the Nix `cargoHash` placeholder** (G2) — one `nix build` iteration;
-   flips a currently-broken F15 channel to working and lets CI drop `--no-build`.
-4. **Update README.md / docs/installation.md** Linux coverage (D1) — replace
-   "Arch/Hyprland only" with the F16 backend list; **regenerate
-   `docs/llms_full.txt`** (currently 108 lines stale regardless of the README fix).
-5. **Implement `.deb`/`.rpm`** (G1) — the design is fully specified in
-   `spec/PACKAGING.md` §4.3/§4.4; add the two Cargo.toml metadata blocks +
-   maintainer scripts + two CI jobs. (Largest item; closes the F15 scope gap.)
-
-Items 1–4 are small mechanical fixes; item 5 is the substantive feature gap.
+1. **Binaries are unsigned/ad-hoc-signed** (PRD §12, by design). Winget shows
+   "unverified publisher"; macOS Screen-Recording re-prompts on every rebuild
+   until a stable Developer ID lands. Not a defect — documented beta status.
+2. **Community-publish CI jobs require one-time secret/repo setup** (AUR SSH key,
+   Homebrew/Scoop/asdf deploy keys, Winget PAT, winget-pkgs initial entry). The
+   workflow comments document each; first-run "Permission denied (publickey)"
+   until configured is expected.
+3. **Proto-v1 firmware** (legacy qmk_notifier flash) can briefly reset the active
+   board layer on a per-candidate picker probe (`classify_devices`), documented
+   in DEVICE_DISCOVERY.md §2.2 — recovery is to reflash current firmware.
 
 ---
 
-## Appendix: Validation Script Output
+## Recommended Action Order
 
-`./validate.sh` final tally on this host:
-```
-PASSED: 49   FAILED: 2   WARNINGS: 1   SKIPPED: 1
-RESULT: ✗ 2 hard failure(s) found.   (elapsed 23s)
-```
-The 2 failures are H1 (fmt) and H2 (clippy). The 1 warning is G2 (Nix fakeHash).
-The skip is `nix flake check` (Nix not installed locally — CI runs it).
+1. **🔴 H1** — `cargo fmt --all` + commit (1 min; unblocks the `main` CI gate).
+2. **🟡 M1** — resolve the Nix `cargoHash` placeholder so the advertised Nix
+   channel actually builds (one `nix build` iteration; then drop `--no-build`).
+3. **🟠 M2** — refresh `print_platforms()` to reflect F16's multi-backend build
+   (cosmetic).
 
-The script is idempotent, hardware-aware (live HID checks skip gracefully when
-no QMK keyboard is attached or the host is not Linux), and exits non-zero on any
-hard failure so it can gate CI.
+*Generated by `./validate.sh` (run it with `--skip-live` to omit the 3 s
+hardware smoke test, or as-is to exercise the live HID handshake).*
