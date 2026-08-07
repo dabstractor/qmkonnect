@@ -60,4 +60,10 @@ package() {
   # systemd user service template (post_install instantiates it). Binds to the
   # qmkonnect_device symlink the static rule creates for any matched interface.
   install -Dm644 "${stage}/systemd/qmkonnect.service.template" "${pkgdir}/usr/lib/systemd/user/qmkonnect.service.template"
+
+  # XDG autostart entry — universal login-autostart fallback (F17; LINUX.md §6.3,
+  # PACKAGING.md §4.7). Static file (no template instantiation); NoDisplay=true
+  # hides it from app menus. Source path is INSIDE the release tarball
+  # (${stage}/xdg/...), NOT the source-repo ../xdg/ path the arch PKGBUILD uses.
+  install -Dm644 "${stage}/xdg/qmkonnect.desktop" "${pkgdir}/etc/xdg/autostart/qmkonnect.desktop"
 }

@@ -15,7 +15,7 @@ the `qmkonnect-hid-id` udev helper.
 It is the **`-bin` sibling** of the source PKGBUILD at
 [`packaging/linux/arch/PKGBUILD`](../arch/PKGBUILD), which builds from source via
 `cargo build --release` (with `-lhidapi-hidraw`). Both packages install to the
-**same four paths** and reuse the **same pacman hooks** (`qmkonnect.install`), so
+**same five paths** and reuse the **same pacman hooks** (`qmkonnect.install`), so
 the on-disk result and post-install behavior are identical — pick `-bin` for speed
 and zero build deps, or the source PKGBUILD for a from-source / `-git` workflow.
 
@@ -59,9 +59,18 @@ rule already grants permissions.
 | `/usr/lib/udev/qmkonnect-hid-id` | udev helper tagging QMK Raw HID interfaces |
 | `/usr/lib/udev/rules.d/69-qmkonnect-rawhid.rules` | Static usage-page udev rule |
 | `/usr/lib/systemd/user/qmkonnect.service.template` | systemd user service template (instantiated by `post_install`) |
+| `/etc/xdg/autostart/qmkonnect.desktop` | XDG autostart entry — starts the daemon at login on systemd **and** non-systemd distros (F17) |
 
 These are identical to the source package's install paths (see
 [`spec/PACKAGING.md`](../../../spec/PACKAGING.md) §4).
+
+**Login-autostart works out of the box** via the shipped XDG `.desktop` entry
+(F17): on any desktop environment that honors `/etc/xdg/autostart/`, the daemon
+starts at login with **no `systemctl --user enable` needed** — including
+non-systemd distros (MX/Artix/Void/Gentoo). On systemd hosts the instantiated
+user service (from the template above, enabled globally by `qmkonnect.install`)
+still provides the richer plug/unplug lifecycle; the `.desktop` is the
+systemd-agnostic fallback that guarantees autostart everywhere.
 
 ## Version & checksum maintenance
 
