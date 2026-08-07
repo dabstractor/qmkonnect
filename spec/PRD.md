@@ -86,6 +86,11 @@ QMKonnect is one node in a small ecosystem. A dev agent must understand all of:
    Typo'd config? Probe once at startup and say so clearly.
 5. **Per-user, no-admin install.** No elevation anywhere; per-user installer on
    Windows, user systemd service on Linux, app bundle on macOS.
+6. **Native package-manager distribution.** Beyond the direct installers, ship
+   through the channels users already trust — **AUR** and a **Nix** flake on
+   Linux, **Homebrew** on macOS, **Scoop** and **Winget** on Windows, plus
+   cross-platform **mise**/**asdf** version-manager plugins — each honoring the
+   per-user, no-admin philosophy where the channel permits.
 
 ### 2.2 Non-Goals (explicitly out of scope for the beta)
 
@@ -130,13 +135,14 @@ QMKonnect is one node in a small ecosystem. A dev agent must understand all of:
 | F5 | TOML config with zero-config defaults + CLI flags | `CONFIG.md` |
 | F6 | Tray / menu-bar UI with settings, device status, window info | `UI.md` |
 | F7 | "Open at Login" toggle, default on (HKCU Run / SMAppService / systemd) | `UI.md` §4 |
-| F8 | Per-platform installer + CI release pipeline | `PACKAGING.md` |
+| F8 | Per-platform installer + CI release pipeline (primary installers; community package-manager channels → F15) | `PACKAGING.md` |
 | F9 | Linux: static udev rule + usage-page helper + root-aware reload | `LINUX.md` |
 | F10 | Companion firmware module contract (`qmk_notifier`) | `FIRMWARE.md` |
 | **F11** | **Host-side window rules:** edit `rules.toml` to map apps → layers/callbacks with **no reflash** (stacks on top of board rules) | `HOST_RULES.md` |
 | **F12** | **Named callback registry** + typed Raw HID commands (`QUERY_INFO` / `QUERY_CALLBACK` / `APPLY_HOST_CONTEXT`) with a capability handshake | `HOST_RULES.md` |
 | **F13** | **Two-tier device discovery + capability selection:** `0xFF60` presence then `0x81 0x9F` `QUERY_INFO` probe; truthful three-state tray status; live discovered-device Settings picker; broadcast to all capable boards | `DEVICE_DISCOVERY.md` |
 | **F14** | **VIA coexistence guarantee:** the always-on QMKonnect opens every HID handle shared / non-seize and reads only around its own writes, so the intermittently-used VIA app can always open the device | `DEVICE_DISCOVERY.md` §6 |
+| **F15** | **Community package-manager distribution:** publish every release to **AUR**, **Homebrew**, **Scoop**, **Winget**, a **Nix** flake, and **mise**/**asdf** plugins, so users install via their native package/version manager alongside the direct installers (F8) | `PACKAGING.md` |
 
 ---
 
@@ -144,9 +150,17 @@ QMKonnect is one node in a small ecosystem. A dev agent must understand all of:
 
 | Platform | Supported version | App model | Install | Autostart | Notes |
 |---|---|---|---|---|---|
-| **Windows** | 10 / 11, **x64 only** | Per-user tray app (`windows_subsystem="windows"`) | Inno Setup `.exe` (no admin) | HKCU `Run` (default on) | Static CRT link → no VC++ Redistributable |
-| **macOS** | 13 Ventura+ (for SMAppService) | Menu-bar app bundle (`LSUIElement`) | `.app` in a `.dmg` | `SMAppService` (default on) | Screen Recording permission needed for titles |
-| **Linux** | Hyprland (Wayland) | systemd user service + SNI tray | Arch `PKGBUILD` / binary | systemd `BindsTo` device | udev rule grants permissions; SNI bar required to *see* the icon |
+| **Windows** | 10 / 11, **x64 only** | Per-user tray app (`windows_subsystem="windows"`) | Inno `.exe` (primary, no admin) · Scoop · Winget | HKCU `Run` (default on) | Static CRT link → no VC++ Redistributable |
+| **macOS** | 13 Ventura+ (for SMAppService) | Menu-bar app bundle (`LSUIElement`) | `.dmg` (primary) · Homebrew Cask | `SMAppService` (default on) | Screen Recording permission needed for titles |
+| **Linux** | Hyprland (Wayland) | systemd user service + SNI tray | AUR · Nix flake · PKGBUILD/binary | systemd `BindsTo` device | udev rule grants permissions; SNI bar required to *see* the icon |
+
+> **Distribution channels (F15):** each platform also ships through its native
+> package managers — Windows: **Scoop** + **Winget**; macOS: **Homebrew** (cask);
+> Linux: **AUR** + **Nix** flake — alongside the direct installers above.
+> **mise** and **asdf** version-manager plugins cross-cut every platform,
+> installing the release binary into the manager's prefix. Per-channel packaging
+> and the per-OS autostart/udev wiring each channel performs live in
+> `PACKAGING.md`.
 
 Not supported: 32-bit Windows, Windows ≤ 8.1, X11 as a primary target, other
 Wayland compositors. The Rust **MSRV is 1.88** (enforced by `rust-version`).
@@ -305,7 +319,11 @@ failures degrade silently and recover automatically.)
 - **Linux surface is narrow** (Hyprland-only). Broader Wayland + X11 is planned.
 - **Binaries are unsigned** (Windows) / ad-hoc signed, not notarized (macOS).
   This causes the macOS Screen-Recording re-prompt loop on every rebuild; a
-  stable Developer ID + notarization is the intended fix.
+  stable Developer ID + notarization is the intended fix. Distribution-channel
+  impact (F15): **Winget** prompts "unverified publisher"; **Homebrew** ships
+  via a custom tap until notarization qualifies it for the official cask;
+  **Scoop**, **Nix** (builds from source), **AUR**, and **mise**/**asdf** are
+  unaffected (they don't enforce code-signing).
 - **Settings UX** is native-per-platform today (Win32 / NSAlert / zenity+GTK);
   a richer cross-platform UI is future work.
 - **Architecture unification**: three near-duplicate runners and a dual-trait
@@ -367,7 +385,7 @@ PRD.
 | @UI.md | Tray/menu-bar UI, menu layouts, Settings dialogs, "Show Window Information" dialogs, device-status indicator, "Open at Login" autostart. |
 | @LINUX.md | Linux-specific: static udev rule, `qmkonnect-hid-id` helper, config-driven fallback rule, dangerous-rule detection/repair, root-aware `--reload`, systemd service, SNI tray, GTK window-info dialog. |
 | @CONFIG.md | TOML schema, defaults, render body, config paths per OS, CLI flag reference. |
-| @PACKAGING.md | Cargo build profile, per-platform installers (Inno/PKGBUILD/DMG), CI release workflow, code signing, the dev test loop. |
+| @PACKAGING.md | Cargo build profile, per-platform installers (Inno/PKGBUILD/DMG), **community package-manager channels (AUR / Homebrew / Scoop / Winget / Nix flake / mise+asdf)**, CI release workflow, code signing, the dev test loop. |
 | @FIRMWARE.md | The `qmk_notifier` firmware module contract, keymap integration steps, pattern-matching syntax, the user's reference keymap. |
 | @HOST_RULES.md | **Host-side `rules.toml`** (no-reflash layer/callback rules, per-rule `disable_firmware_config`), the typed-command wire mirror (canonical: firmware `PRD.md` §4.6), named callback registry, three-repo rollout. |
 
