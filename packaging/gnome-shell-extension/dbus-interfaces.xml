@@ -1,0 +1,17 @@
+<node>
+  <interface name="io.mulletware.QMKonnect.WindowMonitor">
+    <!-- method: synchronous current-state read -->
+    <method name="GetActiveWindow">
+      <arg type="s" name="app_class" direction="out"/>
+      <arg type="s" name="title"     direction="out"/>
+    </method>
+    <!-- signal: emitted on focus transition + on enable (initial state) -->
+    <signal name="ActiveWindowChanged">
+      <arg type="s" name="app_class"/>
+      <arg type="s" name="title"/>
+    </signal>
+    <!-- read properties (org.freedesktop.DBus.Properties polling) -->
+    <property type="s" name="AppClass" access="read"/>
+    <property type="s" name="Title"    access="read"/>
+  </interface>
+</node>

@@ -1,0 +1,8 @@
+{
+    "uuid": "qmkonnect@mulletware",
+    "name": "QMKonnect",
+    "description": "Reports the focused window's WM class and title to QMKonnect for layer/keymap switching.",
+    "shell-version": ["45", "46", "47", "48", "49", "50"],
+    "version": "0.2.8",
+    "url": "https://github.com/dabstractor/qmkonnect"
+}
