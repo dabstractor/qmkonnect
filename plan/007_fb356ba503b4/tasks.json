@@ -241,14 +241,14 @@
           "type": "Milestone",
           "id": "P1.M4",
           "title": "Cross-Platform Version Managers (mise + asdf)",
-          "status": "Researching",
+          "status": "Complete",
           "description": "Create an asdf plugin that mise can also use directly (mise is asdf-compatible). The plugin downloads the appropriate pre-built release binary for the user's OS/arch and installs it into the version manager's prefix. This covers both mise and asdf from a single plugin.",
           "tasks": [
             {
               "type": "Task",
               "id": "P1.M4.T1",
               "title": "asdf Plugin (compatible with mise)",
-              "status": "Researching",
+              "status": "Complete",
               "description": "Create the asdf plugin shell scripts (bin/install, bin/list-all, bin/download) and document mise compatibility. The plugin lives in a separate repo `dabstractor/asdf-qmkonnect` but the scripts are staged in `packaging/asdf/` in this repo for CI to publish.",
               "subtasks": [
                 {
@@ -268,7 +268,7 @@
                   "type": "Subtask",
                   "id": "P1.M4.T1.S2",
                   "title": "Create asdf plugin repo metadata + mise native backend stub",
-                  "status": "Researching",
+                  "status": "Complete",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M4.T1.S1"
@@ -301,7 +301,7 @@
                   "type": "Subtask",
                   "id": "P1.M5.T1.S1",
                   "title": "Add AUR publication CI job",
-                  "status": "Planned",
+                  "status": "Researching",
                   "story_points": 2,
                   "dependencies": [
                     "P1.M1.T1.S2"

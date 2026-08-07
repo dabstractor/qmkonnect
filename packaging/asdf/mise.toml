@@ -1,0 +1,16 @@
+# Example mise.toml — copy the [tools] block into YOUR project's mise.toml (or .mise.toml).
+#
+# mise does NOT read this file from inside an installed asdf plugin; it is a documentation
+# example for the asdf-compat path. mise runs an asdf plugin's bin/* scripts UNCHANGED, so
+# the SAME plugin (https://github.com/dabstractor/asdf-qmkonnect) serves both managers.
+#
+# Prerequisite — add the plugin once (mise fetches + runs its bin/* to install a version):
+#   mise plugin add qmkonnect https://github.com/dabstractor/asdf-qmkonnect
+#   mise install qmkonnect@0.2.8
+#   mise use -g qmkonnect@0.2.8        # set the global default (or drop this block in a project)
+
+[tools]
+# Pin a specific release (recommended for reproducibility):
+qmkonnect = "0.2.8"
+# Or track the newest published release at install time:
+# qmkonnect = "latest"
