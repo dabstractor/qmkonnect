@@ -4,7 +4,7 @@
       "type": "Phase",
       "id": "P1",
       "title": "F15 — Community Package-Manager Distribution",
-      "status": "Ready",
+      "status": "Complete",
       "description": "Publish every QMKonnect release to native package/version managers users already trust: AUR and Nix flake (Linux), Homebrew (macOS), Scoop and Winget (Windows), plus cross-platform mise/asdf plugins. Each channel honors the per-user, no-admin philosophy where the channel permits. F1-F14 are already fully implemented in the v0.2.8 codebase (390 tests passing); this phase closes the last PRD feature gap (F15).",
       "milestones": [
         {
@@ -510,7 +510,7 @@
           "type": "Milestone",
           "id": "P1.M7",
           "title": "Native .deb/.rpm Linux Packages",
-          "status": "Ready",
+          "status": "Complete",
           "description": "PRD UPDATE (v0.2.8+): F15 expanded to include native `.deb` (Ubuntu/Debian/Mint) and `.rpm` (Fedora/RHEL/Rocky/Alma/openSUSE) packages. Both install the same FHS file set as the Arch PKGBUILD, including the XDG autostart `.desktop` (F17). Per PACKAGING.md §2/§4.3/§4.4, these distros ship a unified hidapi (>=0.14) that auto-selects hidraw at runtime, so the builds MUST NOT pass `-lhidapi-hidraw` (ARCHITECTURE.md invariant 12).",
           "tasks": [
             {
@@ -558,7 +558,7 @@
               "type": "Task",
               "id": "P1.M7.T2",
               "title": ".rpm Package via cargo-generate-rpm",
-              "status": "Ready",
+              "status": "Complete",
               "description": "Create a native RPM package using cargo-generate-rpm targeting Fedora/RHEL/Rocky/Alma/openSUSE. Build on Fedora (glibc 2.34+, covers Fedora + RHEL 9/Rocky 9/Alma 9). Include maintainer scripts mirroring the Debian/Arch hooks.",
               "subtasks": [
                 {
@@ -581,7 +581,7 @@
                   "type": "Subtask",
                   "id": "P1.M7.T2.S2",
                   "title": "Add .rpm CI job to release.yml",
-                  "status": "Ready",
+                  "status": "Complete",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M7.T2.S1"

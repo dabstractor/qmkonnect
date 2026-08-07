@@ -449,6 +449,112 @@ jobs:
             "qmkonnect-${VERSION}-linux-amd64.deb" --clobber
 
   # ─────────────────────────────────────────────────────────────────────────
+  # .rpm — native Fedora/RHEL/Rocky/Alma/openSUSE package via cargo-generate-rpm
+  # (spec/PACKAGING.md §4.4 recipe + §9 CI contract). The
+  # [package.metadata.generate-rpm] block + packaging/rpm/{postin,postun} are
+  # authored by P1.M7.T2.S1; this job consumes them.
+  #
+  # A POST-PUBLISH job (mirror of `deb`): runs after `publish` creates the
+  # GitHub Release and APPENDS qmkonnect-<ver>-linux-x86_64.rpm to it via
+  # `gh release upload --clobber` (idempotent on re-runs). NOT in
+  # publish.needs — a .rpm build failure must never block the core release.
+  # Skipped on workflow_dispatch dry-runs (publish creates no release).
+  #
+  # WHY a Fedora CONTAINER (not a native runner): GitHub has NO `fedora-latest`
+  # runner. We use runs-on: ubuntu-latest + container: fedora:latest — the SAME
+  # pattern the `arch` job uses (container: archlinux:latest). The first step
+  # dnf-installs git + the build deps BEFORE actions/checkout (the container
+  # image ships no git), mirroring the arch job's deps-first step.
+  #
+  # WHY the FULL -devel set (not spec §9's 3-pack): the default `cargo build
+  # --release` compiles gtk-rs + the wayland/gnome/atspi/hyprland backends +
+  # tao/tray-icon/libxdo/hidapi (Cargo.toml [features] default includes
+  # linux-tray=[dep:ksni,dep:gtk]). The spec §9 / contract 3-pack
+  # (hidapi-devel libxdo-devel pkg-config) is a SUMMARY; the real job needs the
+  # full GTK3/X11/systemd stack — exactly as the `deb` job installs the full apt
+  # set. Installing the superset satisfies the subset.
+  #
+  # WHY dtolnay/rust-toolchain@stable (NOT `dnf install rust`): Fedora's packaged
+  # rust is ~1.79–1.85, BELOW the Cargo.toml MSRV (rust-version = "1.88"). The
+  # action always installs latest stable (≫1.88). The dnf step provides only the
+  # C/GTK toolchain + git/jq/gh.
+  #
+  # WHY libappindicator-gtk3-devel (NOT libayatana-appindicator*): Fedora has NO
+  # libayatana-appindicator in its main repos (Red Hat Bugzilla #2253582 is a
+  # pending Review Request). libappindicator-gtk3-devel is the legacy package in
+  # main Fedora that provides the appindicator3-0.1 pkg-config the GTK linkage
+  # resolves against.
+  #
+  # Build uses NO -lhidapi-hidraw: Fedora/RHEL ship a UNIFIED hidapi (>=0.14)
+  # that auto-selects the hidraw backend at runtime (spec §2). The hidraw flag
+  # is Arch-only (the arch PKGBUILD). Plain `cargo build --release` is correct.
+  # ─────────────────────────────────────────────────────────────────────────
+  rpm:
+    name: Linux (.rpm via cargo-generate-rpm)
+    needs: [publish]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    container: fedora:latest
+    permissions:
+      contents: write
+    steps:
+      # Container ships no git/toolchain → install the FULL build-dep set FIRST
+      # (before checkout). gh + jq needed for later steps; git for checkout.
+      - name: Install Fedora build dependencies
+        run: |
+          dnf install -y \
+            gcc pkgconf-pkg-config \
+            gtk3-devel glib2-devel libappindicator-gtk3-devel \
+            libX11-devel libxcb-devel libxdo-devel \
+            hidapi-devel systemd-devel \
+            git jq gh ca-certificates
+
+      - uses: actions/checkout@v4
+
+      # NOT `dnf install rust`: Fedora's rust (~1.79–1.85) < MSRV 1.88. The
+      # action installs latest stable. (Mirror of the `deb` job.)
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Determine version
+        id: ver
+        run: |
+          v=$(cargo metadata --no-deps --format-version 1 \
+              | jq -r '.packages[] | select(.name=="qmkonnect") | .version')
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+      - name: Install cargo-generate-rpm
+        run: cargo install --locked cargo-generate-rpm
+
+      # cargo generate-rpm does NOT auto-build — build the release binary first.
+      # NO -lhidapi-hidraw (Fedora unified hidapi, spec §2).
+      - name: Build release binary
+        run: cargo build --release
+
+      - name: Build .rpm
+        run: cargo generate-rpm
+
+      # cargo-generate-rpm emits target/generate-rpm/qmkonnect-<ver>-1.x86_64.rpm
+      # (the "-1" is the RPM Release from release="1"). Release ASSET name drops
+      # the -1: qmkonnect-<ver>-linux-x86_64.rpm.
+      - name: Rename to release asset name
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          set -eux
+          mv "target/generate-rpm/qmkonnect-${VERSION}-1.x86_64.rpm" \
+             "qmkonnect-${VERSION}-linux-x86_64.rpm"
+
+      # Append the .rpm to the release created by `publish` (additive; --clobber
+      # idempotent on re-runs). gh came from the dnf step (above).
+      - name: Upload .rpm to the GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          gh release upload "${GITHUB_REF_NAME}" \
+            "qmkonnect-${VERSION}-linux-x86_64.rpm" --clobber
+
+  # ─────────────────────────────────────────────────────────────────────────
   # AUR — publish qmkonnect-bin to the Arch User Repository.
   #
   # Runs AFTER `publish` (makepkg -g in publish.sh downloads the release
