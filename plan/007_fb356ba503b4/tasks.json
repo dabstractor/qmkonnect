@@ -287,7 +287,7 @@
           "type": "Milestone",
           "id": "P1.M5",
           "title": "CI Pipeline Integration",
-          "status": "Researching",
+          "status": "Complete",
           "description": "Add publishing jobs to the existing `.github/workflows/release.yml` so each tag push automatically updates the AUR package, Homebrew tap, Scoop bucket, and Winget manifest. Add validation for the Nix flake and asdf plugin.",
           "tasks": [
             {
@@ -338,7 +338,7 @@
               "type": "Task",
               "id": "P1.M5.T2",
               "title": "Winget PR + Nix Validation + asdf Plugin CI",
-              "status": "Researching",
+              "status": "Complete",
               "description": "Add the Winget automated PR job (using wingetcreate or winget-releaser), Nix flake validation step, and asdf plugin smoke test to the CI pipeline.",
               "subtasks": [
                 {
@@ -361,7 +361,7 @@
                   "type": "Subtask",
                   "id": "P1.M5.T2.S2",
                   "title": "Add Nix flake check + asdf plugin test + asdf publish CI steps",
-                  "status": "Researching",
+                  "status": "Complete",
                   "story_points": 2,
                   "dependencies": [
                     "P1.M1.T2.S2",
@@ -389,14 +389,14 @@
               "type": "Task",
               "id": "P1.M6.T1",
               "title": "Update installation documentation for community channels",
-              "status": "Planned",
+              "status": "Researching",
               "description": "Update docs/installation.md to add sections for each new community channel (AUR, Nix, Homebrew, Scoop, Winget, mise, asdf) with exact install commands and platform-specific notes.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M6.T1.S1",
                   "title": "Add community channel sections to docs/installation.md",
-                  "status": "Planned",
+                  "status": "Researching",
                   "story_points": 2,
                   "dependencies": [
                     "P1.M1.T1.S1",

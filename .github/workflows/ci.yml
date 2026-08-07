@@ -58,3 +58,52 @@ jobs:
       # Single-threaded: AGENTS.md notes shared debouncer state across tests.
       - name: cargo test
         run: cargo test --bin qmkonnect -- --test-threads=1
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Nix flake check — validate flake.nix evaluates cleanly on every push to
+  # main (PRD §4 F15 "Nix flake" + architecture/external_deps.md §5 "CI runs
+  # `nix flake check`"). The flake lives in-repo, so there is NO publish step
+  # — users `nix run github:dabstractor/qmkonnect`; this job only validates it.
+  #
+  # WHY --no-build (load-bearing): flake.nix ships with
+  #   `cargoHash = pkgs.lib.fakeHash;` — a deliberate placeholder (P1.M1.T2.S2)
+  #   awaiting a one-time `nix build .#qmkonnect` iteration to capture the real
+  #   cargo vendor hash. A BUILDING `nix flake check` would FAIL with a hash
+  #   mismatch until that placeholder is resolved (a separate flake.nix follow-up
+  #   — NOT in scope for this task). `nix flake check --no-build` EVALUATES every
+  #   flake output (packages, devShells, nixosModules) WITHOUT instantiating the
+  #   build, so it passes today AND still catches real flake breakage (syntax /
+  #   type errors, missing inputs, a malformed packages.default / devShell).
+  #
+  #   FOLLOW-UP (out of scope): once cargoHash is resolved, run the real
+  #   `nix build .#qmkonnect`, paste the "got: sha256-…" into flake.nix, then
+  #   replace --no-build with a full `nix flake check` + `nix build .#qmkonnect
+  #   --no-link`. (Full nixosModules eval would also need a `checks.*` output
+  #   added to the flake.)
+  #
+  # install-nix-action enables `nix-command` + `flakes` by default (its README
+  # confirms this), so no experimental-features config is needed. The
+  # access-tokens line lifts the GitHub API rate limit when nix re-resolves the
+  # flake inputs (flake.lock is absent, so each run re-resolves nixpkgs +
+  # flake-utils); it uses the default GITHUB_TOKEN — no new secret.
+  # ─────────────────────────────────────────────────────────────────────────
+  nix-check:
+    name: nix flake check (eval)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Flakes + nix-command are enabled by the action by default. access-tokens
+      # (additive, not a replacement) prevents GitHub API rate limits when nix
+      # locks the absent flake.lock on each run. Uses the default GITHUB_TOKEN.
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            access-tokens = github.com=${{ secrets.GITHUB_TOKEN }}
+
+      # --no-build: evaluate all outputs WITHOUT building. REQUIRED because
+      # flake.nix's cargoHash is a deliberate fakeHash placeholder (see banner).
+      # Catches flake syntax/type errors + a broken packages.default / devShell.
+      - name: nix flake check (--no-build)
+        run: nix flake check --no-build
