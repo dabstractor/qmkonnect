@@ -318,6 +318,52 @@ owned and re-acquires state if you toggle the extension off and back on (within
 
 ### Linux Issues
 
+#### AT-SPI (a11y) backend — best-effort + requires enabling accessibility
+
+The **AT-SPI** backend (selected as priority #4, only when the
+foreign-toplevel / GNOME / Hyprland backends are all unavailable) is a
+**fallback of last resort** for window-focus detection. It tracks the
+*focused accessible object* on the desktop's accessibility (a11y) bus and is
+the path used most often by GNOME users who installed QMKonnect **without**
+the GNOME Shell extension but who have a screen reader or accessibility tool
+running. See `spec/PLATFORMS.md` §9 for the full contract and limitations.
+
+**It is off by default.** The a11y bus daemon being up is not enough — apps
+only **expose** accessibility when the desktop has Assistive Technology
+enabled. To turn it on:
+
+```bash
+# GNOME (and most GTK desktops):
+gsettings set org.gnome.desktop.interface toolkit-accessibility true
+#   or: Settings → Accessibility → enable a screen reader briefly to bring
+#   the bus up, then leave it on.
+```
+
+The presence check is: `org.a11y.Bus` is owned on the session bus, **or**
+`$ATSPI_BUS_ADDRESS` is set (exported by `at-spi-bus-launcher`). Verify with:
+
+```bash
+dbus-send --session --dest=org.freedesktop.DBus --print-reply \
+          /org/freedesktop/DBus org.freedesktop.DBus.NameHasOwner \
+          string:org.a11y.Bus   # → true when the a11y bus is up
+```
+
+**Known limitations (it's best-effort, not a primary backend):**
+
+- `app_class` is the focused object's *application readable Name* — **not**
+  `WM_CLASS`. For Electron / Chromium / sandboxed apps this may show as
+  `chrome`, `python3`, or be empty, so layer rules keyed on the real window
+  class will not match reliably.
+- `title` is the focused accessible object's name (e.g. a text field or tab),
+  **not** the window toplevel title, so it can differ from the titlebar.
+- Applications without an accessibility bridge are **invisible** to this
+  backend (no focus events are emitted for them).
+
+For reliable GNOME support, **prefer the GNOME Shell extension** (PLATFORMS.md
+§8 / `docs/qmk-integration.md`): it reports the real `WM_CLASS` and window
+title directly from `global.display.focus_window`. The AT-SPI backend is
+intentionally a best-effort safety net, not a replacement.
+
 #### Broken udev rule corrupts device permissions (VMs / containers fail)
 
 > **Symptoms:** libvirt/QEMU VMs fail to start with errors like

@@ -603,7 +603,7 @@
       "type": "Phase",
       "id": "P2",
       "title": "F16/F17 — Cross-DE Linux Window Monitor + Universal Autostart",
-      "status": "Researching",
+      "status": "Ready",
       "description": "PRD UPDATE (v0.2.8+): Two entirely new top-level features. F16 — a runtime-selected multi-backend Linux window monitor (foreign-toplevel Wayland -> GNOME Shell extension -> Hyprland IPC -> AT-SPI -> X11) so one binary works on GNOME, KDE Plasma, COSMIC, Hyprland, Sway, Niri, wlroots, and the X11 DE tail. F17 — universal XDG autostart `.desktop` alongside the systemd user service for login-autostart on systemd and non-systemd distros (MX/Artix/Void/Gentoo). This phase spans new source modules (`src/platforms/{wayland_ft,gnome,atspi}.rs`), a `select_linux_backend` dispatcher, a GNOME Shell extension artifact (`packaging/gnome-shell-extension/`), new Cargo features (`wayland`/`gnome`/`atspi`), config schema additions (`[linux]` table), and the hidapi-link-per-distro nuance (ARCHITECTURE.md invariant 12). Fully specified in PLATFORMS.md §6-§10, ARCHITECTURE.md §3/§6/§9, CONFIG.md §1/§1.3, LINUX.md §6.3, PACKAGING.md §2/§4/§7/§9.",
       "milestones": [
         {
@@ -788,21 +788,21 @@
           "type": "Milestone",
           "id": "P2.M4",
           "title": "AT-SPI Fallback Backend (src/platforms/atspi.rs)",
-          "status": "Researching",
+          "status": "Complete",
           "description": "The last-ditch backend for any compositor with accessibility enabled — primarily a GNOME fallback when the extension isn't installed and an emergency path elsewhere. Best-effort, not primary. Uses the `atspi` crate (zbus to the a11y bus).",
           "tasks": [
             {
               "type": "Task",
               "id": "P2.M4.T1",
               "title": "Implement atspi.rs backend",
-              "status": "Researching",
+              "status": "Complete",
               "description": "Create `src/platforms/atspi.rs` (feature `atspi`) — subscribe to `object:state-changed:focused` a11y events, track the focused accessible, report its application Name as app_class and its Name as title, with a 1000ms poll fallback. Documented limitations (readable name != WM_CLASS, Electron/sandboxed apps inconsistent, a11y often off by default).",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P2.M4.T1.S1",
                   "title": "Core atspi.rs: a11y-bus event subscription + 1000ms poll + best-effort limitations",
-                  "status": "Planned",
+                  "status": "Complete",
                   "story_points": 3,
                   "dependencies": [
                     "P2.M1.T1.S1",
