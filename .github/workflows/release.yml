@@ -137,7 +137,9 @@ jobs:
 
   # ─────────────────────────────────────────────────────────────────────────
   # Linux — portable binary tarball (broad glibc compatibility via 22.04).
-  # Contains the two binaries + the static udev rule + the systemd template.
+  # Contains the two binaries + the static udev rule + the systemd template
+  # + the XDG autostart .desktop (xdg/qmkonnect.desktop, per PACKAGING.md
+  # §4.6/§4.7 — universal login-autostart on non-systemd distros).
   # ─────────────────────────────────────────────────────────────────────────
   linux-binary:
     name: Linux (binary tarball)
@@ -235,9 +237,120 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────
   # Publish — only on real tag pushes (skipped for workflow_dispatch dry-runs).
   # ─────────────────────────────────────────────────────────────────────────
+  # ─────────────────────────────────────────────────────────────────────────
+  # GNOME Shell extension — zip packaging/gnome-shell-extension/ into the
+  # extensions.gnome.org upload format and attach to the Release.
+  #
+  # Build-LESS: the extension is plain JS/JSON/CSS, so this job stages NO Rust
+  # toolchain. The zip is the SAME artifact users `gnome-extensions install`
+  # AND the source a maintainer manually uploads to extensions.gnome.org (EGO).
+  # EGO upload itself is a MANUAL maintainer step (per PACKAGING.md §7/§9) — CI
+  # only BUILDS the zip and attaches it here.
+  #
+  # EGO ZIP FORMAT (load-bearing): GNOME expects extension.js + metadata.json
+  # (+ stylesheet.css) at the ARCHIVE ROOT — NO containing directory. Build the
+  # zip from INSIDE the dir with an EXPLICIT file list so it (a) lands at root
+  # and (b) omits README.md + dbus-interfaces.xml, exactly matching
+  # `gnome-extensions pack` output. `gnome-extensions install` + the EGO uploader
+  # both reject zips that nest files under a dir.
+  #
+  # VERSION SYNC: metadata.json ships a hardcoded `"version"`; patch it from the
+  # release tag (strip the leading 'v', like the homebrew/scoop jobs). The regex
+  # is anchored to the `"version": "..."` line ONLY — it MUST NOT touch the
+  # `"shell-version"` array (EGO gates compatibility by that array).
+  # ─────────────────────────────────────────────────────────────────────────
+  gnome-extension:
+    name: GNOME Shell extension (.zip)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Build-less: GITHUB_REF_NAME is the tag (v0.2.8); strip the 'v' for the
+      # bare version metadata.json expects (it rejects a leading 'v').
+      - name: Determine version
+        id: ver
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      # Patch metadata.json's "version" field ONLY. Anchored regex on the
+      # `"version": "<digits.dots>"` line; the "shell-version" array is untouched.
+      - name: Stamp version into metadata.json
+        working-directory: packaging/gnome-shell-extension
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          sed -i -E 's/^(\s*"version"\s*:\s*")[^"]*(")/\1'"$VERSION"'\2/' metadata.json
+          grep -E '"version"\s*:\s*"'"$VERSION"'"' metadata.json  # assert it landed
+
+      # EGO format: entries at the archive ROOT (no containing dir). Explicit
+      # file list = exactly what `gnome-extensions pack` bundles (no README, no
+      # introspection XML). `zip` is preinstalled on ubuntu-latest.
+      - name: Build extension zip (EGO upload format)
+        working-directory: packaging/gnome-shell-extension
+        run: |
+          zip -r "$GITHUB_WORKSPACE/qmkonnect@mulletware.shell-extension.zip" \
+            extension.js metadata.json stylesheet.css
+          # Assert files are at the archive ROOT (no containing directory).
+          unzip -l "$GITHUB_WORKSPACE/qmkonnect@mulletware.shell-extension.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gnome-extension
+          path: qmkonnect@mulletware.shell-extension.zip
+          if-no-files-found: error
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Nix flake — verify the flake evaluates cleanly for BOTH x86_64-linux AND
+  # aarch64-linux (PRD F15; PACKAGING.md §9: "verify the flake; no artifact to
+  # publish"). Verification-only; the flake is consumed in-place by users
+  # (`nix run github:dabstractor/qmkonnect`), so this job uploads NOTHING and is
+  # NOT in publish.needs (a flake regression must not block the binary release).
+  #
+  # WHY --no-build (load-bearing): flake.nix ships with
+  #   cargoHash = pkgs.lib.fakeHash   (a deliberate placeholder)
+  # because qmk-notifier is a git dependency and Cargo.lock does not carry its
+  # vendor hash. A REAL `nix build .#qmkonnect` FAILS with a fixed-output hash
+  # mismatch until a human runs the one-time `nix build .#qmkonnect` → paste the
+  # "got: sha256-…" into flake.nix iteration. That flake.nix follow-up is OUT OF
+  # SCOPE for this task (it is tracked separately; ci.yml's nix-check documents
+  # the same blocker).
+  #
+  # `nix flake check --no-build` EVALUATES every flake output for EVERY declared
+  # system. flake.nix's `eachSystem [ "x86_64-linux" "aarch64-linux" ]` means
+  # --no-build verifies packages/devShells for BOTH architectures without
+  # instantiating a build — so this is genuine MULTI-ARCH verification that stays
+  # GREEN today. (The sibling ci.yml job uses the identical command.)
+  #
+  # FUTURE full-build path (DOCUMENT ONLY — do not enable until cargoHash is
+  # resolved): enable aarch64 qemu binfmt emulation
+  # (https://github.com/cachix/install-nix-action supports it) and run
+  #   nix build .#qmkonnect --system x86_64-linux --no-link
+  #   nix build .#qmkonnect --system aarch64-linux --no-link
+  # ─────────────────────────────────────────────────────────────────────────
+  nix:
+    name: Nix flake check (x86_64-linux + aarch64-linux, eval)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # install-nix-action enables flakes + nix-command by default. access-tokens
+      # (additive, not a replacement) prevents GitHub API rate limits when nix
+      # re-resolves the flake inputs (flake.lock is absent, so each run re-
+      # resolves nixpkgs + flake-utils). Mirrors ci.yml's nix-check job verbatim.
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            access-tokens = github.com=${{ secrets.GITHUB_TOKEN }}
+
+      - name: nix flake check (--no-build; both arches via eachSystem)
+        run: nix flake check --no-build
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Publish — only on real tag pushes (skipped for workflow_dispatch dry-runs).
+  # ─────────────────────────────────────────────────────────────────────────
   publish:
     name: Publish GitHub Release
-    needs: [macos, windows, linux-binary, arch]
+    needs: [macos, windows, linux-binary, arch, gnome-extension]
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:
@@ -260,6 +373,7 @@ jobs:
             artifacts/windows-exe/*
             artifacts/linux-binary/*
             artifacts/arch-pkg/*
+            artifacts/gnome-extension/*
 
   # ─────────────────────────────────────────────────────────────────────────
   # AUR — publish qmkonnect-bin to the Arch User Repository.

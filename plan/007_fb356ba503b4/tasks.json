@@ -897,14 +897,14 @@
               "type": "Task",
               "id": "P2.M7.T1",
               "title": "Update cross-DE Linux documentation",
-              "status": "Researching",
+              "status": "Ready",
               "description": "Update docs/installation.md, README.md, docs/platforms/ and docs/troubleshooting.md to surface the broad Linux coverage (every major DE + Wayland compositors), the GNOME extension dependency, the runtime backend selection, and the XDG autostart path.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P2.M7.T1.S1",
                   "title": "Update installation/platforms/troubleshooting docs for F16/F17",
-                  "status": "Researching",
+                  "status": "Ready",
                   "story_points": 2,
                   "dependencies": [
                     "P2.M1.T1.S1",
@@ -936,7 +936,7 @@
                   "type": "Subtask",
                   "id": "P2.M7.T2.S1",
                   "title": "Add GNOME extension zip CI job + Nix multi-arch check + linux-binary tarball .desktop",
-                  "status": "Planned",
+                  "status": "Complete",
                   "story_points": 2,
                   "dependencies": [
                     "P2.M3.T1.S1",
@@ -955,7 +955,7 @@
                   "type": "Subtask",
                   "id": "P2.M7.T2.S2",
                   "title": "Regenerate docs/llms_full.txt + final build verification",
-                  "status": "Planned",
+                  "status": "Researching",
                   "story_points": 1,
                   "dependencies": [
                     "P2.M7.T1.S1",
