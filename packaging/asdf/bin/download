@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# asdf-qmkonnect: bin/download
+# Downloads the QMKonnect release artifact for $ASDF_INSTALL_VERSION + the
+# detected OS/arch into $ASDF_DOWNLOAD_PATH. asdf runs this BEFORE bin/install
+# (install reads the cached artifact from $ASDF_DOWNLOAD_PATH). Exit 0 = success
+# (install then runs); non-zero = failure (install is skipped).
+# shellcheck disable=SC1091 # utils.bash is sourced via ${BASH_SOURCE[0]} at runtime (correct path; not statically followable)
+set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/../lib/utils.bash"
+
+[ -n "${ASDF_INSTALL_VERSION:-}" ] || asdf_qmkonnect_fail "ASDF_INSTALL_VERSION is not set (run via 'asdf install qmkonnect <version>')"
+[ -n "${ASDF_DOWNLOAD_PATH:-}" ]   || asdf_qmkonnect_fail "ASDF_DOWNLOAD_PATH is not set"
+mkdir -p "$ASDF_DOWNLOAD_PATH"
+
+version="$ASDF_INSTALL_VERSION"
+asset="$(asdf_qmkonnect_asset_for "$version")"
+url="$(asdf_qmkonnect_download_url "$version" "$asset")"
+
+asdf_qmkonnect_info "==> Downloading QMKonnect $version"
+asdf_qmkonnect_info "    asset: $asset"
+asdf_qmkonnect_info "    url:   $url"
+asdf_qmkonnect_curl "$url" "$ASDF_DOWNLOAD_PATH/$asset"
+asdf_qmkonnect_verify_sha256_if_sidecar "$url" "$ASDF_DOWNLOAD_PATH/$asset"
+asdf_qmkonnect_info "==> Cached to $ASDF_DOWNLOAD_PATH/$asset"
