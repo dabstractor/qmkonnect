@@ -520,7 +520,7 @@ elif python -c 'import jsonschema' 2>/dev/null; then
     python -m jsonschema -i packaging/scoop/qmkonnect.json /tmp/scoop-schema.json
 else echo "(no jsonschema/ajv installed — relying on the jq assertions below)"; fi
 # Pin the schema-critical bits (run regardless of validator availability):
-jq -e '.version=="0.2.8" and .license=="MIT" and .homepage|startswith("https://github.com/dabstractor/qmkonnect") and .innosetup==true' packaging/scoop/qmkonnect.json
+jq -e '.version=="0.2.8" and .license=="MIT" and ((.homepage)|startswith("https://github.com/dabstractor/qmkonnect")) and .innosetup==true' packaging/scoop/qmkonnect.json
 jq -e '.architecture."64bit".url|test("^https://github.com/dabstractor/qmkonnect/releases/download/v0\\.2\\.8/QMKonnect-0\\.2\\.8-windows-x64\\.exe$")' packaging/scoop/qmkonnect.json
 jq -e '.architecture."64bit".hash|test("^[0-9a-fA-F]{64}$")' packaging/scoop/qmkonnect.json
 jq -e '.shortcuts[0]==["QMKonnect","QMKonnect.exe"]' packaging/scoop/qmkonnect.json
