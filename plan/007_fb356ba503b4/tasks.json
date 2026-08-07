@@ -714,7 +714,7 @@
           "type": "Milestone",
           "id": "P2.M3",
           "title": "GNOME Backend (Shell Extension + D-Bus Client)",
-          "status": "Ready",
+          "status": "Complete",
           "description": "GNOME (Mutter) implements neither foreign-toplevel protocol and exposes no client API for the active window, so the active window is read inside `gnome-shell` by a small extension and republished over the session D-Bus, where the desktop app subscribes. Two deliverables: the `qmkonnect@mulletware` GNOME Shell extension (separate artifact) and `src/platforms/gnome.rs` (the D-Bus client backend).",
           "tasks": [
             {
@@ -744,7 +744,7 @@
               "type": "Task",
               "id": "P2.M3.T2",
               "title": "GNOME D-Bus client backend (src/platforms/gnome.rs)",
-              "status": "Ready",
+              "status": "Complete",
               "description": "Create `src/platforms/gnome.rs` (feature `gnome`) — the desktop-side zbus D-Bus client that subscribes to the extension's `ActiveWindowChanged` signal, drift-polls `GetActiveWindow`, watches NameOwnerChanged, and fires a first-run notification when the extension isn't installed.",
               "subtasks": [
                 {
@@ -769,7 +769,7 @@
                   "type": "Subtask",
                   "id": "P2.M3.T2.S2",
                   "title": "First-run GNOME notification when extension missing",
-                  "status": "Ready",
+                  "status": "Complete",
                   "story_points": 1,
                   "dependencies": [
                     "P2.M3.T2.S1"

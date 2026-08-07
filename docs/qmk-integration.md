@@ -304,6 +304,52 @@ On the host side, run QMKonnect with verbose/debug logging to confirm it is
 sending the expected `{app_class}{GS}{title}` payload (see the
 [Troubleshooting Guide]({{ site.baseurl }}/troubleshooting)).
 
+## GNOME Shell Extension (Linux Desktop Prerequisite)
+
+GNOME (Mutter) advertises neither Wayland foreign-toplevel protocol and exposes
+no client API for the active window, so on GNOME QMKonnect detects window focus
+through the **`qmkonnect@mulletware`** GNOME Shell extension, which reads the
+active window inside `gnome-shell` and republishes it over D-Bus. On **every
+other Linux desktop** (Hyprland, Sway, KDE Plasma 6, COSMIC, XFCE, MATE, …)
+**no extension is needed** — QMKonnect uses the compositor's native protocol
+(foreign-toplevel / Hyprland IPC / X11) directly.
+
+### First-run notification
+
+If you launch QMKonnect on a GNOME session where the extension is not installed
+or not enabled, it fires a **single one-shot desktop notification** pointing you
+here (app-name `QMKonnect`, keyboard icon), titled *"QMKonnect needs the GNOME
+Shell extension"*. The daemon keeps running — the tray, device-status poll, and
+HID pipeline all stay active — and the AT-SPI fallback backend
+([`spec/PLATFORMS.md`](../spec/PLATFORMS.md) §9) may provide best-effort window
+detection meanwhile. The notification fires **at most once per launch**
+([`spec/PLATFORMS.md`](../spec/PLATFORMS.md) §8.4), so restarting QMKonnect is
+the way to see it again.
+
+### Install
+
+Install the extension from one of two sources:
+
+- search **"qmkonnect"** on <https://extensions.gnome.org>, or
+- unzip the `qmkonnect@mulletware.shell-extension.zip` attached to each
+  GitHub Release.
+
+For the full step-by-step (installing the extension, enabling it in the
+Extensions app, and the Wayland log-out-and-back-in step), see
+[Installation → GNOME]({{ site.baseurl }}/installation#gnome-optional-shell-extension).
+
+### Verify
+
+With the extension installed and enabled, `qmkonnect -v` should report that the
+`gnome` backend is available and selected. See
+[Troubleshooting → Linux (GNOME)]({{ site.baseurl }}/troubleshooting#linux-gnome)
+for the `gnome-extensions show` + `gdbus` verification commands and the
+live re-acquire behavior when you toggle the extension on mid-session.
+
+See [`spec/PLATFORMS.md`](../spec/PLATFORMS.md) §8 for the authoritative spec
+(§8.4 first-run UX, §8.5 distribution — QMKonnect only points users at the
+extension; it cannot install or load it itself).
+
 ## Common Issues
 
 If your integration isn't working:
