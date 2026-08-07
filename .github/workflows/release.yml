@@ -375,6 +375,79 @@ jobs:
             artifacts/arch-pkg/*
             artifacts/gnome-extension/*
 
+  # ───────────────────────────────────────────────────────────────────────
+  # .deb — native Debian/Ubuntu/Mint package via cargo-deb
+  # (spec/PACKAGING.md §4.3 recipe; the [package.metadata.deb] block in
+  # Cargo.toml is authored by P1.M7.T1.S1). Built on ubuntu-22.04 for the
+  # glibc 2.35 baseline (works on 22.04/24.04, Debian 12, Mint 21/22+).
+  #
+  # A POST-PUBLISH job: runs after `publish` creates the GitHub Release and
+  # APPENDS qmkonnect-<ver>-linux-amd64.deb to it (it is the only post-publish
+  # job that writes to THIS repo's release — the aur/homebrew/scoop/winget/asdf
+  # jobs push to EXTERNAL repos — so it needs contents: write). Keeping it off
+  # the publish critical path means a .deb build failure never blocks the core
+  # release. Skipped on workflow_dispatch dry-runs (publish creates no release).
+  #
+  # Build uses NO -lhidapi-hidraw: Debian/Ubuntu ship a UNIFIED hidapi (>=0.14)
+  # that auto-selects the hidraw backend at runtime (spec §2). (The Arch
+  # PKGBUILD sets the flag only because Arch splits the hidraw/libusb libs.)
+  # ───────────────────────────────────────────────────────────────────────
+  deb:
+    name: Linux (.deb via cargo-deb)
+    needs: [publish]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config \
+            libgtk-3-dev libglib2.0-dev libayatana-appindicator3-dev \
+            libx11-dev libxcb1-dev libxdo-dev libhidapi-dev libudev-dev
+
+      - name: Determine version
+        id: ver
+        run: |
+          v=$(cargo metadata --no-deps --format-version 1 \
+              | jq -r '.packages[] | select(.name=="qmkonnect") | .version')
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+      - name: Install cargo-deb
+        run: cargo install --locked cargo-deb
+
+      # cargo deb runs `cargo build --release` itself; NO -lhidapi-hidraw.
+      - name: Build .deb
+        run: cargo deb
+
+      # cargo-deb emits target/debian/qmkonnect_<ver>_amd64.deb (underscores).
+      # Release-asset name uses dashes: qmkonnect-<ver>-linux-amd64.deb.
+      - name: Rename to release asset name
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          set -eux
+          mv "target/debian/qmkonnect_${VERSION}_amd64.deb" \
+             "qmkonnect-${VERSION}-linux-amd64.deb"
+
+      # Append the .deb to the release created by `publish` (additive;
+      # --clobber makes it idempotent on re-runs). gh is preinstalled on
+      # ubuntu runners; GH_TOKEN = the default GITHUB_TOKEN (write via
+      # permissions: contents: write above).
+      - name: Upload .deb to the GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          gh release upload "${GITHUB_REF_NAME}" \
+            "qmkonnect-${VERSION}-linux-amd64.deb" --clobber
+
   # ─────────────────────────────────────────────────────────────────────────
   # AUR — publish qmkonnect-bin to the Arch User Repository.
   #
