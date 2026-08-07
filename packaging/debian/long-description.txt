@@ -1,0 +1,9 @@
+QMKonnect detects the foreground window on your desktop and tells your QMK
+keyboard which app is active, so the board can switch layers or fire callbacks
+automatically — no reflash needed for host-side rule changes.
+.
+Default QMK keyboards are auto-discovered by the standard Raw HID usage page
+(0xFF60 / 0x61); a static udev rule grants permissions and a systemd user
+service (plus an XDG autostart fallback) start the daemon at login with zero
+configuration. Works across X11 and Wayland compositors (Hyprland, Sway, KDE,
+GNOME, COSMIC, …).

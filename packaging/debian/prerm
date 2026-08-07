@@ -1,0 +1,7 @@
+#!/bin/sh
+# prerm: no-op. The running per-user service is left alone until reboot or
+# an explicit `systemctl --user stop`; real teardown happens in postrm.
+# (Mirrors the Arch package, which has no pre_remove hook.)
+set -e
+
+exit 0

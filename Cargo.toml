@@ -171,5 +171,32 @@ codegen-units = 1   # Reduce number of codegen units to increase optimizations
 panic = "abort"     # Abort on panic instead of unwinding
 strip = true        # Strip symbols from binary
 
+# .deb via cargo-deb (spec/PACKAGING.md §4.3). Targets Ubuntu/Debian/Mint — the
+# authoritative build is ubuntu-22.04 CI (glibc 2.35 compat; CI wiring is
+# P1.M7.T1.S2). Built WITHOUT -lhidapi-hidraw: Debian's unified hidapi (>=0.14)
+# auto-selects the hidraw backend at runtime (spec/PACKAGING.md §2). The .rpm
+# sibling ([package.metadata.generate-rpm]) is P1.M7.T2 — do NOT add it here.
+# Maintainer scripts (packaging/debian/{postinst,prerm,postrm}) are POSIX-sh
+# translations of packaging/linux/arch/qmkonnect.install (no bashisms; the
+# .service.template asset name shields us from cargo-deb's #DEBHELPER# injection).
+[package.metadata.deb]
+name = "qmkonnect"
+maintainer = "Mulletware <noreply@mulletware>"
+copyright = "2025, Mulletware"
+license-file = ["LICENSE", "0"]
+extended-description-file = "packaging/debian/long-description.txt"
+depends = "libhidapi-hidraw0, libxdo3, zenity, libnotify-bin, systemd"
+section = "utils"
+priority = "optional"
+assets = [
+  ["target/release/qmkonnect",                   "usr/bin/",                         "755"],
+  ["target/release/qmkonnect-hid-id",            "usr/lib/udev/",                    "755"],
+  ["packaging/linux/udev/69-qmkonnect-rawhid.rules", "usr/lib/udev/rules.d/",        "644"],
+  ["packaging/linux/systemd/qmkonnect.service.template", "usr/lib/systemd/user/",   "644"],
+  ["packaging/linux/xdg/qmkonnect.desktop",      "etc/xdg/autostart/",               "644"],
+  ["README.md",                                  "usr/share/doc/qmkonnect/",         "644"],
+]
+maintainer-scripts = "packaging/debian/"
+
 
 

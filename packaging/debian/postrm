@@ -1,0 +1,42 @@
+#!/bin/sh
+# postrm: Debian/Ubuntu/Mint removal hook for QMKonnect.
+# Mirrors packaging/linux/arch/qmkonnect.install post_remove, translated to
+# POSIX sh (no bashisms) for /bin/sh = dash. See spec/PACKAGING.md §4.3.
+#
+# Runs for both `remove` and `purge`. dpkg has already removed the package-owned
+# files (binary, helper, static rule, template, .desktop); this hook cleans up
+# the INSTANTIATED service + any user-generated /etc/udev/rules.d/99-… rule,
+# which are never package-owned.
+set -e
+
+echo "Removing QMKonnect..."
+
+# 1. Disable globally (best-effort).
+systemctl --global disable qmkonnect.service >/dev/null 2>&1 || true
+
+# 2. Stop + disable per-user instances for each user with a home directory.
+#    NOTE: the Arch original used a combined stdout+stderr redirect on the
+#    `systemctl ... status` line that dash rejects. Use `>/dev/null 2>&1`
+#    instead (done below).
+for user_home in /home/*; do
+  [ -d "$user_home" ] || continue
+  username=$(basename "$user_home")
+  user_id=$(id -u "$username" 2>/dev/null) || continue
+
+  if systemctl --user -M "$username@" status qmkonnect.service >/dev/null 2>&1; then
+    echo "Stopping service for $username..."
+    su "$username" -c "XDG_RUNTIME_DIR=/run/user/$user_id systemctl --user stop qmkonnect.service"
+    su "$username" -c "XDG_RUNTIME_DIR=/run/user/$user_id systemctl --user disable qmkonnect.service"
+  fi
+done
+
+# 3. Remove generated/user-created files (dpkg already removed package-owned
+#    files like the static rule + helper + template).
+rm -f /etc/udev/rules.d/99-qmkonnect.rules
+rm -f /usr/lib/systemd/user/qmkonnect.service
+
+# 4. Reload udev rules.
+udevadm control --reload-rules
+udevadm trigger
+
+echo "QMKonnect has been successfully removed."
