@@ -103,14 +103,14 @@
           "type": "Milestone",
           "id": "P1.M2",
           "title": "macOS Community Channel (Homebrew)",
-          "status": "Researching",
+          "status": "Ready",
           "description": "Create a Homebrew Cask for QMKonnect that installs the DMG from GitHub releases. Ship via a custom tap (`brew tap mulletware/qmkonnect`) until notarization qualifies it for the official Homebrew cask repository (PRD §12).",
           "tasks": [
             {
               "type": "Task",
               "id": "P1.M2.T1",
               "title": "Homebrew Cask Formula",
-              "status": "Researching",
+              "status": "Ready",
               "description": "Create the Homebrew Cask Ruby formula that installs QMKonnect.app from the GitHub release DMG, with livecheck for auto-version detection, caveats for Screen Recording permission, and zap for clean uninstall.",
               "subtasks": [
                 {
@@ -133,7 +133,7 @@
                   "type": "Subtask",
                   "id": "P1.M2.T1.S2",
                   "title": "Create Homebrew tap repo structure + update automation",
-                  "status": "Researching",
+                  "status": "Ready",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M2.T1.S1"
@@ -167,7 +167,7 @@
                   "type": "Subtask",
                   "id": "P1.M3.T1.S1",
                   "title": "Create Scoop app manifest for Inno installer",
-                  "status": "Planned",
+                  "status": "Researching",
                   "story_points": 2,
                   "dependencies": [],
                   "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: The Windows release artifact is `QMKonnect-{version}-windows-x64.exe` (Inno Setup installer, per-user, no admin). It writes HKCU Run autostart, Start Menu shortcuts, and an Add/Remove Programs uninstall entry. The installer exe is not code-signed (PRD §12: 'Scoop unaffected, they don't enforce code-signing'). See plan/007_fb356ba503b4/architecture/external_deps.md §3.\n2. INPUT: GitHub release URL pattern: `https://github.com/dabstractor/qmkonnect/releases/download/v{version}/QMKonnect-{version}-windows-x64.exe`.\n3. LOGIC: Create `packaging/scoop/qmkonnect.json` with: `version` (placeholder, updated by CI), `url` (GitHub release installer URL), `hash` (SHA256 placeholder), `innosetup: true` (Scoop detects and runs Inno installers natively), `homepage`, `license`, `checkver` block (`github` source with regex for `v([\\d.]+)` tag), `autoupdate` block with `url` and `hash` patterns (hash from the GitHub release `.exe.sha256` sidecar or computed at update time). Add `shortcuts` for Start Menu entry `[['QMKonnect', 'qmkonnect.exe']]` if the Inno installer doesn't create them (it does create Start Menu shortcuts, but Scoop manages its own shortcuts).\n4. OUTPUT: `packaging/scoop/qmkonnect.json` ready for the bucket repo.\n5. DOCS: [Mode A] Create packaging/scoop/README.md documenting the bucket setup (`scoop bucket add qmkonnect https://github.com/dabstractor/scoop-qmkonnect`, `scoop install qmkonnect`). This rides WITH the work.",
