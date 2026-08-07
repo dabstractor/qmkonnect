@@ -19,7 +19,7 @@
               "id": "P1.M1.T1",
               "title": "AUR Binary Package (qmkonnect-bin)",
               "status": "Complete",
-              "description": "Create an AUR `-bin` package that fetches pre-built release artifacts from GitHub instead of building from source. The existing `packaging/linux/arch/PKGBUILD` is a source-build for local makepkg; the AUR package needs a separate PKGBUILD pointing at release tarballs with SHA256 verification.",
+              "description": "Create an AUR `-bin` package that fetches pre-built release artifacts from GitHub instead of building from source. The existing `packaging/linux/arch/PKGBUILD` is a source-build for local makepkg; the AUR package needs a separate PKGBUILD pointing at release tarballs with SHA256 verification. **UPDATE REQUIRED (PRD v0.2.8+):** The release tarball must now also include the XDG autostart `.desktop` (F17, PACKAGING.md §4/§4.7) and the AUR `package()` must install it to `/etc/xdg/autostart/`. New subtask P1.M1.T1.S3 tracks this.",
               "subtasks": [
                 {
                   "type": "Subtask",
@@ -52,6 +52,21 @@
                     "h2.75",
                     "h3.113"
                   ]
+                },
+                {
+                  "type": "Subtask",
+                  "id": "P1.M1.T1.S3",
+                  "title": "Update AUR PKGBUILD to install XDG autostart .desktop (F17)",
+                  "status": "Planned",
+                  "story_points": 1,
+                  "dependencies": [
+                    "P2.M6.T1.S1"
+                  ],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: The updated PRD (F17, PACKAGING.md §4/§4.7) requires every Linux package to ship an XDG autostart `.desktop` at `/etc/xdg/autostart/qmkonnect.desktop`. The AUR `-bin` package (P1.M1.T1.S1, Complete) installs only the binary, hid-id helper, udev rule, and systemd template — it predates the `.desktop` requirement. The release tarball (staged by the CI linux-binary job) must now include `xdg/qmkonnect.desktop`.\n2. INPUT: `packaging/linux/xdg/qmkonnect.desktop` (created by P2.M6.T1.S1), `packaging/linux/aur/PKGBUILD` (from P1.M1.T1.S1).\n3. LOGIC: Update `packaging/linux/aur/PKGBUILD` `package()` to also `install -Dm644 \"$srcdir/.../xdg/qmkonnect.desktop\" \"$pkgdir/etc/xdg/autostart/qmkonnect.desktop\"`. Regenerate `.SRCINFO` via the existing `publish.sh`. Verify the file lands at the FHS path.\n4. OUTPUT: Updated `packaging/linux/aur/PKGBUILD` + `.SRCINFO`.\n5. DOCS: [Mode A] Note in packaging/linux/aur/README.md that login-autostart works out of the box via the shipped `.desktop`.",
+                  "prd_selectors": [
+                    "h2.3",
+                    "h3.113"
+                  ]
                 }
               ]
             },
@@ -60,7 +75,7 @@
               "id": "P1.M1.T2",
               "title": "Nix Flake",
               "status": "Complete",
-              "description": "Create a Nix flake (`flake.nix` + `flake.lock`) at the repo root that builds QMKonnect from source using `rustPlatform.buildRustPackage`, with proper Linux build dependencies (gtk3, hidapi, libxdo, systemd) and udev/systemd integration.",
+              "description": "Create a Nix flake (`flake.nix` + `flake.lock`) at the repo root that builds QMKonnect from source using `rustPlatform.buildRustPackage`, with proper Linux build dependencies (gtk3, hidapi, libxdo, systemd) and udev/systemd integration. **UPDATE REQUIRED (PRD v0.2.8+):** The flake `postInstall` must now also ship the XDG autostart `.desktop` (F17, PACKAGING.md §4.5/§4.7). New subtask P1.M1.T2.S3 tracks this.",
               "subtasks": [
                 {
                   "type": "Subtask",
@@ -93,6 +108,21 @@
                     "h2.58",
                     "h2.62",
                     "h3.100"
+                  ]
+                },
+                {
+                  "type": "Subtask",
+                  "id": "P1.M1.T2.S3",
+                  "title": "Update Nix flake postInstall to ship XDG autostart .desktop (F17)",
+                  "status": "Planned",
+                  "story_points": 1,
+                  "dependencies": [
+                    "P2.M6.T1.S1"
+                  ],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: The updated PRD (F17, PACKAGING.md §4.5/§4.7) requires the XDG autostart `.desktop` to ship in every Linux package. The existing Nix flake (P1.M1.T2.S2, Complete) has a `postInstall` that copies the binary, hid-id helper, udev rule, and systemd template — it does not yet copy the `.desktop`.\n2. INPUT: `packaging/linux/xdg/qmkonnect.desktop` (created by P2.M6.T1.S1), `flake.nix` (from P1.M1.T2.S2).\n3. LOGIC: In `flake.nix`'s `postInstall`, add a step to copy the `.desktop` file to `$out/etc/xdg/autostart/qmkonnect.desktop`. The NixOS module already uses systemd (primary); the `.desktop` is a belt-and-suspenders for non-NixOS/manual Nix installs. Regenerate `flake.lock` if inputs change.\n4. OUTPUT: Updated `flake.nix` postInstall.\n5. DOCS: [Mode A] Update packaging/nix/README.md noting the `.desktop` is included.",
+                  "prd_selectors": [
+                    "h2.3",
+                    "h2.73"
                   ]
                 }
               ]
@@ -469,6 +499,474 @@
                     "h2.74",
                     "h2.75",
                     "h2.76",
+                    "h2.78"
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "Milestone",
+          "id": "P1.M7",
+          "title": "Native .deb/.rpm Linux Packages",
+          "status": "Researching",
+          "description": "PRD UPDATE (v0.2.8+): F15 expanded to include native `.deb` (Ubuntu/Debian/Mint) and `.rpm` (Fedora/RHEL/Rocky/Alma/openSUSE) packages. Both install the same FHS file set as the Arch PKGBUILD, including the XDG autostart `.desktop` (F17). Per PACKAGING.md §2/§4.3/§4.4, these distros ship a unified hidapi (>=0.14) that auto-selects hidraw at runtime, so the builds MUST NOT pass `-lhidapi-hidraw` (ARCHITECTURE.md invariant 12).",
+          "tasks": [
+            {
+              "type": "Task",
+              "id": "P1.M7.T1",
+              "title": ".deb Package via cargo-deb",
+              "status": "Researching",
+              "description": "Create a native Debian package using cargo-deb targeting Ubuntu/Debian/Mint. Build on ubuntu-22.04 (glibc 2.35) so the runtime works on 22.04, 24.04, Debian 12, Mint 21/22+. Include maintainer scripts (postinst/prerm/postrm) mirroring the Arch qmkonnect.install hooks.",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P1.M7.T1.S1",
+                  "title": "Create [package.metadata.deb] block + maintainer scripts + long-description",
+                  "status": "Planned",
+                  "story_points": 2,
+                  "dependencies": [
+                    "P2.M6.T1.S1"
+                  ],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: The updated PACKAGING.md §4.3 specifies cargo-deb with a `[package.metadata.deb]` block in Cargo.toml. Build WITHOUT `-lhidapi-hidraw` (Debian's unified hidapi auto-selects hidraw — PACKAGING.md §2, ARCHITECTURE.md invariant 12). depends: `libhidapi-hidraw0, libxdo3, zenity, libnotify-bin, systemd`. Build on ubuntu-22.04 for glibc 2.35 compat. The artifact table (PACKAGING.md §4) lists 7 files including the XDG autostart `.desktop`.\n2. INPUT: `Cargo.toml` (add metadata block), `packaging/debian/long-description.txt`, `packaging/debian/{postinst,prerm,postrm}` (mirror Arch `qmkonnect.install`), `packaging/linux/xdg/qmkonnect.desktop` (from P2.M6.T1.S1), `packaging/linux/udev/69-qmkonnect-rawhid.rules`, `packaging/linux/systemd/qmkonnect.service.template`.\n3. LOGIC: (a) Add `[package.metadata.deb]` to Cargo.toml with the assets array from PACKAGING.md §4.3 (binary, hid-id, udev rule, service template, XDG .desktop, README), `maintainer-scripts` dir, `depends` line. (b) Create `packaging/debian/long-description.txt`. (c) Create `packaging/debian/postinst` (instantiate service template, reload udev, `systemctl --global enable`, ensure `input` group exists via `addgroup --system input` if missing, print next-steps), `postrm` (disable globally, stop+disable per-user services, remove instantiated service + `/etc/udev/rules.d/99-qmkonnect.rules`, reload udev), `prerm` (no-op). (d) Build: `cargo build --release` (no hidraw flag) then `cargo deb`. Output: `target/debian/qmkonnect_<ver>_amd64.deb`, renamed by CI to `qmkonnect-<ver>-linux-amd64.deb`.\n4. OUTPUT: `[package.metadata.deb]` in Cargo.toml, `packaging/debian/{long-description.txt,postinst,prerm,postrm}`.\n5. DOCS: [Mode A] Create packaging/debian/README.md documenting the .deb build and install (`sudo dpkg -i` / `sudo apt install ./...`).",
+                  "prd_selectors": [
+                    "h2.3",
+                    "h2.72",
+                    "h3.113"
+                  ]
+                },
+                {
+                  "type": "Subtask",
+                  "id": "P1.M7.T1.S2",
+                  "title": "Add .deb CI job to release.yml",
+                  "status": "Planned",
+                  "story_points": 1,
+                  "dependencies": [
+                    "P1.M7.T1.S1"
+                  ],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: The updated PACKAGING.md §9 specifies a new `.deb` CI job on `ubuntu-22.04`: `apt` install `libhidapi-dev libxdo-dev pkg-config`, `cargo install cargo-deb`, `cargo deb` (NO `-lhidapi-hidraw`), rename to `qmkonnect-<ver>-linux-amd64.deb`, upload to the Release.\n2. INPUT: `[package.metadata.deb]` from P1.M7.T1.S1, `.github/workflows/release.yml`.\n3. LOGIC: Add a `deb` job to release.yml: runs-on ubuntu-22.04, `needs: [publish]` and `if: github.event_name == 'push'`, apt-get install build deps (`libhidapi-dev libxdo-dev pkg-config`), `cargo install cargo-deb`, `cargo deb` (no hidraw flag), rename output to `qmkonnect-${{ steps.ver.outputs.version }}-linux-amd64.deb`, upload to the GitHub Release.\n4. OUTPUT: Updated `.github/workflows/release.yml` with the `deb` job.\n5. DOCS: [Mode A] Comment block documenting the job in the release.yml.",
+                  "prd_selectors": [
+                    "h2.3",
+                    "h2.72",
+                    "h2.78"
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "Task",
+              "id": "P1.M7.T2",
+              "title": ".rpm Package via cargo-generate-rpm",
+              "status": "Researching",
+              "description": "Create a native RPM package using cargo-generate-rpm targeting Fedora/RHEL/Rocky/Alma/openSUSE. Build on Fedora (glibc 2.34+, covers Fedora + RHEL 9/Rocky 9/Alma 9). Include maintainer scripts mirroring the Debian/Arch hooks.",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P1.M7.T2.S1",
+                  "title": "Create [package.metadata.generate-rpm] block + maintainer scripts",
+                  "status": "Planned",
+                  "story_points": 2,
+                  "dependencies": [
+                    "P2.M6.T1.S1"
+                  ],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: The updated PACKAGING.md §4.4 specifies cargo-generate-rpm with a `[package.metadata.generate-rpm]` block. Build WITHOUT `-lhidapi-hidraw` (Fedora's unified hidapi — PACKAGING.md §2, ARCHITECTURE.md invariant 12). require-local: `hidapi >= 0.10, libxdo, zenity, libnotify, systemd`. Build on Fedora. openSUSE shares this spec (HIDAPI, libxdo-devel, libnotify-tools, zenity).\n2. INPUT: `Cargo.toml` (add metadata block), `packaging/rpm/{postin,postun}` (mirror maintainer scripts), `packaging/linux/xdg/qmkonnect.desktop` (from P2.M6.T1.S1), the standard udev/service/hid-id files.\n3. LOGIC: (a) Add `[package.metadata.generate-rpm]` to Cargo.toml with assets array (same 7 files as .deb), `require-local` line, `post_install_script`/`post_uninstall_script` file refs. (b) Create `packaging/rpm/postin` (instantiate service, reload udev, `systemctl --global enable`) and `packaging/rpm/postun` (disable globally, stop+disable per-user services, remove instantiated service + `/etc/udev/rules.d/99-qmkonnect.rules`, reload udev). (c) Build: `cargo build --release` (no hidraw flag) then `cargo generate-rpm`. Output: `target/generate-rpm/qmkonnect-<ver>-1.x86_64.rpm`, renamed `qmkonnect-<ver>-linux-x86_64.rpm`.\n4. OUTPUT: `[package.metadata.generate-rpm]` in Cargo.toml, `packaging/rpm/{postin,postun}`.\n5. DOCS: [Mode A] Create packaging/rpm/README.md documenting the .rpm build and install (`sudo rpm -i` / `sudo dnf install ...`).",
+                  "prd_selectors": [
+                    "h2.3",
+                    "h2.72",
+                    "h3.113"
+                  ]
+                },
+                {
+                  "type": "Subtask",
+                  "id": "P1.M7.T2.S2",
+                  "title": "Add .rpm CI job to release.yml",
+                  "status": "Planned",
+                  "story_points": 1,
+                  "dependencies": [
+                    "P1.M7.T2.S1"
+                  ],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: The updated PACKAGING.md §9 specifies a new `.rpm` CI job on Fedora: `dnf` install `hidapi-devel libxdo-devel pkg-config`, `cargo install cargo-generate-rpm`, `cargo generate-rpm` (NO `-lhidapi-hidraw`), rename to `qmkonnect-<ver>-linux-x86_64.rpm`, upload.\n2. INPUT: `[package.metadata.generate-rpm]` from P1.M7.T2.S1, `.github/workflows/release.yml`.\n3. LOGIC: Add an `rpm` job to release.yml: runs-on a Fedora container (or `fedora-latest`), `needs: [publish]` and tag-only, dnf install build deps (`hidapi-devel libxdo-devel pkg-config`), `cargo install cargo-generate-rpm`, `cargo generate-rpm` (no hidraw flag), rename output to `qmkonnect-${{ steps.ver.outputs.version }}-linux-x86_64.rpm`, upload to the Release.\n4. OUTPUT: Updated `.github/workflows/release.yml` with the `rpm` job.\n5. DOCS: [Mode A] Comment block documenting the job.",
+                  "prd_selectors": [
+                    "h2.3",
+                    "h2.72",
+                    "h2.78"
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "Phase",
+      "id": "P2",
+      "title": "F16/F17 — Cross-DE Linux Window Monitor + Universal Autostart",
+      "status": "Researching",
+      "description": "PRD UPDATE (v0.2.8+): Two entirely new top-level features. F16 — a runtime-selected multi-backend Linux window monitor (foreign-toplevel Wayland -> GNOME Shell extension -> Hyprland IPC -> AT-SPI -> X11) so one binary works on GNOME, KDE Plasma, COSMIC, Hyprland, Sway, Niri, wlroots, and the X11 DE tail. F17 — universal XDG autostart `.desktop` alongside the systemd user service for login-autostart on systemd and non-systemd distros (MX/Artix/Void/Gentoo). This phase spans new source modules (`src/platforms/{wayland_ft,gnome,atspi}.rs`), a `select_linux_backend` dispatcher, a GNOME Shell extension artifact (`packaging/gnome-shell-extension/`), new Cargo features (`wayland`/`gnome`/`atspi`), config schema additions (`[linux]` table), and the hidapi-link-per-distro nuance (ARCHITECTURE.md invariant 12). Fully specified in PLATFORMS.md §6-§10, ARCHITECTURE.md §3/§6/§9, CONFIG.md §1/§1.3, LINUX.md §6.3, PACKAGING.md §2/§4/§7/§9.",
+      "milestones": [
+        {
+          "type": "Milestone",
+          "id": "P2.M1",
+          "title": "Core Backend Selection + Config + Build Features",
+          "status": "Researching",
+          "description": "The foundation for F16: the `select_linux_backend` runtime dispatcher that probes each compiled-in backend in priority order, the `[linux]` config table, the new Cargo features (wayland/gnome/atspi), X11 made unconditional, and the hidapi link nuance (Arch vs Debian/Fedora). Everything else in P2 depends on this.",
+          "tasks": [
+            {
+              "type": "Task",
+              "id": "P2.M1.T1",
+              "title": "select_linux_backend runtime dispatcher",
+              "status": "Researching",
+              "description": "Implement `select_linux_backend(verbose) -> Result<Box<dyn WindowMonitor>, Box<dyn Error>>` (in `src/platforms/mod.rs` or `linux.rs`) that probes each compiled-in backend for availability in priority order (foreign-toplevel -> GNOME -> Hyprland -> AT-SPI -> X11) and returns the first present one. Replaces the old compile-time `cfg(feature=\"hyprland\")` either/or with runtime selection so one binary works across all desktops.",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P2.M1.T1.S1",
+                  "title": "Implement select_linux_backend with priority probing + verbose logging + no-backend fallback",
+                  "status": "Planned",
+                  "story_points": 3,
+                  "dependencies": [],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: The updated PLATFORMS.md §6 defines `select_linux_backend` as the runtime selector with this priority order: (1) foreign-toplevel Wayland [feature `wayland`] — gate: `$WAYLAND_DISPLAY` resolvable AND compositor advertises `zwlr_foreign_toplevel_manager_v1`; (2) GNOME Shell extension [feature `gnome`] — gate: D-Bus name `io.mulletware.QMKonnect` owned; (3) Hyprland IPC [feature `hyprland`] — gate: `$HYPRLAND_INSTANCE_SIGNATURE` + live socket; (4) AT-SPI [feature `atspi`] — gate: a11y bus reachable; (5) X11 [always on Linux] — gate: `$DISPLAY` set AND `$WAYLAND_DISPLAY` unset AND xprop present. ARCHITECTURE.md §2.2 says `create_monitor` delegates to `select_linux_backend`. The `[linux] backend` config can override auto selection. The no-backend fallback (e.g. GNOME-Wayland without extension + a11y off) returns Err but the runner still starts tray/device-status/HID pipeline; on GNOME a one-shot notify-send fires (PLATFORMS.md §8.4).\n2. INPUT: `src/platforms/mod.rs` (create_monitor + WindowMonitor trait), the per-backend availability probes (each backend's T1). This subtask implements the dispatcher and the probe stubs; backends are wired in P2.M2-P2.M5.\n3. LOGIC: (a) In `src/platforms/mod.rs`/`linux.rs`, add `select_linux_backend(verbose)` that iterates the priority list, calls each backend's availability probe, returns the first `Ok`. (b) Each probe is a cheap check (env var + D-Bus name ownership + socket existence). (c) Honor `[linux] backend` config override (forced backend that's unavailable errors loudly with every probe result). (d) Verbose mode prints each candidate, probe result, and chosen backend. (e) On total failure (all probes fail), return Err; the runner (`runners/linux.rs`) handles it by still starting the tray/device pipeline and emitting no window events; GNOME first-run notification fires here. (f) Wire `create_monitor` to call `select_linux_backend` on Linux. Invariant 11: NEVER select X11 under a Wayland compositor (X11 gate requires `$WAYLAND_DISPLAY` unset).\n4. OUTPUT: `select_linux_backend` in `src/platforms/{mod,linux}.rs`, `create_monitor` updated, runner handles the no-backend Err gracefully.\n5. DOCS: [Mode A] Backend selection is logged verbosely; document the priority order + `[linux] backend` override in docs.",
+                  "prd_selectors": [
+                    "h2.3",
+                    "h2.81",
+                    "h2.82"
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "Task",
+              "id": "P2.M1.T2",
+              "title": "Config schema [linux] table + Cargo features + hidapi link nuance",
+              "status": "Researching",
+              "description": "Add the `[linux]` config table (`backend`, `gnome_poll_interval_ms`) to the Config struct, add the new Cargo features (`wayland`/`gnome`/`atspi`) to default, make X11 unconditional on Linux, and enforce the hidapi-link-per-distro invariant (Arch links `-lhidapi-hidraw`; Debian/Ubuntu/Fedora unified hidapi must NOT).",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P2.M1.T2.S1",
+                  "title": "Add LinuxConfig struct + [linux] table to Config schema",
+                  "status": "Planned",
+                  "story_points": 1,
+                  "dependencies": [],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: The updated CONFIG.md §1/§1.3 adds a `LinuxConfig` struct to `Config`: `backend: Option<String>` (None/auto = runtime priority order; values: foreign-toplevel|gnome|hyprland|atspi|x11|auto) and `gnome_poll_interval_ms: Option<u64>` (default 1000). Both optional; a config without `[linux]` uses auto selection.\n2. INPUT: `src/core/mod.rs` (Config struct, parse_config).\n3. LOGIC: Add `#[serde(default)] pub linux: LinuxConfig` to Config. Add `LinuxConfig` struct with `backend: Option<String>` and `gnome_poll_interval_ms: Option<u64>` (both `#[serde(default)]`, `#[derive(Default)]`). Update `render_config_body` if it needs to emit `[linux]` hints (optional — commented hints only). `configured_filter()` and `configured_timing()` are unaffected.\n4. OUTPUT: `LinuxConfig` in `src/core/mod.rs`, wired into Config.\n5. DOCS: [Mode A] The schema is self-documenting via the `[linux]` table; add commented hints to the config template if render_config_body is extended.",
+                  "prd_selectors": [
+                    "h2.3",
+                    "h2.72",
+                    "h2.82"
+                  ]
+                },
+                {
+                  "type": "Subtask",
+                  "id": "P2.M1.T2.S2",
+                  "title": "Add wayland/gnome/atspi Cargo features, make X11 unconditional, document hidapi link nuance",
+                  "status": "Planned",
+                  "story_points": 2,
+                  "dependencies": [],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: The updated PACKAGING.md §2 / ARCHITECTURE.md §9 changed the default features from `['hyprland', 'macos', 'linux-tray']` to `['wayland', 'gnome', 'atspi', 'hyprland', 'macos', 'linux-tray']`. New features: `wayland` (dep smithay-client-toolkit + wayland-client), `gnome` (dep zbus), `atspi` (dep atspi). X11 is now compiled UNCONDITIONALLY on Linux (no feature flag). ARCHITECTURE.md invariant 12: Arch links `-lhidapi-hidraw` (separate lib); Debian/Ubuntu/Fedora (unified hidapi >=0.14) must NOT pass that flag.\n2. INPUT: `Cargo.toml` ([features], [dependencies], [target.'cfg(target_os = \"linux\")'].dependencies).\n3. LOGIC: (a) Add `wayland = ['dep:smithay-client-toolkit', 'dep:wayland-client']`, `gnome = ['dep:zbus']`, `atspi = ['dep:atspi']` to [features]; update `default` to include all three. (b) Add the optional deps under `[target.'cfg(target_os = \"linux\")']`. (c) X11 (`src/platforms/x11.rs`) is compiled unconditionally on Linux (no feature gate) — update `#[cfg]` attributes. (d) Document the hidapi link nuance: the Arch PKGBUILD keeps `RUSTFLAGS='-C link-arg=-lhidapi-hidraw'`; the .deb/.rpm builds (P1.M7) and Nix flake must NOT pass it (unified hidapi auto-selects hidraw). Add a comment in Cargo.toml or .cargo/config.toml documenting this.\n4. OUTPUT: Updated `Cargo.toml` features + deps; X11 unconditional; hidapi nuance documented.\n5. DOCS: [Mode A] The feature table in PACKAGING.md §2 is the reference; keep Cargo.toml comments in sync.",
+                  "prd_selectors": [
+                    "h2.3",
+                    "h2.72",
+                    "h2.78"
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "Milestone",
+          "id": "P2.M2",
+          "title": "Foreign-toplevel Wayland Backend (src/platforms/wayland_ft.rs)",
+          "status": "Researching",
+          "description": "The single highest-leverage backend: one Wayland client speaking the foreign-toplevel protocols covers every wlroots-derived compositor plus KDE Plasma and COSMIC (Hyprland, Sway, Niri, River, Labwc, Wayfire, KDE Plasma 6/KWin, COSMIC/Smithay). Uses `wlr-foreign-toplevel-management-v1` for activation/focus state (the load-bearing protocol) and `ext-foreign-toplevel-list-v1` for cross-checking app_ids and populating the window-info dialog.",
+          "tasks": [
+            {
+              "type": "Task",
+              "id": "P2.M2.T1",
+              "title": "Implement wayland_ft.rs backend",
+              "status": "Researching",
+              "description": "Create `src/platforms/wayland_ft.rs` (feature `wayland`) implementing WindowMonitor via smithay-client-toolkit's foreign-toplevel handler. spawn-and-return `start()` (dedicated EventQueue dispatch thread), per-toplevel tracking (app_id/title/state), empty-workspace -> empty WindowInfo, reconnect backoff, and list_foreground_windows() snapshot.",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P2.M2.T1.S1",
+                  "title": "Core wayland_ft.rs: wlr focus tracking + ext cross-check + spawn-and-return + reconnect",
+                  "status": "Planned",
+                  "story_points": 5,
+                  "dependencies": [
+                    "P2.M1.T1.S1",
+                    "P2.M1.T2.S2"
+                  ],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: PLATFORMS.md §7 specifies: bind `zwlr_foreign_toplevel_manager_v1` (the focus source — the `state` event's `activated` flag is how we know which toplevel is focused) and `ext-foreign-toplevel-list-v1` (upstream successor; lists app_id/title/identifier but does NOT report activation — use only to populate list_foreground_windows and cross-check app_ids). Coverage: Hyprland, Sway, Niri, River, Labwc, Wayfire, KDE Plasma 6 (KWin), COSMIC; GNOME (Mutter) implements neither -> falls through to P2.M3. `app_class` = the toplevel's `app_id` (`.desktop` basename, reverse-DNS passed through verbatim). Empty workspace (no toplevel carries `activated`) -> WindowInfo{app_class:\"\",title:\"\"} (deactivates layers). Reconnect backoff reuses Hyprland constants (INITIAL_RECONNECT_MS=100, MAX=10_000, x3, reset after 5s stable). smithay-client-toolkit provides ForeignToplevelManager/ForeignToplevelHandler. ARCHITECTURE.md §3/§6: start() SPAWNS the dispatch thread and RETURNS (unlike Hyprland blocking); monitor owns Arc<Mutex<Option<(String,String)>>> last-state cell; runner parks main.\n2. INPUT: `Cargo.toml` (smithay-client-toolkit dep from P2.M1.T2.S2), `src/platforms/mod.rs` (WindowMonitor trait, select_linux_backend probe stub from P2.M1.T1.S1).\n3. LOGIC: (a) Implement a WaylandFtMonitor struct implementing WindowMonitor. (b) `start()`: connect wl_display, bind wlr-foreign-toplevel-manager (focus) + ext-foreign-toplevel-list (cross-check) if present, spawn a thread running the EventQueue dispatch loop, return immediately. (c) Per-toplevel tracking: on `toplevel` event create handle; cache app_id/title/state bitmask; update on title/app_id/state events; remove on closed; commit on done. After each done, recompute the toplevel whose state includes `activated`; if it differs from last reported (app_class,title), emit notify_qmk. (d) Empty workspace -> empty WindowInfo. (e) `stop()`: drop the queue/thread. (f) Reconnect with backoff on wl_display error. (g) `list_foreground_windows()`: snapshot all tracked toplevels as (app_id,title), activated first. (h) Availability probe for select_linux_backend: $WAYLAND_DISPLAY resolvable AND compositor advertises wlr global.\n4. OUTPUT: `src/platforms/wayland_ft.rs` (feature `wayland`), wired into select_linux_backend as priority #1.\n5. DOCS: [Mode A] Document the protocol coverage table in PLATFORMS.md §7.2 is the reference; update docs for the new backend.",
+                  "prd_selectors": [
+                    "h2.3",
+                    "h2.81",
+                    "h2.82"
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "Milestone",
+          "id": "P2.M3",
+          "title": "GNOME Backend (Shell Extension + D-Bus Client)",
+          "status": "Researching",
+          "description": "GNOME (Mutter) implements neither foreign-toplevel protocol and exposes no client API for the active window, so the active window is read inside `gnome-shell` by a small extension and republished over the session D-Bus, where the desktop app subscribes. Two deliverables: the `qmkonnect@mulletware` GNOME Shell extension (separate artifact) and `src/platforms/gnome.rs` (the D-Bus client backend).",
+          "tasks": [
+            {
+              "type": "Task",
+              "id": "P2.M3.T1",
+              "title": "GNOME Shell extension (packaging/gnome-shell-extension/)",
+              "status": "Researching",
+              "description": "Create the `qmkonnect@mulletware` GNOME Shell extension (GJS, GNOME Shell 45+) that runs in the gnome-shell process, reads `global.display.focus_window`, and republishes `(app_class, title)` over the session D-Bus. This is a SEPARATE artifact from the app binary (the app cannot load it).",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P2.M3.T1.S1",
+                  "title": "Create extension.js + metadata.json + D-Bus export",
+                  "status": "Planned",
+                  "story_points": 3,
+                  "dependencies": [],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: PLATFORMS.md §8.1-§8.2 + PACKAGING.md §7 specify the D-Bus contract: well-known name `io.mulletware.QMKonnect` (owned <=> extension installed & enabled), object path `/io/mulletware/QMKonnect`, interface `io.mulletware.QMKonnect.WindowMonitor` with method `GetActiveWindow() -> (s app_class, s title)`, signal `ActiveWindowChanged(s app_class, s title)`, properties AppClass/Title. `app_class` = `MetaWindow.get_wm_class()` (the WM_CLASS class — parity with X11). title = `MetaWindow.get_title()`. GJS, GNOME Shell 45+ APIs. metadata.json: uuid=`qmkonnect@mulletware`, shell-version covering supported GNOME line (e.g. ['45','46','47','48','49','50']), version=QMKonnect release.\n2. INPUT: PLATFORMS.md §8.2 (enable/disable/_onFocus logic), PACKAGING.md §7 (build/zip/distribution).\n3. LOGIC: (a) Create `packaging/gnome-shell-extension/metadata.json`. (b) Create `packaging/gnome-shell-extension/extension.js`: `enable()` acquires the D-Bus name, exports the object/interface on the session bus, connects `global.display.connect('notify::focus-window', ...)`, emits initial state; `_onFocus()` reads `global.display.focus_window` -> `[w.get_wm_class() ?? '', w.get_title() ?? '']` (or ['',''] if null), dedups against last-emitted, emits `ActiveWindowChanged`; `disable()` disconnects, releases name, unexports. Fallbacks: get_wm_class() may be null -> empty class. (c) Optional `prefs.js`, `stylesheet.css`.\n4. OUTPUT: `packaging/gnome-shell-extension/{metadata.json,extension.js}` (+ optional prefs.js/stylesheet.css).\n5. DOCS: [Mode A] This IS part of the deliverable; the extension README/docs point users to extensions.gnome.org + the Release asset.",
+                  "prd_selectors": [
+                    "h2.3",
+                    "h2.81",
+                    "h2.82"
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "Task",
+              "id": "P2.M3.T2",
+              "title": "GNOME D-Bus client backend (src/platforms/gnome.rs)",
+              "status": "Researching",
+              "description": "Create `src/platforms/gnome.rs` (feature `gnome`) — the desktop-side zbus D-Bus client that subscribes to the extension's `ActiveWindowChanged` signal, drift-polls `GetActiveWindow`, watches NameOwnerChanged, and fires a first-run notification when the extension isn't installed.",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P2.M3.T2.S1",
+                  "title": "Implement gnome.rs: zbus subscription + drift poll + NameOwnerChanged + first-run notification",
+                  "status": "Planned",
+                  "story_points": 3,
+                  "dependencies": [
+                    "P2.M1.T1.S1",
+                    "P2.M1.T2.S2",
+                    "P2.M3.T1.S1"
+                  ],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: PLATFORMS.md §8.3 specifies: zbus session connection; subscribe to `ActiveWindowChanged` -> dedup -> notify_qmk. Drift-correcting poll thread (default 1000ms, hot-config via `[linux] gnome_poll_interval_ms`) calls GetActiveWindow and dedups. NameOwnerChanged watch: if the extension is toggled mid-session, re-acquire initial state from GetActiveWindow; if the name goes away, report empty and apply the no-backend posture. ARCHITECTURE.md §3/§6: monitor runs on a background zbus thread + a 1000ms drift-poll thread; ksni owns its D-Bus thread; runner parks main. Availability probe for select_linux_backend: the D-Bus well-known name `io.mulletware.QMKonnect` is owned on the session bus.\n2. INPUT: `Cargo.toml` (zbus dep from P2.M1.T2.S2), the D-Bus contract from P2.M3.T1.S1, `[linux] gnome_poll_interval_ms` config from P2.M1.T2.S1.\n3. LOGIC: (a) Implement a GnomeMonitor struct implementing WindowMonitor. (b) `start()`: connect zbus session; subscribe to ActiveWindowChanged signal; spawn a background signal-listener thread; spawn the 1000ms (hot-config) drift-poll thread calling GetActiveWindow + dedup; install a NameOwnerChanged watch for the extension name. (c) On signal/poll -> dedup -> notify_qmk. (d) Empty window (focus_window null) -> empty WindowInfo. (e) Availability probe: check the session bus for `io.mulletware.QMKonnect` ownership. (f) `list_foreground_windows()`: call GetActiveWindow (single window).\n4. OUTPUT: `src/platforms/gnome.rs` (feature `gnome`), wired into select_linux_backend as priority #2.\n5. DOCS: [Mode A] Document the backend + the extension dependency in docs.",
+                  "prd_selectors": [
+                    "h2.3",
+                    "h2.81",
+                    "h2.82"
+                  ]
+                },
+                {
+                  "type": "Subtask",
+                  "id": "P2.M3.T2.S2",
+                  "title": "First-run GNOME notification when extension missing",
+                  "status": "Planned",
+                  "story_points": 1,
+                  "dependencies": [
+                    "P2.M3.T2.S1"
+                  ],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: PLATFORMS.md §8.4 specifies: if the session is GNOME (`$XDG_CURRENT_DESKTOP` contains `GNOME`) AND the extension name is not owned at startup, fire a ONE-SHOT desktop notification (via `platforms::notify`/notify-send): 'QMKonnect needs the GNOME Shell extension for window detection — install it from extensions.gnome.org (see docs).' The daemon keeps running (tray + device status); the AT-SPI backend (P2.M4) may run meanwhile as a best-effort interim. Fires at most once per launch.\n2. INPUT: `src/platforms/gnome.rs` (from P2.M3.T2.S1), the notify-send helper used elsewhere.\n3. LOGIC: At startup (in start() or the runner), if `$XDG_CURRENT_DESKTOP` contains GNOME and the `io.mulletware.QMKonnect` name is not owned, fire a one-shot notify-send notification with a link to docs. Guard with a static AtomicBool so it fires at most once per process.\n4. OUTPUT: One-shot GNOME notification in gnome.rs/runner.\n5. DOCS: [Mode A] The notification message links to docs; ensure docs/qmk-integration.md covers the extension.",
+                  "prd_selectors": [
+                    "h2.3",
+                    "h2.81"
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "Milestone",
+          "id": "P2.M4",
+          "title": "AT-SPI Fallback Backend (src/platforms/atspi.rs)",
+          "status": "Researching",
+          "description": "The last-ditch backend for any compositor with accessibility enabled — primarily a GNOME fallback when the extension isn't installed and an emergency path elsewhere. Best-effort, not primary. Uses the `atspi` crate (zbus to the a11y bus).",
+          "tasks": [
+            {
+              "type": "Task",
+              "id": "P2.M4.T1",
+              "title": "Implement atspi.rs backend",
+              "status": "Researching",
+              "description": "Create `src/platforms/atspi.rs` (feature `atspi`) — subscribe to `object:state-changed:focused` a11y events, track the focused accessible, report its application Name as app_class and its Name as title, with a 1000ms poll fallback. Documented limitations (readable name != WM_CLASS, Electron/sandboxed apps inconsistent, a11y often off by default).",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P2.M4.T1.S1",
+                  "title": "Core atspi.rs: a11y-bus event subscription + 1000ms poll + best-effort limitations",
+                  "status": "Planned",
+                  "story_points": 3,
+                  "dependencies": [
+                    "P2.M1.T1.S1",
+                    "P2.M1.T2.S2"
+                  ],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: PLATFORMS.md §9 specifies: crate `atspi` (zbus to a11y bus). Subscribe to `object:state-changed:focused` events; track the focused accessible. `app_class` = the focused accessible's application `Name` (org.a11y.atspi.Application -> Name — the readable name, UNRELIABLE); `title` = the focused accessible's `Name`. Poll fallback: every 1000ms query the a11y registry's focused object and dedup. Availability: the a11y bus is present (org.a11y.Bus owned or $ATSPI_BUS_ADDRESS). Most distros ship a11y OFF until the user enables 'Assistive Technology / Screen Reader' — document that. Known limitations: app_class is readable name not WM_CLASS (fine for Firefox, inconsistent for Electron/sandboxed); titles vary (focused accessible not toplevel); apps without a11y bridge are invisible.\n2. INPUT: `Cargo.toml` (atspi dep from P2.M1.T2.S2), `src/platforms/mod.rs` (select_linux_backend probe).\n3. LOGIC: (a) Implement an AtspiMonitor struct implementing WindowMonitor. (b) `start()`: connect to the a11y bus; subscribe to object:state-changed:focused on a background thread; spawn a 1000ms poll thread querying the focused object. (c) On event/poll -> dedup -> notify_qmk. (d) Availability probe: org.a11y.Bus owned or $ATSPI_BUS_ADDRESS set. (e) `list_foreground_windows()`: best-effort single focused accessible. (f) Document the limitations clearly (README/docs).\n4. OUTPUT: `src/platforms/atspi.rs` (feature `atspi`), wired into select_linux_backend as priority #4.\n5. DOCS: [Mode A] Document the best-effort nature + the a11y-enable requirement in docs/troubleshooting.md.",
+                  "prd_selectors": [
+                    "h2.3",
+                    "h2.81",
+                    "h2.82"
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "Milestone",
+          "id": "P2.M5",
+          "title": "X11 Backend Revisions (unconditional + Wayland gate)",
+          "status": "Researching",
+          "description": "X11 moves from a `--no-default-features`-only build to compiled-in on EVERY Linux build (lowest priority), but NEVER selected under a Wayland compositor (invariant 11). The existing `src/platforms/x11.rs` xprop-polling logic is largely retained; the change is the feature gating + the selection guard.",
+          "tasks": [
+            {
+              "type": "Task",
+              "id": "P2.M5.T1",
+              "title": "Make X11 unconditional on Linux + add Wayland gate",
+              "status": "Researching",
+              "description": "Remove the `--no-default-features` gating so X11 is compiled on every Linux build, and ensure select_linux_backend NEVER picks X11 when `$WAYLAND_DISPLAY` is set (XWayland focus is unreliable for native Wayland windows — PLATFORMS.md §10/§6 invariant 11).",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P2.M5.T1.S1",
+                  "title": "Make X11 unconditional + gate selection on $WAYLAND_DISPLAY unset",
+                  "status": "Planned",
+                  "story_points": 1,
+                  "dependencies": [
+                    "P2.M1.T1.S1",
+                    "P2.M1.T2.S2"
+                  ],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: PLATFORMS.md §10 says X11 is compiled in on every Linux build (no feature flag) and selected only for genuine X11 sessions. The selection gate (priority #5): `$DISPLAY` set AND `$WAYLAND_DISPLAY` UNSET AND xprop present — NEVER under a Wayland compositor (XWayland sets $DISPLAY but reports focus unreliably for native Wayland windows; picking it under GNOME/KDE/COSMIC-Wayland would silently report wrong windows — invariant 11). The existing xprop-polling logic in src/platforms/x11.rs is retained (500ms poll, WM_CLASS class preferred, fails loudly if xprop missing).\n2. INPUT: `src/platforms/x11.rs` (existing), `src/platforms/mod.rs`/`linux.rs` (select_linux_backend from P2.M1.T1.S1), `Cargo.toml` (feature changes from P2.M1.T2.S2).\n3. LOGIC: (a) Update `#[cfg]` attributes in x11.rs so it compiles unconditionally on Linux (remove any feature gate). (b) Ensure the X11 availability probe in select_linux_backend checks `$WAYLAND_DISPLAY` is UNSET (invariant 11) in addition to $DISPLAY + xprop. (c) Verify the existing 500ms poll + WM_CLASS logic is unchanged. (d) Verify `list_foreground_windows()` still works.\n4. OUTPUT: X11 unconditional + Wayland gate enforced in select_linux_backend.\n5. DOCS: [Mode A] Note in PLATFORMS.md §10 / docs that X11 is the lowest-priority backend, never under Wayland.",
+                  "prd_selectors": [
+                    "h2.3",
+                    "h2.81",
+                    "h2.82"
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "Milestone",
+          "id": "P2.M6",
+          "title": "Universal Linux Autostart — XDG .desktop (F17)",
+          "status": "Researching",
+          "description": "F17: ship an XDG autostart `.desktop` at `/etc/xdg/autostart/qmkonnect.desktop` in EVERY Linux package so login-autostart works on systemd AND non-systemd distros (MX/Artix/Void/Gentoo). Alongside the systemd user service (F9); loses the plug/unplug lifecycle but gains universal coverage. This is the foundational artifact that P1.M1.S3, P1.M1.T2.S3, P1.M7.T1.S1, P1.M7.T2.S1 all depend on.",
+          "tasks": [
+            {
+              "type": "Task",
+              "id": "P2.M6.T1",
+              "title": "XDG autostart .desktop file + packaging integration",
+              "status": "Researching",
+              "description": "Create `packaging/linux/xdg/qmkonnect.desktop` per PACKAGING.md §4.7 / LINUX.md §6.3 and wire it into the Linux artifact set so every package (Arch/.deb/.rpm/AUR/Nix/tarball) ships it at `/etc/xdg/autostart/`.",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P2.M6.T1.S1",
+                  "title": "Create packaging/linux/xdg/qmkonnect.desktop + ship in all Linux packages",
+                  "status": "Planned",
+                  "story_points": 2,
+                  "dependencies": [],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: The updated LINUX.md §6.3 + PACKAGING.md §4.7 specify an XDG autostart entry at `/etc/xdg/autostart/qmkonnect.desktop`. Every DE session manager honors `~/.config/autostart/` and `/etc/xdg/autostart/`, so this starts the daemon at LOGIN on every desktop — systemd or not. Contents: Type=Application, Name=QMKonnect, Comment, Exec=qmkonnect, Icon=input-keyboard, Terminal=false, X-GNOME-Autostart-enabled=true, Categories=Utility;, NoDisplay=true (autostart-only — not in app menus). Trade-off vs the service: login-only start, loses the systemd BindsTo plug/unplug lifecycle; on systemd distros the service remains primary; the .desktop is redundant-but-harmless (single-instance story is owned by the tray/runner, not the launcher). The user disables it by copying to ~/.config/autostart/ with Hidden=true. PACKAGING.md §4 lists it in the shared artifact table (7th file).\n2. INPUT: PACKAGING.md §4.7 (exact .desktop contents), LINUX.md §6.3.\n3. LOGIC: (a) Create `packaging/linux/xdg/qmkonnect.desktop` with the exact contents from PACKAGING.md §4.7. (b) The CI linux-binary tarball (release.yml) must include it. (c) Every package installs it to `/etc/xdg/autostart/`: Arch source PKGBUILD (`packaging/linux/arch/PKGBUILD`), AUR `-bin` (P1.M1.T1.S3), Nix (P1.M1.T2.S3), .deb (P1.M7.T1.S1), .rpm (P1.M7.T2.S1). (d) Document that on systemd distros the service is primary and the .desktop is belt-and-suspenders; on non-systemd it's load-bearing.\n4. OUTPUT: `packaging/linux/xdg/qmkonnect.desktop` + integration into the CI tarball + all package install paths.\n5. DOCS: [Mode A] Document the autostart story (service vs .desktop) in docs/installation.md Linux section.",
+                  "prd_selectors": [
+                    "h2.3",
+                    "h2.82",
+                    "h2.83"
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "Milestone",
+          "id": "P2.M7",
+          "title": "Documentation & CI Sync",
+          "status": "Researching",
+          "description": "Final cross-cutting sweep: update project docs for the broad Linux coverage (F16/F17), add the GNOME Shell extension zip + Nix multi-arch CI jobs, and regenerate llms_full.txt.",
+          "tasks": [
+            {
+              "type": "Task",
+              "id": "P2.M7.T1",
+              "title": "Update cross-DE Linux documentation",
+              "status": "Researching",
+              "description": "Update docs/installation.md, README.md, docs/platforms/ and docs/troubleshooting.md to surface the broad Linux coverage (every major DE + Wayland compositors), the GNOME extension dependency, the runtime backend selection, and the XDG autostart path.",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P2.M7.T1.S1",
+                  "title": "Update installation/platforms/troubleshooting docs for F16/F17",
+                  "status": "Planned",
+                  "story_points": 2,
+                  "dependencies": [
+                    "P2.M1.T1.S1",
+                    "P2.M2.T1.S1",
+                    "P2.M3.T2.S1",
+                    "P2.M4.T1.S1",
+                    "P2.M5.T1.S1",
+                    "P2.M6.T1.S1"
+                  ],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: The PRD §3/§5/§12 personas and compatibility matrix now claim broad Linux coverage (GNOME/KDE Plasma/COSMIC/Hyprland/Sway/Niri/wlroots + XFCE/MATE/Cinnamon/Budgie/LXQt). docs/installation.md and README.md must reflect this. The GNOME extension is a user-installed dependency (the app links to it). The runtime backend selection is logged verbosely (-v). Non-systemd distros get login-autostart only (F17).\n2. INPUT: All P2.M1-P2.M6 deliverables, the updated PRD §5 compatibility matrix, §12 residuals (AT-SPI best-effort; GNOME extension user-installed; non-systemd = login-autostart only).\n3. LOGIC: (a) Update README.md distribution/Linux section to list supported DEs/compositors + the GNOME extension note. (b) Update docs/installation.md Linux section: backend auto-selection, GNOME extension install steps, XDG autostart for non-systemd. (c) Update docs/troubleshooting.md: 'wrong windows on Wayland' (GNOME extension), 'no tray icon on GNOME' (AppIndicator extension, LINUX.md §7.4), 'AT-SPI best-effort' caveats, a11y-enable requirement. (d) Update docs/platforms/ if it exists.\n4. OUTPUT: Updated README.md, docs/installation.md, docs/troubleshooting.md (+ docs/platforms.md if present).\n5. DOCS: This IS the docs task.",
+                  "prd_selectors": [
+                    "h2.3",
+                    "h2.5",
+                    "h2.81",
+                    "h2.82",
+                    "h2.83"
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "Task",
+              "id": "P2.M7.T2",
+              "title": "GNOME extension zip + Nix multi-arch CI jobs",
+              "status": "Researching",
+              "description": "Add the GNOME Shell extension zip CI job (builds the EGO-format zip + attaches to the Release) and the Nix flake multi-arch check (x86_64 + aarch64) to the CI pipeline. Also ensure the linux-binary tarball job now stages the XDG .desktop (F17).",
+              "subtasks": [
+                {
+                  "type": "Subtask",
+                  "id": "P2.M7.T2.S1",
+                  "title": "Add GNOME extension zip CI job + Nix multi-arch check + linux-binary tarball .desktop",
+                  "status": "Planned",
+                  "story_points": 2,
+                  "dependencies": [
+                    "P2.M3.T1.S1",
+                    "P2.M6.T1.S1",
+                    "P1.M1.T2.S2"
+                  ],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: The updated PACKAGING.md §9 adds: (a) a GNOME extension job that zips `packaging/gnome-shell-extension/` -> `qmkonnect@mulletware.shell-extension.zip` and attaches it to the Release (EGO upload is a manual maintainer step; CI just builds the zip). (b) The Nix job now builds x86_64 + aarch64 (`nix build .#` for both) to verify the flake. (c) The linux-binary tarball job must now stage the XDG .desktop alongside the binaries/udev/service template (PACKAGING.md §4.6 artifact table adds the .desktop).\n2. INPUT: `packaging/gnome-shell-extension/` (from P2.M3.T1.S1), `packaging/linux/xdg/qmkonnect.desktop` (from P2.M6.T1.S1), `flake.nix` (from P1.M1.T2.S2), `.github/workflows/release.yml`.\n3. LOGIC: (a) Add a `gnome-extension` job to release.yml: zip the extension dir -> `qmkonnect@mulletware.shell-extension.zip`, attach to the Release. (b) Update the `nix` job to build both x86_64-linux and aarch64-linux (`nix build .#qmkonnect --system x86_64-linux` + aarch64, or `nix flake check`). (c) Update the `linux-binary` job to include `packaging/linux/xdg/qmkonnect.desktop` in the staged tarball.\n4. OUTPUT: Updated `.github/workflows/release.yml` with the gnome-extension job, multi-arch nix check, and .desktop in the tarball.\n5. DOCS: [Mode A] Comment blocks documenting the jobs; note EGO upload is manual.",
+                  "prd_selectors": [
+                    "h2.3",
+                    "h2.72",
+                    "h2.78",
+                    "h2.81"
+                  ]
+                },
+                {
+                  "type": "Subtask",
+                  "id": "P2.M7.T2.S2",
+                  "title": "Regenerate docs/llms_full.txt + final build verification",
+                  "status": "Planned",
+                  "story_points": 1,
+                  "dependencies": [
+                    "P2.M7.T1.S1",
+                    "P2.M7.T2.S1",
+                    "P1.M7.T1.S2",
+                    "P1.M7.T2.S2"
+                  ],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: `docs/generate_llms_full.sh` concatenates spec docs + README + source into `docs/llms_full.txt`. After all P2 source + docs changes, it must be regenerated. A final `cargo test --bin qmkonnect -- --test-threads=1` confirms no regressions.\n2. INPUT: All updated docs (P2.M7.T1.S1), all new source (P2.M2-P2.M5), all packaging (P1.M7, P2.M6).\n3. LOGIC: (a) Run `cd docs && ./generate_llms_full.sh` to regenerate llms_full.txt. (b) Run `cargo test --bin qmkonnect -- --test-threads=1` to confirm no regressions from the new backends/config. (c) Run `cargo clippy --all-targets -- -D warnings`. (d) Verify the PRD §5 compatibility matrix claims (GNOME/KDE/COSMIC/Hyprland/Sway/Niri/wlroots/X11) are backed by the backends.\n4. OUTPUT: Regenerated `docs/llms_full.txt`, passing tests + clippy.\n5. DOCS: This IS the docs regeneration + verification task.",
+                  "prd_selectors": [
+                    "h2.3",
+                    "h2.72",
                     "h2.78"
                   ]
                 }
