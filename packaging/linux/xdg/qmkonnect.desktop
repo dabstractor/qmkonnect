@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=QMKonnect
+Comment=Send the foreground window to your QMK keyboard
+Exec=qmkonnect
+Icon=input-keyboard
+Terminal=false
+X-GNOME-Autostart-enabled=true
+Categories=Utility;
+# Not shown in application menus (autostart-only):
+NoDisplay=true

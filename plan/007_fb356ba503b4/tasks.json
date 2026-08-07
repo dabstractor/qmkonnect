@@ -858,21 +858,21 @@
           "type": "Milestone",
           "id": "P2.M6",
           "title": "Universal Linux Autostart — XDG .desktop (F17)",
-          "status": "Researching",
+          "status": "Complete",
           "description": "F17: ship an XDG autostart `.desktop` at `/etc/xdg/autostart/qmkonnect.desktop` in EVERY Linux package so login-autostart works on systemd AND non-systemd distros (MX/Artix/Void/Gentoo). Alongside the systemd user service (F9); loses the plug/unplug lifecycle but gains universal coverage. This is the foundational artifact that P1.M1.S3, P1.M1.T2.S3, P1.M7.T1.S1, P1.M7.T2.S1 all depend on.",
           "tasks": [
             {
               "type": "Task",
               "id": "P2.M6.T1",
               "title": "XDG autostart .desktop file + packaging integration",
-              "status": "Researching",
+              "status": "Complete",
               "description": "Create `packaging/linux/xdg/qmkonnect.desktop` per PACKAGING.md §4.7 / LINUX.md §6.3 and wire it into the Linux artifact set so every package (Arch/.deb/.rpm/AUR/Nix/tarball) ships it at `/etc/xdg/autostart/`.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P2.M6.T1.S1",
                   "title": "Create packaging/linux/xdg/qmkonnect.desktop + ship in all Linux packages",
-                  "status": "Researching",
+                  "status": "Complete",
                   "story_points": 2,
                   "dependencies": [],
                   "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: The updated LINUX.md §6.3 + PACKAGING.md §4.7 specify an XDG autostart entry at `/etc/xdg/autostart/qmkonnect.desktop`. Every DE session manager honors `~/.config/autostart/` and `/etc/xdg/autostart/`, so this starts the daemon at LOGIN on every desktop — systemd or not. Contents: Type=Application, Name=QMKonnect, Comment, Exec=qmkonnect, Icon=input-keyboard, Terminal=false, X-GNOME-Autostart-enabled=true, Categories=Utility;, NoDisplay=true (autostart-only — not in app menus). Trade-off vs the service: login-only start, loses the systemd BindsTo plug/unplug lifecycle; on systemd distros the service remains primary; the .desktop is redundant-but-harmless (single-instance story is owned by the tray/runner, not the launcher). The user disables it by copying to ~/.config/autostart/ with Hidden=true. PACKAGING.md §4 lists it in the shared artifact table (7th file).\n2. INPUT: PACKAGING.md §4.7 (exact .desktop contents), LINUX.md §6.3.\n3. LOGIC: (a) Create `packaging/linux/xdg/qmkonnect.desktop` with the exact contents from PACKAGING.md §4.7. (b) The CI linux-binary tarball (release.yml) must include it. (c) Every package installs it to `/etc/xdg/autostart/`: Arch source PKGBUILD (`packaging/linux/arch/PKGBUILD`), AUR `-bin` (P1.M1.T1.S3), Nix (P1.M1.T2.S3), .deb (P1.M7.T1.S1), .rpm (P1.M7.T2.S1). (d) Document that on systemd distros the service is primary and the .desktop is belt-and-suspenders; on non-systemd it's load-bearing.\n4. OUTPUT: `packaging/linux/xdg/qmkonnect.desktop` + integration into the CI tarball + all package install paths.\n5. DOCS: [Mode A] Document the autostart story (service vs .desktop) in docs/installation.md Linux section.",
@@ -904,7 +904,7 @@
                   "type": "Subtask",
                   "id": "P2.M7.T1.S1",
                   "title": "Update installation/platforms/troubleshooting docs for F16/F17",
-                  "status": "Planned",
+                  "status": "Researching",
                   "story_points": 2,
                   "dependencies": [
                     "P2.M1.T1.S1",

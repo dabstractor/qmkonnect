@@ -133,6 +133,32 @@ curl https://raw.githubusercontent.com/dabstractor/qmkonnect/refs/heads/main/pac
 systemctl --user enable --now qmkonnect.service
 ```
 
+### Autostart at login
+
+On Linux, QMKonnect can start at login two ways, and the packages set both up:
+
+- **systemd user service** (primary on systemd distros) — started by the
+  static udev rule's `SYSTEMD_USER_WANTS` when your keyboard is present, with
+  a `BindsTo` lifecycle that stops/restarts it on unplug/replug. Enable with
+  `systemctl --user enable --now qmkonnect.service` (the Arch/AUR/Debian/RPM
+  packages enable it globally on install).
+- **XDG autostart entry** (`/etc/xdg/autostart/qmkonnect.desktop`) — a
+  universal fallback honored by GNOME, KDE Plasma, XFCE, COSMIC, MATE,
+  Cinnamon, LXQt, Budgie and the session-managed tail. It starts the daemon
+  at **login on every desktop — systemd or not** (MX, Artix, Void, Gentoo),
+  where it is the load-bearing path. On systemd distros it is redundant-but-
+  harmless (the daemon's own single-instance lock dedupes the two launches).
+
+The trade-off: the `.desktop` is login-only-start and loses the systemd
+plug/unplug lifecycle, so on systemd distros the service stays primary. To
+disable the autostart entry, copy it to
+`~/.config/autostart/qmkonnect.desktop` and set `Hidden=true` (the per-user
+copy overrides the system one). The shipped file's `NoDisplay=true` only hides
+it from application menus — it does **not** disable autostart; use `Hidden=true`
+for that. Note: pure wlroots compositors (Sway, Hyprland without a session
+manager) do not run `/etc/xdg/autostart` natively — install `dex` or enable the
+systemd `xdg-autostart-generator` there.
+
 4. Set up udev rules for automatic keyboard detection:
 
    **Default QMK keyboards need no udev configuration.** Install the static
@@ -146,6 +172,7 @@ sudo install -m755 target/release/qmkonnect        /usr/local/bin/qmkonnect
 sudo install -m755 target/release/qmkonnect-hid-id /usr/lib/udev/qmkonnect-hid-id
 sudo install -m644 packaging/linux/udev/69-qmkonnect-rawhid.rules \
                     /usr/lib/udev/rules.d/69-qmkonnect-rawhid.rules
+sudo install -m644 packaging/linux/xdg/qmkonnect.desktop /etc/xdg/autostart/
 sudo udevadm control --reload && sudo udevadm trigger
 ```
 

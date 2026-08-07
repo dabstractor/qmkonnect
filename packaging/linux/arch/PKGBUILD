@@ -45,4 +45,8 @@ package() {
   # substituted: the service binds to the qmkonnect_device symlink that the
   # static rule creates for any matched interface.
   install -Dm644 "../systemd/qmkonnect.service.template" "$pkgdir/usr/lib/systemd/user/qmkonnect.service.template"
+
+  # XDG autostart entry — universal login-autostart fallback (F17; LINUX.md §6.3).
+  # Static file (no template instantiation); NoDisplay=true hides it from app menus.
+  install -Dm644 "../xdg/qmkonnect.desktop" "$pkgdir/etc/xdg/autostart/qmkonnect.desktop"
 }

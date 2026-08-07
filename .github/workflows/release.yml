@@ -170,11 +170,12 @@ jobs:
           set -eux
           VER="${{ steps.ver.outputs.version }}"
           STAGE="qmkonnect-${VER}-linux-x86_64"
-          mkdir -p "$STAGE/udev" "$STAGE/systemd"
+          mkdir -p "$STAGE/udev" "$STAGE/systemd" "$STAGE/xdg"
           cp target/release/qmkonnect       "$STAGE/"
           cp target/release/qmkonnect-hid-id "$STAGE/"
           cp packaging/linux/udev/69-qmkonnect-rawhid.rules "$STAGE/udev/"
           cp packaging/linux/systemd/qmkonnect.service.template "$STAGE/systemd/"
+          cp packaging/linux/xdg/qmkonnect.desktop "$STAGE/xdg/"
           tar czf "${STAGE}.tar.gz" "$STAGE"
 
       - uses: actions/upload-artifact@v4
