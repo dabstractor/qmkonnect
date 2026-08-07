@@ -1,0 +1,25 @@
+# Winget INSTALLER manifest for QMKonnect. InstallerType: inno (the shipped Inno Setup installer,
+# packaging/windows/inno/QMKonnect.iss → QMKonnect-Setup.exe, renamed by CI to QMKonnect-<ver>-windows-x64.exe).
+# Per-user (Inno PrivilegesRequired=lowest → Scope: user, no UAC). Installer-level keys at root are inherited
+# by the single x64 installer node (per schema NOTE — matches wingetcreate output + the WindowsTerminal example).
+# InstallerSha256 is a 64-zero PLACEHOLDER; CI (P1.M3.T2.S2) fills the real hash from the downloaded .exe.
+PackageIdentifier: dabstractor.QMKonnect
+PackageVersion: 0.2.8
+InstallerType: inno
+Scope: user
+InstallModes:
+- interactive
+- silent
+- silentWithProgress
+InstallerSwitches:
+  Silent: /VERYSILENT
+  SilentWithProgress: /SILENT
+UpgradeBehavior: install
+ReleaseDate: 2025-08-01
+Installers:
+- Architecture: x64
+  InstallerType: inno
+  InstallerUrl: https://github.com/dabstractor/qmkonnect/releases/download/v0.2.8/QMKonnect-0.2.8-windows-x64.exe
+  InstallerSha256: 0000000000000000000000000000000000000000000000000000000000000000
+ManifestType: installer
+ManifestVersion: 1.6.0

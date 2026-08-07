@@ -1,0 +1,23 @@
+# Winget DEFAULTLOCALE (en-US) manifest for QMKonnect. Metadata source: Cargo.toml (version/license/desc)
+# + packaging/windows/inno/QMKonnect.iss (Publisher/Name). Tags mirror the F15 channel set.
+PackageIdentifier: dabstractor.QMKonnect
+PackageVersion: 0.2.8
+PackageLocale: en-US
+Publisher: Mulletware
+PublisherURL: https://github.com/dabstractor/qmkonnect
+PublisherSupportURL: https://github.com/dabstractor/qmkonnect/issues
+PackageName: QMKonnect
+PackageUrl: https://github.com/dabstractor/qmkonnect
+License: MIT
+LicenseUrl: https://github.com/dabstractor/qmkonnect/blob/master/LICENSE
+ShortDescription: Cross-platform window activity notifier for QMK keyboards (Windows tray app)
+Description: QMKonnect detects the foreground window (app class + title) and notifies a QMK keyboard over Raw HID, so the keymap can switch layers/callbacks on window focus with no reflash. This is the per-user Windows tray-app channel (Inno installer, no admin).
+Tags:
+- qmk
+- keyboard
+- hid
+- tray
+Moniker: qmkonnect
+ReleaseDate: 2025-08-01
+ManifestType: defaultLocale
+ManifestVersion: 1.6.0

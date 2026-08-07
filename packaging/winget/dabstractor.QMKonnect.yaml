@@ -1,0 +1,10 @@
+# Winget VERSION manifest for QMKonnect (PRD §4 F15, §5 — "Windows: Inno .exe · Scoop · Winget").
+# Multi-file format (version + defaultLocale + installer) — the only non-deprecated form for
+# microsoft/winget-pkgs (singleton is deprecated; "merged" does not exist). See packaging/winget/README.md.
+# CI (P1.M3.T2.S2 via wingetcreate) updates PackageVersion + DefaultLocale-ReleaseDate + installer
+# InstallerSha256/InstallerUrl per release. See plan/007_fb356ba503b4/architecture/external_deps.md §4.
+PackageIdentifier: dabstractor.QMKonnect
+PackageVersion: 0.2.8
+DefaultLocale: en-US
+ManifestType: version
+ManifestVersion: 1.6.0
