@@ -536,3 +536,83 @@ jobs:
           git add bucket/qmkonnect.json
           git commit -m "qmkonnect manifest v${VERSION}"
           git push
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Winget — open a per-release PR to microsoft/winget-pkgs for
+  # dabstractor.QMKonnect (the Windows community channel, PRD §4 F15).
+  #
+  # Uses vedantmgoyal9/winget-releaser@v2 (Komac under the hood), which finds
+  # the release's .exe via installers-regex, computes its SHA256, syncs a fork of
+  # microsoft/winget-pkgs under dabstractor/winget-pkgs, and opens an update PR
+  # (fork -> microsoft:main). Runs on ubuntu-latest (Komac is cross-platform; no
+  # windows-latest + wingetcreate install needed).
+  #
+  # Runs AFTER `publish` (the action reads the GitHub Release by tag to find the
+  # .exe asset — release-repository/release-tag default to this repo + the pushed
+  # tag) and only on real tag pushes (workflow_dispatch dry-runs don't publish a
+  # release, so the releases/tags/<tag> API call would 404).
+  #
+  # PREREQUISITE: dabstractor.QMKonnect must ALREADY exist in winget-pkgs (the
+  #   one-time manual `wingetcreate new` — see packaging/winget/README.md
+  #   "Publishing to microsoft/winget-pkgs"). Until that first PR is merged, this
+  #   job's first run errors with "Package dabstractor.QMKonnect does not exist
+  #   in the winget-pkgs repository. Please add atleast one version of the
+  #   package before using this action." — EXPECTED on the very first release.
+  #
+  # SECRET — WINGET_GITHUB_TOKEN (REQUIRED for this job to do anything):
+  #   A CLASSIC GitHub PAT with the `public_repo` scope. The default GITHUB_TOKEN
+  #   is scoped to dabstractor/qmkonnect only and CANNOT fork
+  #   microsoft/winget-pkgs. winget-releaser/Komac auto-creates the fork
+  #   <owner>/winget-pkgs (fork-user defaults to dabstractor) under the token's
+  #   account, pushes a branch, and PRs to microsoft/winget-pkgs:main.
+  #
+  #   One-time setup:
+  #     1. Create a CLASSIC PAT: https://github.com/settings/tokens ->
+  #        Tokens (classic) -> "Generate new token (classic)" -> check
+  #        `public_repo` (the only scope needed to fork a public repo + open a
+  #        PR). Use a CLASSIC token, not fine-grained.
+  #     2. Store it as the WINGET_GITHUB_TOKEN Actions secret in
+  #        dabstractor/qmkonnect (Settings -> Secrets and variables -> Actions ->
+  #        New repository secret).
+  #     3. (One-time, manual, on a Windows host) submit the first version with
+  #        `wingetcreate new <installerURL> --token <PAT> --submit` (fill
+  #        metadata from packaging/winget/*.yaml) so dabstractor.QMKonnect exists
+  #        in winget-pkgs — see packaging/winget/README.md.
+  #
+  #   This is a CLASSIC PAT (not the AUR per-account SSH-key model, not the
+  #   Homebrew/Scoop per-repo deploy-key model). Until this secret is set, the
+  #   job runs but Komac fails to fork/push with a 401/403 — expected until the
+  #   PAT is configured. The token is never logged (it travels only inside the
+  #   action's inputs.token).
+  # ─────────────────────────────────────────────────────────────────────────
+  winget:
+    name: Publish to Winget (winget-pkgs PR)
+    needs: [publish]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      # This job builds NO Rust. The workflow only triggers on `v*` tags, so
+      # GITHUB_REF_NAME is the tag (v0.2.8); stripping the leading 'v' yields
+      # the bare version (0.2.8) the winget-releaser `version` input needs.
+      # The action uses a PROVIDED version VERBATIM (it strips a leading 'v'
+      # ONLY when version is OMITTED — see the action's action.yml), so we MUST
+      # pass a bare value here — never the raw v-prefixed tag.
+      - name: Determine version
+        id: ver
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      # winget-releaser finds the installer in the GitHub Release (release-tag
+      # defaults to github.ref_name on a push event; release-repository defaults
+      # to the repo name `qmkonnect` and the action prepends the owner ->
+      # dabstractor/qmkonnect), hashes it, and opens the PR. fork-user defaults
+      # to dabstractor (-> dabstractor/winget-pkgs). OMIT release-repository:
+      # setting `dabstractor/qmkonnect` would DOUBLE the owner (action.yml
+      # prepends github.repository_owner itself) -> 404.
+      - name: Submit winget-pkgs PR (winget-releaser)
+        uses: vedantmgoyal9/winget-releaser@v2
+        with:
+          identifier: dabstractor.QMKonnect
+          # Bare version (no leading 'v'); see the ver step above.
+          version: ${{ steps.ver.outputs.version }}
+          installers-regex: 'QMKonnect-.*-windows-x64\.exe$'
+          token: ${{ secrets.WINGET_GITHUB_TOKEN }}

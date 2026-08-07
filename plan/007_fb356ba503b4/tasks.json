@@ -287,7 +287,7 @@
           "type": "Milestone",
           "id": "P1.M5",
           "title": "CI Pipeline Integration",
-          "status": "Planned",
+          "status": "Researching",
           "description": "Add publishing jobs to the existing `.github/workflows/release.yml` so each tag push automatically updates the AUR package, Homebrew tap, Scoop bucket, and Winget manifest. Add validation for the Nix flake and asdf plugin.",
           "tasks": [
             {
@@ -338,14 +338,14 @@
               "type": "Task",
               "id": "P1.M5.T2",
               "title": "Winget PR + Nix Validation + asdf Plugin CI",
-              "status": "Planned",
+              "status": "Researching",
               "description": "Add the Winget automated PR job (using wingetcreate or winget-releaser), Nix flake validation step, and asdf plugin smoke test to the CI pipeline.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M5.T2.S1",
                   "title": "Add Winget publishing CI job",
-                  "status": "Researching",
+                  "status": "Complete",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M3.T2.S2"
@@ -361,7 +361,7 @@
                   "type": "Subtask",
                   "id": "P1.M5.T2.S2",
                   "title": "Add Nix flake check + asdf plugin test + asdf publish CI steps",
-                  "status": "Planned",
+                  "status": "Researching",
                   "story_points": 2,
                   "dependencies": [
                     "P1.M1.T2.S2",
