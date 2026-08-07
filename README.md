@@ -18,7 +18,10 @@ This tool is part of a broader ecosystem:
 - **Cross-Platform Support**:
   - Windows
   - macOS
-  - Linux: Arch/Hyprland only
+  - Linux: GNOME, KDE Plasma, COSMIC, Hyprland, Sway, Niri, the wlroots family
+    (Wayland), and XFCE/MATE/Cinnamon/Budgie/LXQt (X11). The backend is chosen
+    automatically at runtime — run `qmkonnect -v` to see which. GNOME needs the
+    `qmkonnect@mulletware` Shell extension for window detection.
 
 - **Core Functionality**:
   - Detects window changes in real-time
@@ -59,7 +62,18 @@ This tool is part of a broader ecosystem:
 To build the installer yourself instead, see
 [`packaging/windows/inno/README.md`](packaging/windows/inno/README.md).
 
-### Arch Linux
+### Linux
+
+QMKonnect supports **every major Linux desktop** — GNOME, KDE Plasma, COSMIC,
+Hyprland, Sway, Niri, the wlroots family (Wayland), and XFCE/MATE/Cinnamon/
+Budgie/LXQt (X11). The window-monitor backend is chosen automatically at
+runtime; run `qmkonnect -v` to see which one is selected. **GNOME** needs the
+`qmkonnect@mulletware` Shell extension for window detection — see the
+[Installation Guide](docs/installation.md#linux) for the cross-DE matrix, the
+backend-selection table, and GNOME setup. (Tray-icon caveat on GNOME is covered
+in the [Troubleshooting Guide](docs/troubleshooting.md).)
+
+#### Arch Linux
 
 ```bash
 git clone https://github.com/dabstractor/qmkonnect.git
@@ -67,7 +81,7 @@ cd qmkonnect/packaging/linux/arch
 makepkg -si
 ```
 
-### Other Linux Systems
+#### Other Linux Distributions
 Download the release binary: [qmkonnect](https://github.com/dabstractor/qmkonnect/releases/latest)
 
 If you want it to start automatically, install the service file and start the service:
@@ -114,6 +128,8 @@ current automatically. Pick your platform's channel (full per-channel setup and 
 | --- | --- | --- |
 | **Arch Linux** | AUR (`qmkonnect-bin`) | `yay -S qmkonnect-bin` |
 | **Nix** (NixOS / Nix) | flake | `nix run github:dabstractor/qmkonnect` |
+| **Debian / Ubuntu** | `.deb` | `sudo apt install ./qmkonnect_<ver>_amd64.deb` |
+| **Fedora / RHEL** | `.rpm` | `sudo dnf install ./qmkonnect-<ver>.x86_64.rpm` |
 | **macOS** | Homebrew Cask | `brew install --cask qmkonnect` *(custom tap — see guide)* |
 | **Windows** | Scoop | `scoop install qmkonnect` *(custom bucket — see guide)* |
 | **Windows** | Winget | `winget install dabstractor.QMKonnect` |

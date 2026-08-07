@@ -71,7 +71,7 @@ This creates a default configuration file with every device-identifying field co
 # sending to the keyboard. 0 disables debouncing entirely. Default 50.
 # debounce_ms = 50
 #
-# (Hyprland only) periodic active-window poll interval (ms).
+# (Hyprland IPC backend) periodic active-window poll interval (ms).
 # 0 disables. Default 0.
 # poll_interval_ms = 0
 
@@ -218,7 +218,7 @@ All keys are optional. With your firmware already running qmk_notifier, QMKonnec
 | `usage_page` | `0xff60` | HID usage page. Set only if your firmware overrode `RAW_USAGE_PAGE`. |
 | `usage` | `0x61` | HID usage. Set only if your firmware overrode `RAW_USAGE_ID`. |
 | `debounce_ms` | `50` | Window (ms) for coalescing rapid window-change bursts before sending to the keyboard. `0` disables debouncing. |
-| `poll_interval_ms` | `0` | (Hyprland only) periodic active-window poll interval (ms). `0` relies on IPC events instead of polling. |
+| `poll_interval_ms` | `0` | (Hyprland IPC backend) periodic active-window poll interval (ms). `0` relies on IPC events instead of polling. |
 
 ### CLI flags
 

@@ -897,14 +897,14 @@
               "type": "Task",
               "id": "P2.M7.T1",
               "title": "Update cross-DE Linux documentation",
-              "status": "Ready",
+              "status": "Complete",
               "description": "Update docs/installation.md, README.md, docs/platforms/ and docs/troubleshooting.md to surface the broad Linux coverage (every major DE + Wayland compositors), the GNOME extension dependency, the runtime backend selection, and the XDG autostart path.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P2.M7.T1.S1",
                   "title": "Update installation/platforms/troubleshooting docs for F16/F17",
-                  "status": "Ready",
+                  "status": "Complete",
                   "story_points": 2,
                   "dependencies": [
                     "P2.M1.T1.S1",

@@ -200,7 +200,32 @@ system_profiler SPUSBDataType | grep -A 10 -B 10 -i keyboard
 qmkonnect -v  # Look for "Window changed" messages
 ```
 
-#### Linux (Hyprland Only)
+#### Linux
+
+QMKonnect auto-selects a window backend at startup. If focus changes don't
+switch layers, first see **which backend it chose** and why:
+
+```bash
+qmkonnect -v 2>&1 | grep -i "backend\|probing\|selected"
+# Expect: 'select_linux_backend: probing …' lines + '… selected' for the winner.
+```
+
+Then match your desktop:
+
+- **foreign-toplevel** (KDE Plasma 6, COSMIC, Hyprland, Sway, Niri, wlroots):
+  no setup needed; if empty, your compositor may not advertise
+  `wlr-foreign-toplevel` — confirm with `qmkonnect -v`.
+- **gnome** → needs the `qmkonnect@mulletware` Shell extension (see
+  *Linux (GNOME)* below and [Installation → GNOME]({{ site.baseurl }}/installation/)).
+- **hyprland** (legacy IPC): verify the socket (commands below).
+- **atspi** (best-effort fallback): see *AT-SPI (a11y) backend* under
+  [Linux Issues](#linux-issues) — names may be inconsistent; install the GNOME
+  extension for reliable detection.
+- **x11** (XFCE/MATE/Cinnamon/Budgie/LXQt): needs `xprop`; verify with
+  `which xprop`.
+
+**Hyprland (IPC backend) socket diagnostic:**
+
 ```bash
 # Check Hyprland integration
 echo $HYPRLAND_INSTANCE_SIGNATURE
@@ -210,8 +235,6 @@ socat -u UNIX-CONNECT:/tmp/hypr/$HYPRLAND_INSTANCE_SIGNATURE/.socket2.sock - | h
 
 # Should show window events when you switch applications
 ```
-
-**Note**: Only Hyprland is supported on Linux. Other window managers are not supported yet.
 
 #### Linux (GNOME)
 
@@ -256,6 +279,11 @@ detects windows via the **`qmkonnect@mulletware`** Shell extension (see
 The daemon's GNOME backend auto-selects when the extension's D-Bus name is
 owned and re-acquires state if you toggle the extension off and back on (within
 ~1 s). See `spec/PLATFORMS.md` §8 for the authoritative spec.
+
+> Seeing wrong or empty app names? If `qmkonnect -v` shows the **atspi**
+> backend (not **gnome**), the extension isn't installed/enabled and you're on
+> the best-effort fallback — see *GNOME shows wrong / inconsistent window
+> names* under [Linux Issues](#linux-issues).
 
 #### macOS
 1. **Grant Accessibility permissions** (required for window monitoring):
@@ -317,6 +345,33 @@ owned and re-acquires state if you toggle the extension off and back on (within
 3. The app needs **no Administrator** rights — it's a per-user install
 
 ### Linux Issues
+
+#### No tray icon on GNOME
+
+Stock GNOME dropped SNI/AppIndicator support, so QMKonnect's tray item is
+invisible on a default GNOME session (the daemon still runs fine — device
+status, rules, and settings all work). Two options:
+
+1. **Install the *AppIndicator and KStatusNotifierItem Support* extension**
+   ([extensions.gnome.org](https://extensions.gnome.org/extension/615/appindicator-support/),
+   or your distro's `gnome-shell-extension-appindicator` package). Enable it
+   in the **Extensions** app, then **log out and back in** on Wayland.
+2. **Run trayless** — device status, rules, and settings all work from the CLI
+   (`--list-devices`, `--validate-rules`, `--list-callbacks`); only the
+   click-menu is unavailable.
+
+This is **independent** of the window-detection Shell extension — see *Linux
+(GNOME)* under [Window Detection](#window-detection-not-working) for that.
+See `spec/LINUX.md` §7.4.
+
+#### GNOME shows wrong / inconsistent window names
+
+If `qmkonnect -v` shows the **atspi** backend (not **gnome**) on GNOME, the
+Shell extension isn't installed/enabled and you're on the best-effort
+fallback → see [*AT-SPI (a11y) backend — best-effort*](#at-spi-a11y-backend-best-effort-requires-enabling-accessibility)
+below. Install + enable the `qmkonnect@mulletware` extension ([Installation →
+GNOME]({{ site.baseurl }}/installation/)) and restart QMKonnect; it will
+auto-select the **gnome** backend and report reliable `WM_CLASS`-based names.
 
 #### AT-SPI (a11y) backend — best-effort + requires enabling accessibility
 
@@ -444,8 +499,6 @@ socat -u UNIX-CONNECT:/tmp/hypr/$HYPRLAND_INSTANCE_SIGNATURE/.socket2.sock - | h
    
    # Restart Hyprland if needed
    ```
-
-**Note**: Only Hyprland is supported on Linux. Other window managers are not supported yet. Please contribute support for your window manager!
 
 ### macOS Issues
 

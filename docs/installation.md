@@ -24,7 +24,7 @@ the exact commands and caveats are in each platform's **Package Managers** secti
 | --- | --- | --- |
 | **Windows** 10/11 (x64) | Inno `.exe` (per-user, no admin) | Scoop · Winget |
 | **macOS** 13+ | `.dmg` (universal) | Homebrew Cask |
-| **Linux** (Hyprland) | binary / Arch PKGBUILD | AUR · Nix |
+| **Linux** | GNOME · KDE Plasma · COSMIC · Hyprland · Sway · Niri · wlroots (Wayland); XFCE · MATE · Cinnamon · Budgie · LXQt (X11) | AUR · Nix · `.deb`/`.rpm` · PKGBUILD/binary (systemd user service + XDG autostart `.desktop` (F17)) |
 
 **mise / asdf** are cross-platform version managers that install the prebuilt release binary:
 **Linux** (full app) and **macOS** (**CLI only — no menu-bar tray**); not available on Windows.
@@ -96,9 +96,37 @@ for the full release-build & installation procedure.
 
 ## Linux
 
-### Linux (Hyprland Only)
+### Linux
 
-**Note**: QMKonnect currently only supports Hyprland on Linux. Other window managers are not supported yet. Please contribute support for your window manager!
+QMKonnect supports **every major Linux desktop**. At startup it probes for a
+window-monitor backend and picks the right one automatically — you usually
+don't configure it. Run `qmkonnect -v` to see which backend was selected and
+why each other candidate was skipped (the log prints
+`select_linux_backend: probing …` lines for each candidate, then `selected`
+for the winner).
+
+| # | Backend | Covers | Availability probe |
+|---|---|---|---|
+| 1 | foreign-toplevel (Wayland) | KDE Plasma 6, COSMIC, Hyprland, Sway, Niri, River, Labwc, Wayfire | `$WAYLAND_DISPLAY` + `wlr-foreign-toplevel` global |
+| 2 | GNOME (extension) | GNOME (Mutter — no foreign-toplevel) | D-Bus name `io.mulletware.QMKonnect` owned (extension enabled) |
+| 3 | Hyprland (IPC) | Hyprland (legacy fallback; #1 supersedes) | `$HYPRLAND_INSTANCE_SIGNATURE` + socket |
+| 4 | AT-SPI (a11y bus) | any compositor with a11y ON (best-effort) | `org.a11y.Bus` owned / `$ATSPI_BUS_ADDRESS` |
+| 5 | X11 | XFCE, MATE, Cinnamon, Budgie, LXQt | `$DISPLAY` set **and** `$WAYLAND_DISPLAY` unset **and** `xprop` present |
+
+Override (rarely needed): set `[linux] backend = "…"` in `config.toml`
+(`foreign-toplevel | gnome | hyprland | atspi | x11 | auto`, default `auto`).
+See `spec/PLATFORMS.md` §6 for the full matrix.
+
+- **GNOME** needs the `qmkonnect@mulletware` Shell extension for window
+detection (Mutter exposes no active-window API) — see *GNOME (Shell
+extension)* below. The tray icon additionally needs the AppIndicator
+extension (see [Troubleshooting]({{ site.baseurl }}/troubleshooting/)).
+- **KDE Plasma 6, COSMIC, Hyprland, Sway, Niri** and the wlroots family
+work with **no extension** (foreign-toplevel protocol).
+- **XFCE, MATE, Cinnamon, Budgie, LXQt** work over **X11** (no extension).
+
+Login autostart on systemd **and** non-systemd distros is covered in
+*Autostart at login* below.
 
 #### Arch Linux
 
@@ -188,7 +216,7 @@ qmkonnect -c          # writes a commented-out default config (edit as needed)
 sudo qmkonnect -r
 ```
 
-### GNOME (optional Shell extension)
+### GNOME (Shell extension)
 
 GNOME (Mutter) advertises neither Wayland foreign-toplevel protocol and exposes
 no client API for the active window, so QMKonnect detects windows on GNOME via
@@ -269,6 +297,30 @@ asdf install qmkonnect latest
 # mise:
 mise plugin add qmkonnect https://github.com/dabstractor/asdf-qmkonnect
 mise install qmkonnect@latest
+```
+
+**.deb (Debian / Ubuntu)** — built with `cargo-deb`. Download a release
+`.deb` (e.g. `qmkonnect_<ver>_amd64.deb`) and install it, or build one from
+source:
+
+```bash
+# from a release:
+sudo apt install ./qmkonnect_<ver>_amd64.deb
+# or build from source:
+cargo install cargo-deb && cargo deb
+# → target/debian/qmkonnect_*.deb
+```
+
+**.rpm (Fedora / RHEL / openSUSE)** — built with `cargo-generate-rpm`.
+Download a release `.rpm` (e.g. `qmkonnect-<ver>.x86_64.rpm`) and install it,
+or build one from source:
+
+```bash
+# from a release:
+sudo dnf install ./qmkonnect-<ver>.x86_64.rpm
+# or build from source:
+cargo install cargo-generate-rpm && cargo generate-rpm
+# → target/generate-rpm/*.rpm
 ```
 
 ---
