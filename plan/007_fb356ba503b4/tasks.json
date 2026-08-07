@@ -890,7 +890,7 @@
           "type": "Milestone",
           "id": "P2.M7",
           "title": "Documentation & CI Sync",
-          "status": "Researching",
+          "status": "Ready",
           "description": "Final cross-cutting sweep: update project docs for the broad Linux coverage (F16/F17), add the GNOME Shell extension zip + Nix multi-arch CI jobs, and regenerate llms_full.txt.",
           "tasks": [
             {
@@ -929,7 +929,7 @@
               "type": "Task",
               "id": "P2.M7.T2",
               "title": "GNOME extension zip + Nix multi-arch CI jobs",
-              "status": "Researching",
+              "status": "Ready",
               "description": "Add the GNOME Shell extension zip CI job (builds the EGO-format zip + attaches to the Release) and the Nix flake multi-arch check (x86_64 + aarch64) to the CI pipeline. Also ensure the linux-binary tarball job now stages the XDG .desktop (F17).",
               "subtasks": [
                 {
@@ -955,7 +955,7 @@
                   "type": "Subtask",
                   "id": "P2.M7.T2.S2",
                   "title": "Regenerate docs/llms_full.txt + final build verification",
-                  "status": "Researching",
+                  "status": "Ready",
                   "story_points": 1,
                   "dependencies": [
                     "P2.M7.T1.S1",
