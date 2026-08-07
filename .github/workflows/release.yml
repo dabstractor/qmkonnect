@@ -259,3 +259,110 @@ jobs:
             artifacts/windows-exe/*
             artifacts/linux-binary/*
             artifacts/arch-pkg/*
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # AUR — publish qmkonnect-bin to the Arch User Repository.
+  #
+  # Runs AFTER `publish` (makepkg -g in publish.sh downloads the release
+  # tarball, so the GitHub Release + its linux-binary asset must be live) and
+  # only on real tag pushes (skipped for workflow_dispatch dry-runs, where the
+  # release isn't published and makepkg -g would 404).
+  #
+  # SECRET — AUR_SSH_PRIVATE_KEY (REQUIRED for this job to do anything):
+  #   The AUR authenticates via SSH-key ONLY (no token/password). The job loads
+  #   the private half from this secret into the builder's ~/.ssh and publish.sh
+  #   uses it to clone + push the AUR git repo.
+  #
+  #   One-time setup:
+  #     1. Generate a dedicated key pair (do NOT reuse a personal key):
+  #          ssh-keygen -t ed25519 -C "qmkonnect-aur-ci" -f qmkonnect-aur
+  #     2. Register the PUBLIC half (qmkonnect-aur.pub) with the AUR account
+  #        that owns qmkonnect-bin: https://aur.archlinux.org -> My Account ->
+  #        Account Type -> SSH Public Key. (AUR keys are per-ACCOUNT, not per-repo.)
+  #     3. Store the PRIVATE half (qmkonnect-aur, the full PEM including the
+  #        BEGIN/END lines) as the AUR_SSH_PRIVATE_KEY Actions secret in
+  #        dabstractor/qmkonnect (Settings -> Secrets and variables -> Actions
+  #        -> New repository secret). Paste the file contents verbatim.
+  #     4. Ensure the qmkonnect-bin AUR git repo exists (it does for a published
+  #        package); publish.sh clones it.
+  #
+  #   Until this secret is set, the job is wired but the publish.sh step will
+  #   fail at the `git clone aur@aur.archlinux.org:qmkonnect-bin.git` with
+  #   "Permission denied (publickey)" — expected on the very first run.
+  # ─────────────────────────────────────────────────────────────────────────
+  aur:
+    name: Publish to AUR (qmkonnect-bin)
+    needs: [publish]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    steps:
+      # Container ships no build toolchain; install everything before checkout.
+      # openssh is REQUIRED (the arch job omits it because it never SSHes; this
+      # job clones/pushes the AUR over SSH and needs ssh + ssh-keyscan).
+      - name: Install build dependencies
+        run: |
+          pacman -Sy --noconfirm --needed \
+            base-devel cargo git jq openssh
+
+      - uses: actions/checkout@v4
+
+      - name: Determine version
+        id: ver
+        run: |
+          v=$(cargo metadata --no-deps --format-version 1 \
+              | jq -r '.packages[] | select(.name=="qmkonnect") | .version')
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+      # makepkg refuses root, so create an unprivileged builder (mirrors the
+      # `arch` job). The same builder runs publish.sh and holds the AUR SSH key.
+      - name: Configure builder, SSH key, and git identity for AUR publish
+        env:
+          AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          useradd -m -G wheel builder
+          echo 'builder ALL=(ALL) NOPASSWD: ALL' >> /etc/sudoers
+          chown -R builder "$GITHUB_WORKSPACE"
+
+          # The SSH key + known_hosts + an explicit Host block live in BUILDER's
+          # ~/.ssh (publish.sh's git clone runs as builder via `su builder -c`).
+          SSH_DIR=/home/builder/.ssh
+          install -d -m700 -o builder -g builder "$SSH_DIR"
+
+          # Private key (full PEM, multi-line secret pasted verbatim).
+          printf '%s\n' "$AUR_SSH_PRIVATE_KEY" > "$SSH_DIR/aur_key"
+          chmod 600 "$SSH_DIR/aur_key"
+          chown builder "$SSH_DIR/aur_key"
+
+          # Key-type-agnostic identity: pin the key to the AUR host so ssh finds
+          # it regardless of filename (ed25519 or rsa). accept-new guards a
+          # missed keyscan key type.
+          cat > "$SSH_DIR/config" <<'EOF'
+          Host aur.archlinux.org
+              IdentityFile ~/.ssh/aur_key
+              IdentitiesOnly yes
+              StrictHostKeyChecking accept-new
+          EOF
+          chmod 600 "$SSH_DIR/config"
+          chown builder "$SSH_DIR/config"
+
+          # Pre-seed the host key so the first git clone is non-interactive.
+          ssh-keyscan aur.archlinux.org >> "$SSH_DIR/known_hosts" || true
+          chown builder "$SSH_DIR/known_hosts"
+
+          # publish.sh commits to the AUR but sets NO git identity itself; give
+          # the builder one or `git commit` fails ("Author identity unknown").
+          su builder -c 'git config --global user.email "qmkonnect-bot@users.noreply.github.com"'
+          su builder -c 'git config --global user.name  "QMKonnect release automation"'
+
+      # publish.sh does ALL the AUR-side work: patch pkgver, refresh sha256sums
+      # (makepkg -g downloads the release tarball), regenerate .SRCINFO, clone
+      # the AUR repo, copy PKGBUILD + .SRCINFO + qmkonnect.install, commit, push.
+      - name: Publish qmkonnect-bin to the AUR
+        working-directory: packaging/linux/aur
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          # shellcheck disable=SC2016 # $VERSION expands in the su'd builder shell, not here.
+          su builder -c 'set -euo pipefail; ./publish.sh "$VERSION"'
