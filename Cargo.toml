@@ -198,5 +198,41 @@ assets = [
 ]
 maintainer-scripts = "packaging/debian/"
 
+# .rpm via cargo-generate-rpm (spec/PACKAGING.md §4.4). Targets
+# Fedora/RHEL/Rocky/Alma/openSUSE — the authoritative build is Fedora CI
+# (P1.M7.T2.S2). Built WITHOUT -lhidapi-hidraw: Fedora's unified hidapi
+# (>=0.14) auto-selects the hidraw backend at runtime (spec §2). The .deb
+# sibling ([package.metadata.deb]) is P1.M7.T1.S1.
+#
+# NOTE: spec §4.4 prints a `require-local = { "hidapi" >= "0.10", … }` line
+# that is INVALID TOML + a nonexistent cargo-generate-rpm field. Versioned
+# runtime requires go in the [package.metadata.generate-rpm.requires]
+# sub-table below (upstream-documented form; space after `>=` is mandatory).
+[package.metadata.generate-rpm]
+name = "qmkonnect"
+license = "MIT"
+summary = "Cross-platform window activity notifier for QMK keyboards"
+release = "1"
+vendor = "Mulletware"
+url = "https://github.com/dabstractor/qmkonnect"
+post_install_script = "packaging/rpm/postin"
+post_uninstall_script = "packaging/rpm/postun"
+assets = [
+  { source = "target/release/qmkonnect",                              dest = "/usr/bin/qmkonnect",                                     mode = "755" },
+  { source = "target/release/qmkonnect-hid-id",                       dest = "/usr/lib/udev/qmkonnect-hid-id",                         mode = "755" },
+  { source = "packaging/linux/udev/69-qmkonnect-rawhid.rules",        dest = "/usr/lib/udev/rules.d/69-qmkonnect-rawhid.rules",        mode = "644" },
+  { source = "packaging/linux/systemd/qmkonnect.service.template",    dest = "/usr/lib/systemd/user/qmkonnect.service.template",        mode = "644" },
+  { source = "packaging/linux/xdg/qmkonnect.desktop",                 dest = "/etc/xdg/autostart/qmkonnect.desktop",                   mode = "644" },
+  { source = "README.md",                                             dest = "/usr/share/doc/qmkonnect/README.md",                     mode = "644" },
+  { source = "LICENSE",                                               dest = "/usr/share/licenses/qmkonnect/LICENSE",                  mode = "644" },
+]
+
+[package.metadata.generate-rpm.requires]
+hidapi = ">= 0.10"
+libxdo = "*"
+zenity = "*"
+libnotify = "*"
+systemd = "*"
+
 
 

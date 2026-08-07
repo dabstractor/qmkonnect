@@ -1,0 +1,53 @@
+#!/bin/sh
+# postin: RPM %post scriptlet (runs on install AND upgrade; $1: 1=install,
+# 2=upgrade). Mirrors packaging/debian/postinst translated to Fedora/RHEL
+# conventions (groupadd -r instead of Debian's addgroup). See
+# spec/PACKAGING.md §4.4. The logic is idempotent, so it is safe on upgrade
+# (no $1 guard needed).
+#
+# Embedded into the .rpm via cargo-generate-rpm's post_install_script file ref.
+set -e
+
+echo "Configuring QMKonnect..."
+
+# 1. Instantiate the systemd user service from its template. (The old
+#    VID/PID substitution is gone: the rule is now static and config is optional.)
+if [ -f /usr/lib/systemd/user/qmkonnect.service.template ]; then
+  install -m644 \
+    /usr/lib/systemd/user/qmkonnect.service.template \
+    /usr/lib/systemd/user/qmkonnect.service
+fi
+
+# 2. Load the static usage-page udev rule so default QMK keyboards Just Work.
+udevadm control --reload-rules
+udevadm trigger
+
+# 3. Ensure the input group exists (the udev rule sets GROUP="input"; Fedora's
+#    systemd RPM ships it, but be idempotent). groupadd -r = system group
+#    (Fedora/RHEL syntax); do NOT use Debian's addgroup here.
+getent group input >/dev/null 2>&1 || groupadd -r input
+
+# 4. Enable the user service globally (best-effort; starts at login once a
+#    matching device appears).
+systemctl --global enable qmkonnect.service >/dev/null 2>&1 || true
+
+# 5. Zero-config next-steps (verbatim from packaging/debian/postinst).
+cat <<'EOF'
+
+QMKonnect installed. Default QMK keyboards need NO configuration: QMKonnect
+auto-discovers them by the standard Raw HID usage page (0xFF60 / 0x61), and the
+shipped static udev rule already grants permissions (no --reload, no sudo).
+
+Only if you need to disambiguate among multiple QMK keyboards, or target a
+board that overrode RAW_USAGE_PAGE/RAW_USAGE_ID in firmware:
+  1. Create / edit  ~/.config/qmkonnect/config.toml  and set
+     vendor_id / product_id (and optionally usage_page / usage):
+       qmkonnect -c            # writes a commented-out default config
+  2. Generate + install the matching on-demand udev rule:
+       sudo qmkonnect -r
+
+The per-user service starts automatically at login once a matching device is
+present. To start it right now:
+       systemctl --user start qmkonnect.service
+
+EOF

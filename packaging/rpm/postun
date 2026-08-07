@@ -1,0 +1,44 @@
+#!/bin/sh
+# postun: RPM %postun scriptlet (runs after erase AND after upgrade; $1:
+# 1=erase, 2=upgrade). The cleanup is GUARDED on "$1" = "0" (erase-only) so an
+# upgrade ($1=2) does NOT tear down the service + rules the new package just
+# installed — this is the ONE structural difference from packaging/debian/postrm,
+# because RPM %postun runs for the OLD package right after the NEW one lands on
+# upgrade. Mirrors packaging/debian/postrm otherwise. See spec/PACKAGING.md §4.4.
+#
+# Embedded into the .rpm via cargo-generate-rpm's post_uninstall_script file ref.
+set -e
+
+# Only do teardown on complete removal, not on upgrade.
+if [ "$1" = "0" ]; then
+  echo "Removing QMKonnect..."
+
+  # 1. Disable globally (best-effort).
+  systemctl --global disable qmkonnect.service >/dev/null 2>&1 || true
+
+  # 2. Stop + disable per-user instances for each user with a home directory.
+  for user_home in /home/*; do
+    [ -d "$user_home" ] || continue
+    username=$(basename "$user_home")
+    user_id=$(id -u "$username" 2>/dev/null) || continue
+
+    if systemctl --user -M "$username@" status qmkonnect.service >/dev/null 2>&1; then
+      echo "Stopping service for $username..."
+      su "$username" -c "XDG_RUNTIME_DIR=/run/user/$user_id systemctl --user stop qmkonnect.service"
+      su "$username" -c "XDG_RUNTIME_DIR=/run/user/$user_id systemctl --user disable qmkonnect.service"
+    fi
+  done
+
+  # 3. Remove generated/user-created files (rpm already removed package-owned
+  #    files like the static rule + helper + template on erase).
+  rm -f /etc/udev/rules.d/99-qmkonnect.rules
+  rm -f /usr/lib/systemd/user/qmkonnect.service
+
+  # 4. Reload udev rules.
+  udevadm control --reload-rules
+  udevadm trigger
+
+  echo "QMKonnect has been successfully removed."
+fi
+
+exit 0
