@@ -1,0 +1,63 @@
+# Maintainer: Mulletware
+#
+# AUR BINARY package for QMKonnect. Downloads the pre-built GitHub release
+# tarball (staged by the CI `linux-binary` job in .github/workflows/release.yml)
+# — no Rust toolchain or build deps required.
+#
+# This is the -bin sibling of packaging/linux/arch/PKGBUILD (which builds from
+# source via `cargo build --release` + `-lhidapi-hidraw`). Both install to the
+# SAME four paths and reuse the SAME pacman hooks (qmkonnect.install); pick -bin
+# for speed, the source PKGBUILD for a from-source / -git workflow.
+#
+# Published to the AUR as qmkonnect-bin. Generate .SRCINFO before publishing:
+#   makepkg --printsrcinfo > .SRCINFO        (P1.M1.T1.S2 — publication infra)
+
+pkgname=qmkonnect-bin
+pkgver=0.2.8
+pkgrel=1
+pkgdesc="A notification daemon for QMK keyboards (pre-built binary release)"
+arch=('x86_64')
+url="https://github.com/dabstractor/qmkonnect"
+license=('MIT')
+
+# Runtime deps identical to the source PKGBUILD. NO makedepends: the release
+# tarball ships the pre-built qmkonnect + qmkonnect-hid-id.
+depends=('systemd' 'hidapi' 'libusb' 'zenity' 'libnotify')
+
+# Same pacman hooks as the source package (copied into this dir — see README).
+install=qmkonnect.install
+# Only the (optional, user-instantiated) service template is preserved across
+# upgrades; the static udev rule + helper are package-owned.
+backup=("usr/lib/systemd/user/qmkonnect.service.template")
+options=(!strip)
+
+# The CI linux-binary job stages this tarball with a top-level
+# qmkonnect-${pkgver}-linux-x86_64/ dir holding the two binaries, the static
+# udev rule, and the systemd template. makepkg extracts it into $srcdir.
+source=("https://github.com/dabstractor/qmkonnect/releases/download/v${pkgver}/qmkonnect-${pkgver}-linux-x86_64.tar.gz")
+sha256sums=('86dcaa57254f4b7dd23595ef8e473432c3997df3b6c12621913d215b9ab1b216')
+# Refresh after a version bump: `updpkgsums` (from pacman-contrib), or
+# `makepkg -g` then paste the printed line over the sha256sums above.
+
+package() {
+  cd "$srcdir"
+
+  local stage="qmkonnect-${pkgver}-linux-x86_64"
+
+  # Main binary.
+  install -Dm755 "${stage}/qmkonnect" "${pkgdir}/usr/bin/qmkonnect"
+
+  # udev helper: tags hidraw interfaces exposing the QMK Raw HID signature
+  # (usage page 0xFF60 / usage 0x61) so the static rule can grant permissions
+  # uniformly — no per-VID/PID config, no --reload, no sudo for default users.
+  install -Dm755 "${stage}/qmkonnect-hid-id" "${pkgdir}/usr/lib/udev/qmkonnect-hid-id"
+
+  # Static usage-page udev rule: IDENTICAL for every keyboard, never regenerated
+  # from config. Numbered 69 so it runs before any on-demand 99-qmkonnect.rules
+  # the user may generate with `qmkonnect -r`.
+  install -Dm644 "${stage}/udev/69-qmkonnect-rawhid.rules" "${pkgdir}/usr/lib/udev/rules.d/69-qmkonnect-rawhid.rules"
+
+  # systemd user service template (post_install instantiates it). Binds to the
+  # qmkonnect_device symlink the static rule creates for any matched interface.
+  install -Dm644 "${stage}/systemd/qmkonnect.service.template" "${pkgdir}/usr/lib/systemd/user/qmkonnect.service.template"
+}
