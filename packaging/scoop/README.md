@@ -33,7 +33,7 @@ The installer is **not code-signed** — fine for Scoop (per
 
 ```bash
 # Add the bucket, then install:
-scoop bucket add qmkonnect https://github.com/dabstractor/scoop-qmkonnet
+scoop bucket add qmkonnect https://github.com/dabstractor/scoop-qmkonnect
 scoop install qmkonnect
 # Update to the latest release:
 scoop update qmkonnect
@@ -44,7 +44,7 @@ scoop uninstall qmkonnect
 > **Note on `scoop bucket add`:** the alias `qmkonnect` **must** carry the
 > explicit URL. `scoop bucket add qmkonnect` *without* a URL resolves to an
 > implicit user bucket — wrong. The bucket repo is
-> [`dabstractor/scoop-qmkonnet`](https://github.com/dabstractor/scoop-qmkonnet)
+> [`dabstractor/scoop-qmkonnect`](https://github.com/dabstractor/scoop-qmkonnect)
 > (org `dabstractor`), which is why the URL is required.
 
 `scoop update qmkonnect` pulls new releases automatically — the manifest's
@@ -112,7 +112,7 @@ an unfilled manifest can never silently install a tampered binary.
 This directory owns only the **manifest + this source-repo README**. The bucket
 repo and the publish script are sibling tasks — **do not create them here**;
 
-- **Bucket repo:** [`dabstractor/scoop-qmkonnet`](https://github.com/dabstractor/scoop-qmkonnet)
+- **Bucket repo:** [`dabstractor/scoop-qmkonnect`](https://github.com/dabstractor/scoop-qmkonnect)
   — sibling **P1.M3.T1.S2** owns its README and the `update-manifest.sh` publish
   script (the Scoop analogue of
   [`packaging/homebrew/update-cask.sh`](../homebrew/update-cask.sh) and
@@ -125,7 +125,7 @@ repo and the publish script are sibling tasks — **do not create them here**;
   §"CI Publishing Strategy".
 - **`Casks/qmkonnect.rb` is the source of truth for Homebrew; the Scoop
   equivalent here is `qmkonnect.json` in this directory.** The bucket repo
-  `dabstractor/scoop-qmkonnet` holds a CI-published copy; edit the file here and
+  `dabstractor/scoop-qmkonnect` holds a CI-published copy; edit the file here and
   let CI propagate it.
 
 ## Cross-links
