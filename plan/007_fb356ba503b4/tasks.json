@@ -4,7 +4,7 @@
       "type": "Phase",
       "id": "P1",
       "title": "F15 — Community Package-Manager Distribution",
-      "status": "Planned",
+      "status": "Researching",
       "description": "Publish every QMKonnect release to native package/version managers users already trust: AUR and Nix flake (Linux), Homebrew (macOS), Scoop and Winget (Windows), plus cross-platform mise/asdf plugins. Each channel honors the per-user, no-admin philosophy where the channel permits. F1-F14 are already fully implemented in the v0.2.8 codebase (390 tests passing); this phase closes the last PRD feature gap (F15).",
       "milestones": [
         {
@@ -382,7 +382,7 @@
           "type": "Milestone",
           "id": "P1.M6",
           "title": "Documentation Sync",
-          "status": "Planned",
+          "status": "Researching",
           "description": "Update the project documentation to surface all community distribution channels alongside the direct installers. This is the Mode B final task that sweeps cross-cutting docs.",
           "tasks": [
             {
@@ -426,14 +426,14 @@
               "type": "Task",
               "id": "P1.M6.T2",
               "title": "Sync changeset-level documentation",
-              "status": "Planned",
+              "status": "Researching",
               "description": "Final Mode B documentation sweep: update README.md with the distribution channel list, update the PACKAGING spec section for F15, and regenerate docs/llms_full.txt.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M6.T2.S1",
                   "title": "Update README.md with community distribution channels",
-                  "status": "Researching",
+                  "status": "Complete",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M6.T1.S1",
@@ -455,7 +455,7 @@
                   "type": "Subtask",
                   "id": "P1.M6.T2.S2",
                   "title": "Regenerate docs/llms_full.txt and update PACKAGING spec references",
-                  "status": "Planned",
+                  "status": "Researching",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M6.T1.S1",

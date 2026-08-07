@@ -104,6 +104,29 @@ sudo qmkonnect -r     # root-aware: finds your config even under sudo
 3. Launch QMKonnect from Applications folder
 4. It starts automatically at login by default — toggle it from the menu-bar icon → **Launch at Login**.
 
+### Package Managers
+
+QMKonnect also ships through community package managers — the same release binaries, kept
+current automatically. Pick your platform's channel (full per-channel setup and caveats:
+[Installation Guide](docs/installation.md)):
+
+| Platform | Channel | Install command |
+| --- | --- | --- |
+| **Arch Linux** | AUR (`qmkonnect-bin`) | `yay -S qmkonnect-bin` |
+| **Nix** (NixOS / Nix) | flake | `nix run github:dabstractor/qmkonnect` |
+| **macOS** | Homebrew Cask | `brew install --cask qmkonnect` *(custom tap — see guide)* |
+| **Windows** | Scoop | `scoop install qmkonnect` *(custom bucket — see guide)* |
+| **Windows** | Winget | `winget install dabstractor.QMKonnect` |
+| **Linux / macOS** | mise · asdf | `mise install qmkonnect@latest` · `asdf install qmkonnect latest` |
+
+> ⚠️ **Before you pick a channel:**
+> - **mise / asdf on macOS is CLI-only** — no menu-bar tray (use Homebrew or the DMG for the full
+>   app), and **not available on Windows** (use Scoop, Winget, or the Inno installer).
+> - The DMG and Windows installer are **ad-hoc / unsigned**, so expect a Gatekeeper / SmartScreen
+>   **"unverified publisher"** prompt until a stable code-signing certificate lands
+>   (`brew install --cask --no-quarantine qmkonnect` for Homebrew, *More info → Run anyway* for
+>   Winget / the Inno installer; Scoop is unaffected — it *extracts* rather than runs).
+
 ### From Source
 
 **Windows:**
