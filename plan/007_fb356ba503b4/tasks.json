@@ -18,7 +18,7 @@
               "type": "Task",
               "id": "P1.M1.T1",
               "title": "AUR Binary Package (qmkonnect-bin)",
-              "status": "Researching",
+              "status": "Complete",
               "description": "Create an AUR `-bin` package that fetches pre-built release artifacts from GitHub instead of building from source. The existing `packaging/linux/arch/PKGBUILD` is a source-build for local makepkg; the AUR package needs a separate PKGBUILD pointing at release tarballs with SHA256 verification.",
               "subtasks": [
                 {
@@ -41,7 +41,7 @@
                   "type": "Subtask",
                   "id": "P1.M1.T1.S2",
                   "title": "Create .SRCINFO + AUR repo publication infrastructure",
-                  "status": "Researching",
+                  "status": "Complete",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M1.T1.S1"
@@ -66,7 +66,7 @@
                   "type": "Subtask",
                   "id": "P1.M1.T2.S1",
                   "title": "Create flake.nix with buildRustPackage + Linux deps",
-                  "status": "Planned",
+                  "status": "Researching",
                   "story_points": 2,
                   "dependencies": [],
                   "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: The PRD says Nix 'builds from source' (§12). The project uses `RUSTFLAGS='-C link-arg=-lhidapi-hidraw'` (PKGBUILD build() and PACKAGING §2). Linux build deps from Cargo.toml `[target.'cfg(target_os = \"linux\")']`: hyprland (optional), libxdo, tempfile, libc, ksni (optional), gtk (optional). System libs: `libgtk-3-dev libglib2.0-dev libayatana-appindicator3-dev libx11-dev libxcb1-dev libxdo-dev libhidapi-dev libudev-dev` (from CI linux-binary job). MSRV 1.88. See plan/007_fb356ba503b4/architecture/external_deps.md §5.\n2. INPUT: `Cargo.toml` (for crate metadata, `cargoHash`), `Cargo.lock` (for reproducible builds), `.cargo/config.toml` (Windows CRT-static, not needed for Linux but flake should be cross-platform aware).\n3. LOGIC: Create `flake.nix` at repo root with: `inputs.nixpkgs` (unstable or stable), `outputs = { self, nixpkgs, ... }:` producing `packages.{x86_64-linux,aarch64-linux}.qmkonnect` and `packages.{x86_64-linux,aarch64-linux}.default`. Use `rustPlatform.buildRustPackage` with `cargoHash` (or `cargoLock.lockFile`), `nativeBuildInputs = [ pkg-config ]`, `buildInputs = [ gtk3 glib libayatana-appindicator libx11 libxcb xdotool hidapi libusb systemd ]`, and `RUSTFLAGS = \"-C link-arg=-lhidapi-hidraw\"`. Also build the `qmkonnect-hid-id` binary (it's a separate bin target in the same crate, so it builds automatically). Add `devShells.default` for `nix develop`. Generate `flake.lock` via `nix flake lock`.\n4. OUTPUT: `flake.nix` + `flake.lock` at repo root. Users can `nix run github:dabstractor/qmkonnect` or `nix build`.\n5. DOCS: [Mode A] Create packaging/nix/README.md documenting installation (`nix profile install github:dabstractor/qmkonnect`), the post-install udev/systemd steps (Nix can't install udev rules system-wide), and the `nix develop` shell. This rides WITH the work.",

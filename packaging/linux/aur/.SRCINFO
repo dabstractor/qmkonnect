@@ -1,0 +1,19 @@
+pkgbase = qmkonnect-bin
+	pkgdesc = A notification daemon for QMK keyboards (pre-built binary release)
+	pkgver = 0.2.8
+	pkgrel = 1
+	url = https://github.com/dabstractor/qmkonnect
+	install = qmkonnect.install
+	arch = x86_64
+	license = MIT
+	depends = systemd
+	depends = hidapi
+	depends = libusb
+	depends = zenity
+	depends = libnotify
+	options = !strip
+	backup = usr/lib/systemd/user/qmkonnect.service.template
+	source = https://github.com/dabstractor/qmkonnect/releases/download/v0.2.8/qmkonnect-0.2.8-linux-x86_64.tar.gz
+	sha256sums = 86dcaa57254f4b7dd23595ef8e473432c3997df3b6c12621913d215b9ab1b216
+
+pkgname = qmkonnect-bin
