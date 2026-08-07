@@ -11,7 +11,7 @@
           "type": "Milestone",
           "id": "P1.M1",
           "title": "Linux Community Channels (AUR + Nix)",
-          "status": "Researching",
+          "status": "Complete",
           "description": "Create the AUR binary package (qmkonnect-bin) that downloads GitHub release artifacts instead of building from source, and a Nix flake that builds from source with proper Linux dependency integration. Both must install the udev rule, hid-id helper, and systemd service template.",
           "tasks": [
             {
@@ -59,7 +59,7 @@
               "type": "Task",
               "id": "P1.M1.T2",
               "title": "Nix Flake",
-              "status": "Researching",
+              "status": "Complete",
               "description": "Create a Nix flake (`flake.nix` + `flake.lock`) at the repo root that builds QMKonnect from source using `rustPlatform.buildRustPackage`, with proper Linux build dependencies (gtk3, hidapi, libxdo, systemd) and udev/systemd integration.",
               "subtasks": [
                 {
@@ -82,7 +82,7 @@
                   "type": "Subtask",
                   "id": "P1.M1.T2.S2",
                   "title": "Add udev rule + hid-id + systemd integration to Nix package",
-                  "status": "Researching",
+                  "status": "Complete",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M1.T2.S1"
@@ -117,7 +117,7 @@
                   "type": "Subtask",
                   "id": "P1.M2.T1.S1",
                   "title": "Create Homebrew Cask formula for QMKonnect.app DMG",
-                  "status": "Planned",
+                  "status": "Researching",
                   "story_points": 2,
                   "dependencies": [],
                   "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: The macOS DMG release artifact is named `QMKonnect-{version}-macos.dmg` and contains `QMKonnect.app` (universal binary: aarch64 + x86_64). The bundle identifier is `io.mulletware.qmkonnect`. Screen Recording permission is needed for window titles (PRD §9, PLATFORMS §4.2). PRD §12 says 'Homebrew ships via a custom tap until notarization qualifies it for the official cask.' The DMG is ad-hoc signed unless notarization secrets are set. See plan/007_fb356ba503b4/architecture/external_deps.md §2.\n2. INPUT: GitHub release URL pattern: `https://github.com/dabstractor/qmkonnect/releases/download/v{version}/QMKonnect-{version}-macos.dmg`. SHA256 hash of the DMG (computed at release time by CI).\n3. LOGIC: Create `packaging/homebrew/Casks/qmkonnect.rb` with: `cask 'qmkonnect' do` block containing `version`, `sha256` (placeholder, updated by CI), `url` (GitHub release DMG), `name 'QMKonnect'`, `desc 'Cross-platform window activity notifier for QMK keyboards'`, `homepage 'https://github.com/dabstractor/qmkonnect'`, `app 'QMKonnect.app'`, `caveats` mentioning Screen Recording permission and the `qmkonnect --show-window-info` discovery tool, `zap trash` for `~/Library/Application Support/QMKonnect/`, and a `livecheck` block using `url \"https://github.com/dabstractor/qmkonnect/releases/latest\" strategy :header` to auto-detect new versions.\n4. OUTPUT: `packaging/homebrew/Casks/qmkonnect.rb` ready for the tap repo.\n5. DOCS: [Mode A] Create packaging/homebrew/README.md documenting the tap setup (`brew tap mulletware/qmkonnect https://github.com/dabstractor/homebrew-qmkonnect`, `brew install --cask qmkonnect`) and the notarization path to the official cask. This rides WITH the work.",
