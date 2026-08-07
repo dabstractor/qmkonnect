@@ -103,21 +103,21 @@
           "type": "Milestone",
           "id": "P1.M2",
           "title": "macOS Community Channel (Homebrew)",
-          "status": "Planned",
+          "status": "Researching",
           "description": "Create a Homebrew Cask for QMKonnect that installs the DMG from GitHub releases. Ship via a custom tap (`brew tap mulletware/qmkonnect`) until notarization qualifies it for the official Homebrew cask repository (PRD §12).",
           "tasks": [
             {
               "type": "Task",
               "id": "P1.M2.T1",
               "title": "Homebrew Cask Formula",
-              "status": "Planned",
+              "status": "Researching",
               "description": "Create the Homebrew Cask Ruby formula that installs QMKonnect.app from the GitHub release DMG, with livecheck for auto-version detection, caveats for Screen Recording permission, and zap for clean uninstall.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M2.T1.S1",
                   "title": "Create Homebrew Cask formula for QMKonnect.app DMG",
-                  "status": "Researching",
+                  "status": "Complete",
                   "story_points": 2,
                   "dependencies": [],
                   "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: The macOS DMG release artifact is named `QMKonnect-{version}-macos.dmg` and contains `QMKonnect.app` (universal binary: aarch64 + x86_64). The bundle identifier is `io.mulletware.qmkonnect`. Screen Recording permission is needed for window titles (PRD §9, PLATFORMS §4.2). PRD §12 says 'Homebrew ships via a custom tap until notarization qualifies it for the official cask.' The DMG is ad-hoc signed unless notarization secrets are set. See plan/007_fb356ba503b4/architecture/external_deps.md §2.\n2. INPUT: GitHub release URL pattern: `https://github.com/dabstractor/qmkonnect/releases/download/v{version}/QMKonnect-{version}-macos.dmg`. SHA256 hash of the DMG (computed at release time by CI).\n3. LOGIC: Create `packaging/homebrew/Casks/qmkonnect.rb` with: `cask 'qmkonnect' do` block containing `version`, `sha256` (placeholder, updated by CI), `url` (GitHub release DMG), `name 'QMKonnect'`, `desc 'Cross-platform window activity notifier for QMK keyboards'`, `homepage 'https://github.com/dabstractor/qmkonnect'`, `app 'QMKonnect.app'`, `caveats` mentioning Screen Recording permission and the `qmkonnect --show-window-info` discovery tool, `zap trash` for `~/Library/Application Support/QMKonnect/`, and a `livecheck` block using `url \"https://github.com/dabstractor/qmkonnect/releases/latest\" strategy :header` to auto-detect new versions.\n4. OUTPUT: `packaging/homebrew/Casks/qmkonnect.rb` ready for the tap repo.\n5. DOCS: [Mode A] Create packaging/homebrew/README.md documenting the tap setup (`brew tap mulletware/qmkonnect https://github.com/dabstractor/homebrew-qmkonnect`, `brew install --cask qmkonnect`) and the notarization path to the official cask. This rides WITH the work.",
@@ -133,7 +133,7 @@
                   "type": "Subtask",
                   "id": "P1.M2.T1.S2",
                   "title": "Create Homebrew tap repo structure + update automation",
-                  "status": "Planned",
+                  "status": "Researching",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M2.T1.S1"
