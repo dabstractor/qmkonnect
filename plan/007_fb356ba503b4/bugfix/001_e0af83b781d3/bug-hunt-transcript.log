@@ -1,0 +1,99 @@
+I've completed a thorough end-to-end validation against the PRD. Here is my bug-hunt report.
+
+---
+
+# QMKonnect — PRD Validation & Bug Hunt Report
+
+All 441 unit tests pass, the core pipeline (debounce, pattern matcher, host-rules evaluator, handshake lifecycle) is solid, and most of the legacy `REMAINING_ISSUES.md` items are genuinely resolved. The bugs below are things the standard test suite cannot catch — they live in **packaging wiring, cross-thread locking invariants, and platform-integration paths**.
+
+---
+
+## 🔴 HIGH — Double-instance on Linux systemd distros (duplicate HID writes to the keyboard)
+
+**This is the headline finding.** On the primary Linux distribution path (Debian/Ubuntu/Fedora/Arch) **two `qmkonnect` processes run at the same time at login**, both streaming foreground-window data to the keyboard.
+
+**Evidence (both launch paths fire at login):**
+
+1. The package installs an XDG autostart entry, read by *every* DE at login:
+   - `packaging/linux/xdg/qmkonnect.desktop:5` → `Exec=qmkonnect`, `X-GNOME-Autostart-enabled=true` (no `Hidden`/`Condition` to suppress it under systemd)
+   - installed to `/etc/xdg/autostart/` by both `.deb` and `.rpm` (`Cargo.toml` `[package.metadata.deb].assets` / `[package.metadata.generate-rpm].assets`)
+
+2. The maintainer scripts **globally enable** the systemd *user* service that also starts at login:
+   - `packaging/debian/postinst:32` → `systemctl --global enable qmkonnect.service`
+   - `packaging/linux/arch/qmkonnect.install:17` → same
+   - service `WantedBy=default.target` (`qmkonnect.service.template:38`) + `BindsTo=dev-qmkonnect_device.device` + udev `ENV{SYSTEMD_USER_WANTS}+="qmkonnect.service"`
+
+3. **There is no single-instance guard on Linux** — `single-instance` (named mutex) is only a Windows dependency (`Cargo.toml:121`, used in `src/runners/windows.rs:22`). `grep` for any lockfile/pid guard in `src/runners/linux.rs` / `macos.rs` finds none.
+
+**Impact:** While the keyboard is plugged, both instances independently detect window focus and write Raw HID reports → the keyboard receives *every* window change twice (interleaved/duplicated), both run the capability handshake + `QUERY_CALLBACK` sweep against the same device, and they contend for the shared HID handle. When the keyboard is unplugged the systemd instance stops (BindsTo) while the XDG instance keeps running, so the instance count flips between 1 and 2 — chaotic and confusing. This directly violates PRD §2.1 Goal 4 ("graceful degradation, never crashes") and the "low latency / minimal" feel.
+
+**Why the PRD wording hid it:** F17 says "XDG autostart `.desktop` *alongside* the systemd user service, so login-autostart works on systemd **and** non-systemd distros." The intent was *coverage* (one mechanism per distro class), but the implementation installs + enables both unconditionally with no reconciliation. (Contrast: Windows has the named-mutex guard precisely to avoid this; macOS uses a single mechanism — SMAppService — so it's unaffected.)
+
+**Suggested fix (any one):**
+- Add a Linux single-instance guard (e.g. a `flock`/abstract-socket lock in `runners/linux.rs`), mirroring Windows; or
+- Make the `.desktop` conditional so it's a no-op when the user service is active, e.g. `Exec=sh -c 'systemctl --user is-active --quiet qmkonnect.service || qmkonnect'`; or
+- Don't `systemctl --global enable` by default — ship the service *installed but disabled*, and let the device-bound unit + XDG autostart be the primary paths.
+
+---
+
+## 🟠 MEDIUM — Hyprland `poll_window_state` holds the focus lock across HID I/O
+
+`src/platforms/hyprland.rs:459` acquires `last_window_state` and the whole `if window_changed { … }` block — including the `notify_qmk` call at `:492` and the state write at `:496` — runs **while the mutex is still held**.
+
+This contradicts the codebase's own documented invariant, which every *other* notify site respects:
+- `handle_window_state_change` (same file, `:558`) explicitly releases the lock first — its comment states *"`notify_qmk` runs AFTER the lock is dropped because it takes the debounce STATE/NOTIFIER locks, which must not be acquired while holding `last_window_state`."*
+- `src/platforms/gnome.rs` `apply_and_notify` (GOTCHA-4), `src/platforms/atspi.rs`, and `src/platforms/wayland_ft.rs::recompute_and_notify` (GOTCHA-9) all release before notifying.
+
+`notify_qmk`'s immediate-send path holds the global `NOTIFIER` mutex for up to **~300 ms** (3 retries × 100/200 ms backoff in `QmkNotifier::notify`) when the keyboard is slow/unplugged. During that window every Hyprland event handler (`activewindow`/`workspace`/`windowclosed`/layer events) and every poll-burst thread blocks on `last_window_state`, stalling window reporting. It isn't a deadlock (no lock cycle), but it's a latent latency stall exactly where the sibling function says it must not happen.
+
+**Fix:** mirror `handle_window_state_change` — build the `WindowInfo` under the lock, drop the guard, then `notify_qmk`.
+
+---
+
+## 🟡 LOW — Settings "re-handshake on VID/PID change" runs on the UI thread (tray freeze)
+
+When the Windows/Linux settings dialog saves a changed VID/PID, it synchronously re-runs the handshake **on the dialog's own message-loop thread**:
+- `src/tray.rs:1002-1003` (Windows) and `src/linux_tray.rs:740-741` (and the Windows window-info picker at `src/tray.rs:1930-1931`)
+
+`perform_handshake` can block for up to the **`CALLBACK_SWEEP_DEADLINE` of 5 s** (`src/core/notifier.rs`) on a misbehaving board, plus the per-`QUERY_CALLBACK` retry budget. That freezes the tray/menu-bar UI for seconds right after clicking OK. (The poll thread's own `perform_handshake` is on a background thread; this path isn't.)
+
+**Fix:** spawn the reset+handshake onto a worker thread (the way the tray already does for `edit_rules`), or at minimum document that the dialog may briefly hang.
+
+---
+
+## 🟡 LOW — Windows drops every window whose title is a single character
+
+`src/platforms/windows.rs:308`:
+```rust
+if window_info.title.chars().count() < 2 && !window_info.title.is_empty() {
+    return true; // ignored
+}
+```
+The PRD's window-filtering spec (§7 / `PLATFORMS.md §1.4`) only calls for filtering *internal/shell* windows (`Shell_TrayWnd`, `ApplicationFrameWindow`, tray flyouts). A blanket drop of all 1-character titles is an undocumented heuristic — any legit app/game/tool with a 1-char title (e.g. a single glyph, or a terminal showing one character) is silently never reported to the keyboard, so a host rule for it would never fire. It's marked "Bug 5" in a comment but the behavior is aggressive. Worth at least surfacing in the Show-Window-Information list (currently those windows are hidden too) or relaxing to known-shell-only.
+
+---
+
+## ⚪ INFO — macOS title lookup can yield empty titles for some apps
+
+`src/platforms/macos.rs::get_active_window_info` pairs the frontmost app's `localizedName` with a window by requiring `kCGWindowOwnerName == localizedName`. These two strings are usually equal but **not guaranteed** (bundle/exec-name vs. display-name divergence in some Electron/helper apps). When they differ, no window matches and `title` stays empty — title-pattern host rules (`["*chrome*","*youtube*"]`) silently never match for that app. Not a regression, but worth a fallback (e.g. match by window layer/owner PID, or fall back to `WM_NAME`-equivalent).
+
+---
+
+## ⚪ INFO — `--config` is ambiguous (no `--reload`)
+
+`src/main.rs`: `qmkonnect --config <path>` (without `-r`) is intercepted by the `-c/--config` create-config branch and **silently ignores `<path>`**, creating a default config instead of using the supplied one. `--help` documents `--config <path>` only as a `--reload` companion, but the bare form parses and misleads. Minor UX trap.
+
+---
+
+### Summary
+
+| # | Severity | Area | One-liner |
+|---|---|---|---|
+| 1 | 🔴 HIGH | Packaging (Linux) | XDG autostart + globally-enabled systemd user service = **two daemons** at login, no single-instance guard → duplicate HID writes |
+| 2 | 🟠 MED | Hyprland | `poll_window_state` holds focus lock across `notify_qmk` HID I/O (violates the invariant every sibling obeys) |
+| 3 | 🟡 LOW | Tray (Win/Linux) | Re-handshake on VID/PID change runs on the UI thread → up to 5 s tray freeze |
+| 4 | 🟡 LOW | Windows | 1-character-title windows are silently dropped (beyond the PRD's shell-filter spec) |
+| 5 | ⚪ INFO | macOS | Title pairing via `owner==localizedName` can miss some apps |
+| 6 | ⚪ INFO | CLI | `--config <path>` without `--reload` silently ignores the path |
+
+The **#1 finding is the one I'd fix before any beta release** — it affects the headline Linux installers (.deb/.rpm/AUR) on the primary target distros and produces visibly wrong behavior (double keymap switches) for every systemd-Linux user. Want me to write the fix for #1 (single-instance guard on Linux + the `.desktop` condition) or #2 (release-the-lock-before-notify in `poll_window_state`)?
