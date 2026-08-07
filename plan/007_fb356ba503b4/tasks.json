@@ -610,7 +610,7 @@
           "type": "Milestone",
           "id": "P2.M1",
           "title": "Core Backend Selection + Config + Build Features",
-          "status": "Ready",
+          "status": "Complete",
           "description": "The foundation for F16: the `select_linux_backend` runtime dispatcher that probes each compiled-in backend in priority order, the `[linux]` config table, the new Cargo features (wayland/gnome/atspi), X11 made unconditional, and the hidapi link nuance (Arch vs Debian/Fedora). Everything else in P2 depends on this.",
           "tasks": [
             {
@@ -640,7 +640,7 @@
               "type": "Task",
               "id": "P2.M1.T2",
               "title": "Config schema [linux] table + Cargo features + hidapi link nuance",
-              "status": "Ready",
+              "status": "Complete",
               "description": "Add the `[linux]` config table (`backend`, `gnome_poll_interval_ms`) to the Config struct, add the new Cargo features (`wayland`/`gnome`/`atspi`) to default, make X11 unconditional on Linux, and enforce the hidapi-link-per-distro invariant (Arch links `-lhidapi-hidraw`; Debian/Ubuntu/Fedora unified hidapi must NOT).",
               "subtasks": [
                 {
@@ -661,7 +661,7 @@
                   "type": "Subtask",
                   "id": "P2.M1.T2.S2",
                   "title": "Add wayland/gnome/atspi Cargo features, make X11 unconditional, document hidapi link nuance",
-                  "status": "Ready",
+                  "status": "Complete",
                   "story_points": 2,
                   "dependencies": [],
                   "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: The updated PACKAGING.md §2 / ARCHITECTURE.md §9 changed the default features from `['hyprland', 'macos', 'linux-tray']` to `['wayland', 'gnome', 'atspi', 'hyprland', 'macos', 'linux-tray']`. New features: `wayland` (dep smithay-client-toolkit + wayland-client), `gnome` (dep zbus), `atspi` (dep atspi). X11 is now compiled UNCONDITIONALLY on Linux (no feature flag). ARCHITECTURE.md invariant 12: Arch links `-lhidapi-hidraw` (separate lib); Debian/Ubuntu/Fedora (unified hidapi >=0.14) must NOT pass that flag.\n2. INPUT: `Cargo.toml` ([features], [dependencies], [target.'cfg(target_os = \"linux\")'].dependencies).\n3. LOGIC: (a) Add `wayland = ['dep:smithay-client-toolkit', 'dep:wayland-client']`, `gnome = ['dep:zbus']`, `atspi = ['dep:atspi']` to [features]; update `default` to include all three. (b) Add the optional deps under `[target.'cfg(target_os = \"linux\")']`. (c) X11 (`src/platforms/x11.rs`) is compiled unconditionally on Linux (no feature gate) — update `#[cfg]` attributes. (d) Document the hidapi link nuance: the Arch PKGBUILD keeps `RUSTFLAGS='-C link-arg=-lhidapi-hidraw'`; the .deb/.rpm builds (P1.M7) and Nix flake must NOT pass it (unified hidapi auto-selects hidraw). Add a comment in Cargo.toml or .cargo/config.toml documenting this.\n4. OUTPUT: Updated `Cargo.toml` features + deps; X11 unconditional; hidapi nuance documented.\n5. DOCS: [Mode A] The feature table in PACKAGING.md §2 is the reference; keep Cargo.toml comments in sync.",
@@ -693,7 +693,7 @@
                   "type": "Subtask",
                   "id": "P2.M2.T1.S1",
                   "title": "Core wayland_ft.rs: wlr focus tracking + ext cross-check + spawn-and-return + reconnect",
-                  "status": "Planned",
+                  "status": "Researching",
                   "story_points": 5,
                   "dependencies": [
                     "P2.M1.T1.S1",

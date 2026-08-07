@@ -1,3 +1,13 @@
+# NOTE (hidapi link nuance — ARCHITECTURE invariant 12 / PACKAGING.md §2):
+# There is INTENTIONALLY no global `[target.'cfg(target_os = "linux")']
+# rustflags = [… "-C" "link-arg=-lhidapi-hidraw"]` here. Arch needs that flag
+# (separate libhidapi-hidraw) and gets it via env RUSTFLAGS in its PKGBUILD;
+# but Debian/Ubuntu/Fedora (+ modern Nixpkgs) ship a UNIFIED hidapi (>=0.14)
+# where the flag either fails (`cannot find -lhidapi-hidraw`) or mis-links the
+# backend, breaking usage/usage_page matching. The flag stays PER-CHANNEL (Arch
+# PKGBUILD env, Nix hidrawFlag). The only rustflag in this file is the Windows
+# MSVC +crt-static below.
+
 # Statically link the C runtime (UCRT + vcruntime) into the Windows MSVC binary
 # so the shipped exe has NO external VC++-Redistributable dependency
 # (VCRUNTIME140.dll). The Inno installer then produces a genuinely drop-in
