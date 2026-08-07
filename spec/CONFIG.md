@@ -17,6 +17,13 @@ pub struct Config {
     #[serde(default)] pub usage:          Option<u16>,  // default 0x61 at use site
     #[serde(default = "default_debounce_ms")]      pub debounce_ms: u64,      // 50
     #[serde(default = "default_poll_interval_ms")] pub poll_interval_ms: u64, // 0
+    #[serde(default)] pub linux: LinuxConfig,                               // [linux] table
+}
+
+#[derive(serde::Deserialize, serde::Serialize, Default)]
+pub struct LinuxConfig {
+    #[serde(default)] pub backend:             Option<String>, // None = auto (select_linux_backend priority order)
+    #[serde(default)] pub gnome_poll_interval_ms: Option<u64>, // None = 1000
 }
 ```
 
@@ -54,6 +61,28 @@ thread), so editing the file (or saving the Settings dialog) takes effect
 within ~3 s — no restart. (On Hyprland this includes enabling the poller via
 `0 → N` live: the poll thread is always spawned and just sleeps while
 disabled.)
+
+### 1.3 Linux monitor backend (`[linux]`)
+
+The Linux monitor backend is chosen by `select_linux_backend` (`PLATFORMS.md`
+§6). The `[linux]` table optionally overrides the auto selection and the GNOME
+backend's drift-poll cadence. **Both fields are optional**; a config without a
+`[linux]` table (or with `backend = "auto"`) uses the runtime priority order
+(foreign-toplevel → GNOME → Hyprland → AT-SPI → X11).
+
+```toml
+[linux]
+backend = "auto"                 # auto | foreign-toplevel | gnome | hyprland | atspi | x11
+gnome_poll_interval_ms = 1000    # GNOME backend drift-poll cadence (ms)
+```
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `linux.backend` | `Option<String>` | `"auto"` | Force a specific backend (for debugging / unusual setups). A forced backend that is unavailable errors loudly with every probe result. |
+| `linux.gnome_poll_interval_ms` | `Option<u64>` | `1000` | GNOME backend's drift-correcting poll cadence (ms); hot-re-read each tick (like `poll_interval_ms`). |
+
+> `backend` is diagnostic in normal use — auto selection is correct on every
+> supported desktop. Use it only to pin a backend when reproducing an issue.
 
 ---
 

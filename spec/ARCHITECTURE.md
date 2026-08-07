@@ -22,12 +22,15 @@ qmkonnect/
 │   │   ├── notifier.rs        # Notifier trait, QmkNotifier, debouncer, device filter, probes
 │   │   └── types.rs           # WindowInfo { app_class, title }
 │   ├── platforms/
-│   │   ├── mod.rs             # WindowMonitor trait + dispatchers (config paths, list windows)
+│   │   ├── mod.rs             # WindowMonitor trait + dispatchers + select_linux_backend (config paths, list windows)
 │   │   ├── windows.rs         # WinEventHook + polling fallback + window enumeration
 │   │   ├── macos.rs           # NSWorkspace observer + CGWindowList + enumeration
-│   │   ├── hyprland.rs        # EventListener IPC + reconnect + poll burst + enumeration
-│   │   ├── linux.rs           # udev rule render/repair/reload, config paths, root-aware resolve
-│   │   └── x11.rs             # xprop-polling fallback monitor
+│   │   ├── wayland_ft.rs      # foreign-toplevel Wayland backend (wlr + ext protocols) — feature `wayland`
+│   │   ├── gnome.rs           # GNOME Shell-extension D-Bus client backend — feature `gnome`
+│   │   ├── atspi.rs           # AT-SPI a11y-bus fallback backend — feature `atspi`
+│   │   ├── hyprland.rs        # EventListener IPC + reconnect + poll burst + enumeration (legacy; superseded by wayland_ft)
+│   │   ├── linux.rs           # udev rule render/repair/reload, config paths, root-aware resolve, backend probes
+│   │   └── x11.rs             # xprop-polling fallback monitor (lowest priority; never under Wayland)
 │   ├── runners/
 │   │   ├── mod.rs             # PlatformRunner trait + create_runner
 │   │   ├── windows.rs         # single-instance mutex + tray-app/console modes
@@ -74,6 +77,13 @@ Each platform implements `WindowMonitor` (trait in `mod.rs`) and a set of free
 functions dispatched from `mod.rs`: `get_config_paths()`, `create_config_dir()`,
 `list_foreground_windows()`. See `SPEC_PLATFORMS.md`.
 
+**On Linux** `create_monitor()` delegates to `select_linux_backend()` (in
+`linux.rs`/`mod.rs`), which probes each compiled-in backend for availability in
+priority order — foreign-toplevel → GNOME → Hyprland → AT-SPI → X11 — and returns
+the first present one (`PLATFORMS.md` §6). The runner then treats the chosen
+backend uniformly as a `Box<dyn WindowMonitor>`; the blocking-vs-spawn
+ distinction is handled per-backend (§3/§6).
+
 ### 2.3 `runners/` — process lifecycle (per-OS)
 
 Each platform implements `PlatformRunner`. A runner wires together: singleton
@@ -118,6 +128,9 @@ who owns the main thread**:
 | **macOS** | The Core Foundation run loop (`CFRunLoopRun`) **and** the `tao` event loop both want main | Monitor runs on a **background thread** (`CFRunLoopRun` blocks there); tray/`tao` owns main |
 | **Hyprland** | A blocking Unix-socket IPC listener — no GUI loop at all | Monitor's `start()` blocks the calling thread; tray (ksni) runs on its own D-Bus thread |
 | **X11** | No GUI loop needed | Monitor polls in a background thread; tray (`tray.rs`, non-SNI) or a park loop owns main |
+| **foreign-toplevel (Wayland)** | No GUI loop — a Wayland `EventQueue` dispatch loop | `start()` spawns the dispatch thread and **returns** (non-blocking); tray (ksni) on its own D-Bus thread; runner parks main |
+| **GNOME (extension client)** | No GUI loop — zbus signal subscription | Monitor runs on a background thread + a drift-poll thread; ksni owns its D-Bus thread; runner parks main |
+| **AT-SPI** | No GUI loop — a11y-bus event subscription | as GNOME |
 
 The codebase resolves this with:
 1. A single `Send` `WindowMonitor` trait (the former non-`Send` variant existed
@@ -312,6 +325,9 @@ string path (§5.4). The host-side matcher is ported into `src/core/pattern.rs`
 | Windows monitor | hook delivered on message loop thread; 100 ms polling thread | `AtomicBool G_VERBOSE`, `AtomicIsize G_HOOK`, `Mutex<Option<(String,String)>> LAST_WINDOW_INFO` | replaced former `static mut` (UB) |
 | macOS monitor | background thread running `CFRunLoopRun` | `AtomicBool VERBOSE` | tray/`tao` owns main |
 | Hyprland monitor | calling thread blocks on `EventListener::start_listener`; optional `poll_interval_ms` poller thread; transient poll-burst threads | `Arc<Mutex<Option<WindowState>>>` | reconnect backoff is local to `start()` |
+| foreign-toplevel monitor | dedicated `EventQueue` dispatch thread (spawn-and-return `start()`) | `Arc<Mutex<Option<(String,String)>>>` | reconnect backoff reuses Hyprland's constants |
+| GNOME monitor | zbus signal subscription thread + 1000 ms drift-poll thread | last-emitted cell | NameOwnerChanged watch re-acquires state |
+| AT-SPI monitor | a11y-bus event thread + 1000 ms poll thread | last-emitted cell | best-effort; a11y may be off |
 | Device-status poll | background thread | `EventLoopProxy<UserEvent>` (macOS/Win) / `handle.update()` (Linux ksni) | UI mutated only on main thread (muda `!Send`) |
 | qmk-notifier device cache | caller | `LazyLock<Mutex<Option<DeviceCache>>>` | invalidated on any write error |
 
@@ -396,10 +412,17 @@ strip = true
 
 **MSRV Rust 1.88** (enforced via `rust-version`; image 0.25.x is the floor).
 
-**Feature flags** (default = `["hyprland", "macos", "linux-tray"]`):
-- `hyprland` — Hyprland IPC monitor (default-on Linux).
+**Feature flags** (default = `["wayland", "gnome", "atspi", "hyprland", "macos", "linux-tray"]`):
+- `wayland` — foreign-toplevel Wayland backend (smithay-client-toolkit); covers Hyprland/Sway/Niri/wlroots/KDE/COSMIC.
+- `gnome` — GNOME Shell-extension D-Bus client backend (zbus).
+- `atspi` — AT-SPI a11y-bus fallback backend.
+- `hyprland` — Hyprland IPC monitor (legacy; superseded by `wayland` on Hyprland, retained as a fallback).
 - `macos` — the Cocoa/CoreGraphics deps.
 - `linux-tray` — ksni SNI + GTK window-info dialog (default-on Linux).
+
+X11 is compiled unconditionally on Linux (no feature flag). The Linux monitor
+backends are **runtime-selected** by `select_linux_backend` (`PLATFORMS.md` §6),
+not compile-time `cfg` — so the default binary works on every desktop.
 
 `--no-default-features` yields the minimal trayless service build. Features are
 inert off-platform (e.g. `macos` on Linux), so plain `cargo build --release`
@@ -433,6 +456,16 @@ produces the full app with a tray on every OS.
     drains around a write — never a seize, never a perpetual blocking read. The
     always-on QMKonnect must never lock out the intermittently-used VIA app
     (`DEVICE_DISCOVERY.md` §6).
+11. **Never select the X11 backend under a Wayland compositor.**
+    `select_linux_backend` gates X11 on `$WAYLAND_DISPLAY` being **unset**;
+    XWayland sets `$DISPLAY` but reports focus unreliably for native Wayland
+    windows, so picking it under GNOME/KDE/COSMIC-Wayland would silently report
+    wrong windows (`PLATFORMS.md` §6/§10).
+12. **Hidapi link differs per distro.** Arch links `-lhidapi-hidraw` (separate
+    lib); Debian/Ubuntu/Fedora (unified hidapi ≥0.14) must **not** pass that flag
+    (the unified lib auto-selects the hidraw backend at runtime). Getting this
+    wrong breaks usage/usage_page matching on the .deb/.rpm.
+    (`PACKAGING.md` §2.)
 
 ---
 

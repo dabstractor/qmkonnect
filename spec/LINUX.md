@@ -218,6 +218,26 @@ service is the recommended path for hotplug auto-start.
 > The full `linux-tray` build does not have this limitation: its poll thread's
 > `PresenceTracker` re-handshakes on any capable-board transition.
 
+### 6.3 XDG autostart `.desktop` — the universal fallback (F17)
+
+Alongside the systemd user service, every Linux package ships an XDG autostart
+entry at `/etc/xdg/autostart/qmkonnect.desktop` (`PACKAGING.md` §4.7). Every
+DE session manager honors `~/.config/autostart/` (and `/etc/xdg/autostart/`), so
+this starts the daemon at **login on every desktop — systemd or not** (MX,
+Artix, Void, Gentoo). It is the load-bearing autostart path on non-systemd
+distros and a belt-and-suspenders on systemd ones.
+
+- **Trade-off vs the service:** the `.desktop` starts at login only; it loses
+  the systemd `BindsTo` plug/unplug lifecycle (start on plug, stop on unplug).
+  On systemd distros the service remains primary; the `.desktop` is redundant
+  but harmless (the single-instance story is owned by the tray/runner, not by
+  the launcher).
+- **Contents:** `Type=Application`, `Exec=qmkonnect`, `Icon=input-keyboard`,
+  `Terminal=false`, `NoDisplay=true` (autostart-only — not in app menus).
+- **Disable:** copy to `~/.config/autostart/qmkonnect.desktop` with
+  `Hidden=true`, or remove the system file — same convention as every other
+  autostart app.
+
 ---
 
 ## 7. SNI Tray (`src/linux_tray.rs`, feature `linux-tray`)
@@ -250,6 +270,23 @@ zbus variant-deserialization coupling. `parse_color_scheme` is unit-tested.
 The "Show Window Information" notification uses `notify-send` (shelled out)
 because `notify-rust`'s blocking `show()` spawns a nested tokio runtime, which
 panics inside ksni's handler thread.
+
+### 7.4 GNOME: the SNI holdout (AppIndicator)
+Stock **GNOME** dropped SNI/AppIndicator support years ago, so the ksni item is
+**invisible** on a default GNOME session — the daemon still runs headless
+(`spawn()` returns `None` gracefully on no SNI host; `UI.md` §1.2). Two honest
+options, both already covered by the code, so no GNOME-specific tray is built:
+
+- **Install the *AppIndicator and KStatusNotifierItem Support* GNOME extension**
+  (the standard repackaging of the old KStatusNotifier bridge). With it, ksni's
+  item renders normally in the top bar. This is the documented GNOME path.
+- **Run trayless.** The daemon, device-status, and rules/settings are fully
+  functional without a tray icon — only the click menu is unavailable (use the
+  CLI flags: `--list-devices`, `--validate-rules`, etc.).
+
+Do **not** build a GNOME-native tray. The window-detection story on GNOME is the
+Shell extension (`PLATFORMS.md` §8), which is independent of the tray; the two
+are solved separately.
 
 ---
 
