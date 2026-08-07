@@ -80,6 +80,19 @@
               substitute ${./packaging/linux/systemd/qmkonnect.service.template} \
                 $out/lib/systemd/user/qmkonnect.service \
                 --replace "/usr/bin/qmkonnect" "$out/bin/qmkonnect"
+
+              # 4. XDG autostart .desktop — the universal Linux login-autostart
+              #    fallback (F17; spec/LINUX.md §6.3, spec/PACKAGING.md §4.7).
+              #    Static file copied VERBATIM (NoDisplay=true hides it from app
+              #    menus). Exec=qmkonnect is a BARE PATH lookup, intentionally
+              #    NOT substituted to a store path: the module's
+              #    environment.systemPackages (NixOS) or `nix profile install`
+              #    (other distros) puts the binary on PATH, matching the
+              #    cross-package contract (.deb/.rpm/AUR all ship Exec=qmkonnect).
+              #    Belt-and-suspenders: NixOS uses systemd (primary); this is for
+              #    non-NixOS / manual Nix installs.
+              install -Dm644 ${./packaging/linux/xdg/qmkonnect.desktop} \
+                $out/etc/xdg/autostart/qmkonnect.desktop
             '';
 
             meta = with pkgs.lib; {

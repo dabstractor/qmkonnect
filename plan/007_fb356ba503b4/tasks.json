@@ -114,7 +114,7 @@
                   "type": "Subtask",
                   "id": "P1.M1.T2.S3",
                   "title": "Update Nix flake postInstall to ship XDG autostart .desktop (F17)",
-                  "status": "Planned",
+                  "status": "Complete",
                   "story_points": 1,
                   "dependencies": [
                     "P2.M6.T1.S1"

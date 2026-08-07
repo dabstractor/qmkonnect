@@ -6,8 +6,10 @@ all Linux system dependencies (GTK3, hidapi, libxdo, …) provided automatically
 
 The flake builds both binaries — `qmkonnect` (the app) and `qmkonnect-hid-id`
 (the udev helper) — for `x86_64-linux` and `aarch64-linux`, and also ships the
-static udev rule + systemd user service from the package (rewritten to the Nix
-store path) plus a `nixosModules.default` NixOS module for one-line enablement.
+static udev rule, systemd user service, **and XDG autostart `.desktop`** from
+the package (rewritten to the Nix store path where they carry hardcoded `/usr`
+paths; the `.desktop` ships verbatim) plus a `nixosModules.default` NixOS
+module for one-line enablement.
 
 ## Install
 
@@ -99,6 +101,18 @@ For the optional systemd user service (autostart at login), instantiate
 the **Linux install** section of [docs/installation.md](../../docs/installation.md)
 and `spec/LINUX.md §6` — substitute `/usr/bin/qmkonnect` for `$(command -v
 qmkonnect)` in `ExecStart`.
+
+The package also ships the XDG autostart entry at
+`etc/xdg/autostart/qmkonnect.desktop` (the F17 universal login-autostart
+fallback; `spec/LINUX.md §6.3`). A desktop environment reads `/etc/xdg/autostart/`
+and `~/.config/autostart/`, not the Nix profile's `etc/`, so symlink it into your
+user config for login-autostart on a distro where you're not using the systemd
+service:
+
+```sh
+ln -s "$(command -v qmkonnect | xargs dirname | xargs dirname)"/etc/xdg/autostart/qmkonnect.desktop \
+  ~/.config/autostart/qmkonnect.desktop
+```
 
 ## `nix develop` — contribute without polluting your host
 
