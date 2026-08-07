@@ -13,6 +13,23 @@ permalink: /installation/
 
 QMKonnect has different installation methods for each platform.
 
+## Installation Methods
+
+QMKonnect ships through a **direct installer** (recommended) and, on each platform, one or more
+**community package-manager channels** that keep it updated automatically. Pick one per platform —
+the exact commands and caveats are in each platform's **Package Managers** section below.
+(Full compatibility matrix: PRD §5.)
+
+| Platform | Direct installer (recommended) | Community channels |
+| --- | --- | --- |
+| **Windows** 10/11 (x64) | Inno `.exe` (per-user, no admin) | Scoop · Winget |
+| **macOS** 13+ | `.dmg` (universal) | Homebrew Cask |
+| **Linux** (Hyprland) | binary / Arch PKGBUILD | AUR · Nix |
+
+**mise / asdf** are cross-platform version managers that install the prebuilt release binary:
+**Linux** (full app) and **macOS** (**CLI only — no menu-bar tray**); not available on Windows.
+See the per-platform sections.
+
 ## Windows
 
 ### Installer (Recommended)
@@ -30,6 +47,37 @@ The installer:
 - Enables autostart via the HKCU `Run` key (toggle it in the tray: **Open at Login**)
 - Sets up the system-tray icon
 - Uninstalls cleanly via Add/Remove Programs
+
+### Package Managers
+
+Community package managers on Windows fetch the same Inno installer and keep it updated
+automatically. Both are **per-user — no Administrator** needed.
+
+**Scoop** (extracts the installer; no publisher prompt):
+
+```bash
+scoop bucket add qmkonnect https://github.com/dabstractor/scoop-qmkonnect
+scoop install qmkonnect
+scoop update qmkonnect      # pull a later release
+```
+
+Because Scoop *extracts* the installer via `innounp` instead of running it, **autostart is off
+by default** — enable **"Open at Login"** in QMKonnect's tray menu (the app writes the same HKCU
+`Run` value itself). There is no Add/Remove-Programs entry; manage the app with `scoop update` /
+`scoop uninstall qmkonnect`.
+
+**Winget** (runs the installer; same result as the direct `.exe`):
+
+```powershell
+winget install dabstractor.QMKonnect      # or: winget install qmkonnect
+winget upgrade dabstractor.QMKonnect      # keep current
+```
+
+The installer is **not code-signed**, so the first `winget install` (and Windows SmartScreen)
+shows an **"unverified publisher"** prompt — choose *More info → Run anyway*. This is the expected
+beta state, identical to running the unsigned direct installer, and goes away once QMKonnect has a
+stable code-signing certificate. (Scoop is unaffected — it extracts rather than runs, so it never
+trips the publisher check.)
 
 ### Build from Source
 
@@ -54,7 +102,8 @@ for the full release-build & installation procedure.
 
 #### Arch Linux
 
-Build the package from the local `PKGBUILD` (there is no AUR package):
+Build from the **source** `PKGBUILD` (or install the prebuilt binary from the AUR — see
+**Package Managers** below):
 
 ```bash
 git clone https://github.com/dabstractor/qmkonnect.git
@@ -112,6 +161,53 @@ qmkonnect -c          # writes a commented-out default config (edit as needed)
 sudo qmkonnect -r
 ```
 
+### Package Managers
+
+**AUR (Arch)** — `qmkonnect-bin` is the prebuilt-binary package: it downloads the GitHub release
+tarball (no Rust toolchain or build dependencies). It is the `-bin` sibling of the source `PKGBUILD`
+above — both install to the same paths and reuse the same pacman hooks (udev reload, systemd-template
+instantiation, global enable).
+
+```bash
+yay -S qmkonnect-bin          # or: paru -S qmkonnect-bin
+```
+
+The pacman hooks run automatically on install/upgrade, so default QMK keyboards then need **no
+configuration** — QMKonnect auto-discovers them via the Raw HID usage page (`0xFF60` / `0x61`) and
+the shipped static udev rule already grants permissions.
+
+**Nix** (NixOS, or Nix on another distro) — the flake builds from source against pinned Nixpkgs:
+
+```bash
+nix profile install github:dabstractor/qmkonnect   # add to your profile
+# …or run ad-hoc without installing:
+nix run github:dabstractor/qmkonnect
+```
+
+On **NixOS**, prefer the flake's module — add `qmkonnect.nixosModules.default` to your config and:
+
+```nix
+services.qmkonnect.enable = true;   # udev rule + systemd user service + PATH
+```
+
+On **non-NixOS** (Nix on Arch/Ubuntu/Fedora/…), Nix can't install the udev rule system-wide, so do
+the one-time HID-permissions setup (install the static rule, symlink the `qmkonnect-hid-id` helper
+the package ships, reload udev) — see the
+[Nix flake README](https://github.com/dabstractor/qmkonnect/blob/main/packaging/nix/README.md).
+
+**mise / asdf** — cross-platform version managers. The same `asdf-qmkonnect` plugin serves both
+(mise runs asdf plugin scripts unchanged). **Linux is fully supported** — install the binary, then
+run the one-time udev/systemd setup the plugin documents:
+
+```bash
+# asdf:
+asdf plugin add qmkonnect https://github.com/dabstractor/asdf-qmkonnect
+asdf install qmkonnect latest
+# mise:
+mise plugin add qmkonnect https://github.com/dabstractor/asdf-qmkonnect
+mise install qmkonnect@latest
+```
+
 ---
 
 ## macOS
@@ -126,6 +222,42 @@ sudo qmkonnect -r
 3. Eject the disk image.
 4. Launch QMKonnect from Applications. The first time, macOS Gatekeeper will warn that the app *cannot be verified* (it is ad-hoc signed and not notarized). Right-click the app → **Open** → **Open** to proceed.
 5. Grant the **Screen Recording** prompt when it appears — this is required to read window titles (see [Troubleshooting → Screen Recording]({{ site.baseurl }}/troubleshooting/) if it keeps reappearing).
+
+### Package Managers
+
+**Homebrew Cask** — installs the universal `QMKonnect.app` into `/Applications` and keeps it updated
+with `brew upgrade`. It ships through a **custom tap** (`mulletware/qmkonnect`), not the official
+`homebrew-cask`, until the DMG is Developer-ID-signed + notarized:
+
+```bash
+brew tap mulletware/qmkonnect https://github.com/dabstractor/homebrew-qmkonnect
+brew install --cask qmkonnect
+```
+
+> **Quarantine caveat (ad-hoc / unnotarized DMG):** the released DMG is **ad-hoc signed and not
+> notarized**, so Homebrew quarantines it and Gatekeeper blocks the first launch ("'QMKonnect' is
+> damaged / can't be opened"). Bypass quarantine for now:
+> ```bash
+> brew install --cask --no-quarantine qmkonnect
+> # …or, after a normal install:
+> xattr -dr com.apple.quarantine /Applications/QMKonnect.app
+> ```
+> Once the DMG is notarized this flag is unnecessary and the cask can graduate to the official
+> `homebrew-cask` repo. The **Screen Recording** prompt (for window titles) is still required either
+> way — see [Troubleshooting]({{ site.baseurl }}/troubleshooting/).
+
+Uninstall with `brew uninstall --cask qmkonnect` (add `--zap` to also remove the per-user config
+under `~/Library/Application Support/QMKonnect/`).
+
+**mise / asdf — CLI only (no menu-bar tray).** These install the raw Mach-O binary from the DMG,
+which runs CLI flags (`--help`, `--list-callbacks`, `-r`, …) but **not** the menu-bar tray/icon —
+that needs the full `.app` bundle. For the complete macOS app, use the **Homebrew cask** above or
+the **direct DMG** instead:
+
+```bash
+asdf plugin add qmkonnect https://github.com/dabstractor/asdf-qmkonnect
+asdf install qmkonnect latest        # CLI only — no menu-bar app
+```
 
 ### Launch at login
 

@@ -389,14 +389,14 @@
               "type": "Task",
               "id": "P1.M6.T1",
               "title": "Update installation documentation for community channels",
-              "status": "Researching",
+              "status": "Complete",
               "description": "Update docs/installation.md to add sections for each new community channel (AUR, Nix, Homebrew, Scoop, Winget, mise, asdf) with exact install commands and platform-specific notes.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M6.T1.S1",
                   "title": "Add community channel sections to docs/installation.md",
-                  "status": "Researching",
+                  "status": "Complete",
                   "story_points": 2,
                   "dependencies": [
                     "P1.M1.T1.S1",
@@ -433,7 +433,7 @@
                   "type": "Subtask",
                   "id": "P1.M6.T2.S1",
                   "title": "Update README.md with community distribution channels",
-                  "status": "Planned",
+                  "status": "Researching",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M6.T1.S1",
