@@ -213,6 +213,50 @@ socat -u UNIX-CONNECT:/tmp/hypr/$HYPRLAND_INSTANCE_SIGNATURE/.socket2.sock - | h
 
 **Note**: Only Hyprland is supported on Linux. Other window managers are not supported yet.
 
+#### Linux (GNOME)
+
+GNOME (Mutter) exposes no client API for the active window, so QMKonnect
+detects windows via the **`qmkonnect@mulletware`** Shell extension (see
+`docs/installation.md` → GNOME). If focus changes don't switch layers:
+
+1. **Check the backend + extension name in verbose output**:
+   ```bash
+   qmkonnect -v 2>&1 | grep -i gnome
+   # Expect: "gnome: 'io.mulletware.QMKonnect' is owned (extension installed+enabled)"
+   #         "→ 'gnome' available, selected"
+   # On focus change: "[<ms>] gnome: <app_class> | <title>"
+   ```
+   If you instead see the GNOME probe `Err` naming the extension, the daemon
+   also fires a one-shot first-run notification pointing you here.
+
+2. **Confirm the extension is enabled**:
+   ```bash
+   gnome-extensions show qmkonnect@mulletware   # State: ENABLED
+   ```
+   If it shows `DISABLED` or is absent, enable it in the **Extensions** app
+   (or `gnome-extensions enable qmkonnect@mulletware`). On a **Wayland**
+   session, **log out and back in** the first time you install it so
+   `gnome-shell` loads the extension.
+
+3. **Verify the D-Bus name is owned + the method works** (proves the extension
+   side, independent of the daemon):
+   ```bash
+   gdbus call --session --dest io.mulletware.QMKonnect \
+     --object-path /io/mulletware/QMKonnect \
+     --method io.mulletware.QMKonnect.WindowMonitor.GetActiveWindow
+   # → ('<app_class>', '<title>')
+   ```
+
+4. **Watch the signal live** while switching focus (should print on every
+   change):
+   ```bash
+   gdbus monitor --session --dest io.mulletware.QMKonnect
+   ```
+
+The daemon's GNOME backend auto-selects when the extension's D-Bus name is
+owned and re-acquires state if you toggle the extension off and back on (within
+~1 s). See `spec/PLATFORMS.md` §8 for the authoritative spec.
+
 #### macOS
 1. **Grant Accessibility permissions** (required for window monitoring):
    - System Preferences → Security & Privacy → Privacy  

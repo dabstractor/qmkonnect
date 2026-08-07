@@ -161,7 +161,43 @@ qmkonnect -c          # writes a commented-out default config (edit as needed)
 sudo qmkonnect -r
 ```
 
-### Package Managers
+### GNOME (optional Shell extension)
+
+GNOME (Mutter) advertises neither Wayland foreign-toplevel protocol and exposes
+no client API for the active window, so QMKonnect detects windows on GNOME via
+the **`qmkonnect@mulletware`** Shell extension. The extension reads
+`global.display.focus_window` inside `gnome-shell` and republishes the active
+window `(app_class, title)` over the session D-Bus as the well-known name
+`io.mulletware.QMKonnect`; the daemon's GNOME backend subscribes to it.
+(See `spec/PLATFORMS.md` §8 for the authoritative spec.)
+
+> On every other desktop (Hyprland, Sway, KDE Plasma 6, COSMIC, …) QMKonnect
+> uses the Wayland foreign-toplevel protocol directly — **no extension needed.**
+
+**Install the extension** (GNOME 45–50):
+
+1. Download the `qmkonnect@mulletware` extension from
+   [extensions.gnome.org](https://extensions.gnome.org) (search
+   "qmkonnect"), **or** grab the release `.zip` from the
+   [GitHub Releases](https://github.com/dabstractor/qmkonnect/releases) and
+   install it locally:
+   ```bash
+   gnome-extensions install --force qmkonnect@mulletware.shell-extension.zip
+   ```
+2. Enable it in the **Extensions** app (or `gnome-extensions enable
+   qmkonnect@mulletware`). On a Wayland session, **log out and back in** the
+   first time so `gnome-shell` picks up the new extension.
+3. Run QMKonnect verbose and confirm the GNOME backend is selected:
+   ```bash
+   qmkonnect -v
+   # …→ 'gnome' available, selected   (then [<ms>] gnome: <app> | <title> on focus changes)
+   ```
+
+The daemon auto-selects the GNOME backend whenever the extension's D-Bus name is
+owned (installed **and** enabled); no config change is required. If you later
+*disable* the extension mid-session, the daemon switches to its no-backend
+posture within ~1 s (the tray and device pipeline keep running) and re-acquires
+state automatically when you re-enable it.
 
 **AUR (Arch)** — `qmkonnect-bin` is the prebuilt-binary package: it downloads the GitHub release
 tarball (no Rust toolchain or build dependencies). It is the `-bin` sibling of the source `PKGBUILD`

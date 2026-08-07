@@ -75,6 +75,10 @@ fn construct_backend(name: &str, verbose: bool) -> Result<Box<dyn WindowMonitor>
         "foreign-toplevel" => Ok(Box::new(
             crate::platforms::wayland_ft::WaylandFtMonitor::new(verbose),
         )),
+        #[cfg(feature = "gnome")]
+        "gnome" => Ok(Box::new(crate::platforms::gnome::GnomeMonitor::new(
+            verbose,
+        ))),
         #[cfg(feature = "hyprland")]
         "hyprland" => Ok(Box::new(crate::platforms::hyprland::HyprlandMonitor::new(
             verbose,
@@ -169,7 +173,7 @@ fn wayland_probe(_verbose: bool) -> Result<(), String> {
 }
 #[cfg(feature = "gnome")]
 fn gnome_probe(_verbose: bool) -> Result<(), String> {
-    Err("GNOME Shell-extension backend not yet implemented (P2.M3)".into())
+    crate::platforms::gnome::probe_available(_verbose)
 }
 #[cfg(feature = "atspi")]
 fn atspi_probe(_verbose: bool) -> Result<(), String> {

@@ -603,7 +603,7 @@
       "type": "Phase",
       "id": "P2",
       "title": "F16/F17 — Cross-DE Linux Window Monitor + Universal Autostart",
-      "status": "Planned",
+      "status": "Researching",
       "description": "PRD UPDATE (v0.2.8+): Two entirely new top-level features. F16 — a runtime-selected multi-backend Linux window monitor (foreign-toplevel Wayland -> GNOME Shell extension -> Hyprland IPC -> AT-SPI -> X11) so one binary works on GNOME, KDE Plasma, COSMIC, Hyprland, Sway, Niri, wlroots, and the X11 DE tail. F17 — universal XDG autostart `.desktop` alongside the systemd user service for login-autostart on systemd and non-systemd distros (MX/Artix/Void/Gentoo). This phase spans new source modules (`src/platforms/{wayland_ft,gnome,atspi}.rs`), a `select_linux_backend` dispatcher, a GNOME Shell extension artifact (`packaging/gnome-shell-extension/`), new Cargo features (`wayland`/`gnome`/`atspi`), config schema additions (`[linux]` table), and the hidapi-link-per-distro nuance (ARCHITECTURE.md invariant 12). Fully specified in PLATFORMS.md §6-§10, ARCHITECTURE.md §3/§6/§9, CONFIG.md §1/§1.3, LINUX.md §6.3, PACKAGING.md §2/§4/§7/§9.",
       "milestones": [
         {
@@ -714,7 +714,7 @@
           "type": "Milestone",
           "id": "P2.M3",
           "title": "GNOME Backend (Shell Extension + D-Bus Client)",
-          "status": "Planned",
+          "status": "Ready",
           "description": "GNOME (Mutter) implements neither foreign-toplevel protocol and exposes no client API for the active window, so the active window is read inside `gnome-shell` by a small extension and republished over the session D-Bus, where the desktop app subscribes. Two deliverables: the `qmkonnect@mulletware` GNOME Shell extension (separate artifact) and `src/platforms/gnome.rs` (the D-Bus client backend).",
           "tasks": [
             {
@@ -744,14 +744,14 @@
               "type": "Task",
               "id": "P2.M3.T2",
               "title": "GNOME D-Bus client backend (src/platforms/gnome.rs)",
-              "status": "Planned",
+              "status": "Ready",
               "description": "Create `src/platforms/gnome.rs` (feature `gnome`) — the desktop-side zbus D-Bus client that subscribes to the extension's `ActiveWindowChanged` signal, drift-polls `GetActiveWindow`, watches NameOwnerChanged, and fires a first-run notification when the extension isn't installed.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P2.M3.T2.S1",
                   "title": "Implement gnome.rs: zbus subscription + drift poll + NameOwnerChanged + first-run notification",
-                  "status": "Researching",
+                  "status": "Complete",
                   "story_points": 3,
                   "dependencies": [
                     "P2.M1.T1.S1",
@@ -769,7 +769,7 @@
                   "type": "Subtask",
                   "id": "P2.M3.T2.S2",
                   "title": "First-run GNOME notification when extension missing",
-                  "status": "Planned",
+                  "status": "Ready",
                   "story_points": 1,
                   "dependencies": [
                     "P2.M3.T2.S1"

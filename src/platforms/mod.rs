@@ -15,6 +15,11 @@ mod x11;
 // state — see wayland_ft.rs module docs for the correction).
 #[cfg(all(target_os = "linux", feature = "wayland"))]
 mod wayland_ft;
+// GNOME Shell-extension D-Bus client backend (PLATFORMS.md §8 — priority #2).
+// GNOME (Mutter) advertises neither foreign-toplevel protocol; the
+// `qmkonnect@mulletware` extension republishes the active window over D-Bus.
+#[cfg(all(target_os = "linux", feature = "gnome"))]
+mod gnome;
 
 // Define the WindowMonitor trait. A single `Send` trait serves every platform:
 // Hyprland's `start()` blocks on its IPC listener, so it no longer needs to keep
@@ -127,21 +132,31 @@ pub fn list_foreground_windows() -> Vec<(String, String)> {
     #[cfg(all(target_os = "linux", feature = "wayland"))]
     return wayland_ft::list_foreground_windows();
 
+    #[cfg(all(target_os = "linux", not(feature = "wayland"), feature = "hyprland"))]
+    return hyprland::list_foreground_windows();
+
+    // GNOME Shell-extension backend (PLATFORMS.md §8 — priority #2). Reached
+    // when foreign-toplevel isn't compiled in (mirrors the hyprland branch's
+    // not(feature="wayland") gating so the cfg ladder stays mutually
+    // exclusive). Single-window read via the extension's D-Bus proxy.
     #[cfg(all(
         target_os = "linux",
         not(feature = "wayland"),
-        feature = "hyprland"
+        not(feature = "hyprland"),
+        feature = "gnome"
     ))]
-    return hyprland::list_foreground_windows();
+    return gnome::list_foreground_windows();
 
     #[cfg(not(any(
         target_os = "macos",
         target_os = "windows",
         all(target_os = "linux", feature = "wayland"),
+        all(target_os = "linux", not(feature = "wayland"), feature = "hyprland"),
         all(
             target_os = "linux",
             not(feature = "wayland"),
-            feature = "hyprland"
+            not(feature = "hyprland"),
+            feature = "gnome"
         )
     )))]
     return Vec::new();
