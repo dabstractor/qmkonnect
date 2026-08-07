@@ -30,6 +30,12 @@ packaging/linux/arch/*.pkg.tar.*
 # Generated docs site
 docs/_site/
 
+# Generic build output & dependency directories
+/dist
+/build
+node_modules/
+venv/
+
 # macOS / editor cruft
 .DS_Store
 *.swp
