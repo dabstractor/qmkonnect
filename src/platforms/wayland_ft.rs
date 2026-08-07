@@ -48,6 +48,11 @@ use smithay_client_toolkit::reexports::protocols_wlr::foreign_toplevel::v1::clie
     zwlr_foreign_toplevel_manager_v1::{self, Event as MgrEvent, ZwlrForeignToplevelManagerV1},
 };
 
+/// Shared snapshot of tracked toplevels as `(app_id, title)`, the activated
+/// one first. The `Arc<Mutex<…>>` lets the dispatch thread publish while the
+/// foreground-list reader reads it lock-free via a cloned `Arc`.
+type ToplevelSnapshot = Arc<Mutex<Vec<(String, String)>>>;
+
 // ---------------------------------------------------------------------------
 // Reconnect backoff (mirrors hyprland.rs private consts — GOTCHA-7: those are
 // private, so identical values are re-declared here. Factor ×3, reset after a
@@ -78,7 +83,7 @@ struct DispatchState {
     /// Shared with the monitor: the last emitted `(app_class, title)`.
     last_focus: Arc<Mutex<Option<(String, String)>>>,
     /// Shared with `list_foreground_windows`: the published toplevel snapshot.
-    list_snapshot: Arc<Mutex<Vec<(String, String)>>>,
+    list_snapshot: ToplevelSnapshot,
     verbose: bool,
 }
 
@@ -86,7 +91,7 @@ struct DispatchState {
 /// `JoinHandle`/`bool` — GOTCHA-5).
 pub struct WaylandFtMonitor {
     last_focus: Arc<Mutex<Option<(String, String)>>>,
-    list_snapshot: Arc<Mutex<Vec<(String, String)>>>,
+    list_snapshot: ToplevelSnapshot,
     shutdown: Arc<AtomicBool>,
     handle: Option<JoinHandle<()>>,
     verbose: bool,
@@ -327,7 +332,7 @@ impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for DispatchState {
 // ---------------------------------------------------------------------------
 fn run_dispatch_loop(
     last_focus: Arc<Mutex<Option<(String, String)>>>,
-    list_snapshot: Arc<Mutex<Vec<(String, String)>>>,
+    list_snapshot: ToplevelSnapshot,
     shutdown: Arc<AtomicBool>,
     verbose: bool,
 ) {
@@ -494,7 +499,7 @@ pub(crate) fn probe_available(_verbose: bool) -> Result<(), String> {
 /// Module-level shared snapshot. `start()` inits it with the monitor's
 /// `list_snapshot` Arc; only one backend runs at a time, so a single static is
 /// safe.
-static SHARED_SNAPSHOT: OnceLock<Arc<Mutex<Vec<(String, String)>>>> = OnceLock::new();
+static SHARED_SNAPSHOT: OnceLock<ToplevelSnapshot> = OnceLock::new();
 
 /// Tracked toplevels as `(app_id, title)`, the activated one first. Returns an
 /// empty list if no `WaylandFtMonitor` has ever run (or none are tracked yet).

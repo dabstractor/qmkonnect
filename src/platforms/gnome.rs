@@ -404,8 +404,7 @@ mod tests {
         // probe may Ok/Err on name ownership rather than connection. Only assert
         // the CONNECTION-failure path: when the env is unset AND no autostart
         // socket, expect Err mentioning the session bus.
-        if r.is_err() {
-            let m = r.unwrap_err();
+        if let Err(m) = r {
             assert!(
                 m.contains("session bus") || m.contains("not installed") || m.contains("DBUS"),
                 "expected a connection/ownership Err; got: {m}"
