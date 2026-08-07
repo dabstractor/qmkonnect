@@ -647,7 +647,7 @@
                   "type": "Subtask",
                   "id": "P2.M1.T2.S1",
                   "title": "Add LinuxConfig struct + [linux] table to Config schema",
-                  "status": "Ready",
+                  "status": "Complete",
                   "story_points": 1,
                   "dependencies": [],
                   "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: The updated CONFIG.md §1/§1.3 adds a `LinuxConfig` struct to `Config`: `backend: Option<String>` (None/auto = runtime priority order; values: foreign-toplevel|gnome|hyprland|atspi|x11|auto) and `gnome_poll_interval_ms: Option<u64>` (default 1000). Both optional; a config without `[linux]` uses auto selection.\n2. INPUT: `src/core/mod.rs` (Config struct, parse_config).\n3. LOGIC: Add `#[serde(default)] pub linux: LinuxConfig` to Config. Add `LinuxConfig` struct with `backend: Option<String>` and `gnome_poll_interval_ms: Option<u64>` (both `#[serde(default)]`, `#[derive(Default)]`). Update `render_config_body` if it needs to emit `[linux]` hints (optional — commented hints only). `configured_filter()` and `configured_timing()` are unaffected.\n4. OUTPUT: `LinuxConfig` in `src/core/mod.rs`, wired into Config.\n5. DOCS: [Mode A] The schema is self-documenting via the `[linux]` table; add commented hints to the config template if render_config_body is extended.",

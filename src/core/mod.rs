@@ -16,6 +16,35 @@ use std::sync::OnceLock;
 use std::time::Instant;
 use std::time::SystemTime;
 
+// Optional Linux window-monitor backend overrides (`[linux]` table in
+// `config.toml`), surfaced as `Config.linux` (P2.M1.T2.S1, F16 / CONFIG.md §1.3).
+//
+// Both fields are `Option` + `#[serde(default)]`, so a config with NO `[linux]`
+// table (or `[linux] backend = "auto"`) deserializes to all-`None` ⇒ runtime
+// auto-selection in `select_linux_backend` (foreign-toplevel → GNOME → Hyprland
+// → AT-SPI → X11). `backend` is diagnostic in normal use — auto-selection is
+// correct on every supported desktop (PLATFORMS.md §6). `gnome_poll_interval_ms`
+// is the GNOME backend's drift-correcting poll cadence (consumed by the GNOME
+// backend, P2.M3.T2 — not yet wired).
+//
+// Clone is required (Config derives Clone — GOTCHA-2); Default is safe (both
+// fields Option → None = auto / 1000-at-use-site). Debug for verbose logging.
+#[derive(serde::Deserialize, serde::Serialize, Clone, Debug, Default, PartialEq, Eq)]
+pub struct LinuxConfig {
+    /// Force a specific backend. One of: `foreign-toplevel | gnome | hyprland |
+    /// atspi | x11 | auto`. `None` (or `"auto"`) ⇒ runtime priority order in
+    /// `select_linux_backend` (taken as its `forced` arg; `create_monitor`
+    /// normalizes `"auto"`/empty to `None`). A forced backend that is unavailable
+    /// errors loudly with every probe result (PLATFORMS.md §6).
+    #[serde(default)]
+    pub backend: Option<String>,
+    /// GNOME backend drift-correcting poll cadence (ms). `None` ⇒ 1000 (resolved
+    /// at the GNOME backend use site). Hot-re-read each tick (like
+    /// `poll_interval_ms`). Ignored by every non-GNOME backend.
+    #[serde(default)]
+    pub gnome_poll_interval_ms: Option<u64>,
+}
+
 // Define the Config struct. VID/PID (and usage page/usage) are OPTIONAL: a
 // missing field deserializes to `None`, which means "match any" (auto-discovery
 // by the standard QMK raw-HID usage page/usage). Existing config files that set
@@ -45,6 +74,11 @@ pub struct Config {
     /// polling (events come from the IPC listener instead). Defaults to 0.
     #[serde(default = "default_poll_interval_ms")]
     pub poll_interval_ms: u64,
+    /// Linux window-monitor backend overrides (`[linux]` table). Absent ⇒
+    /// auto-selection. `#[serde(default)]` ⇒ a config without a `[linux]` table
+    /// deserializes to `LinuxConfig::default()` (both fields `None`).
+    #[serde(default)]
+    pub linux: LinuxConfig,
 }
 
 const DEFAULT_DEBOUNCE_MS: u64 = 50;
@@ -52,8 +86,9 @@ const DEFAULT_POLL_INTERVAL_MS: u64 = 0;
 
 impl Default for Config {
     /// The canonical default config: auto-discovery (every device-identifying
-    /// field `None`) and the runtime timing defaults (`debounce_ms = 50`,
-    /// `poll_interval_ms = 0`). This MUST agree with the serde
+    /// field `None`), the runtime timing defaults (`debounce_ms = 50`,
+    /// `poll_interval_ms = 0`), and `linux: LinuxConfig::default()` (both fields
+    /// `None` ⇒ backend auto-selection). This MUST agree with the serde
     /// `default = ...` attributes above so that `Config::default()`, an empty
     /// `config.toml`, and `configured_timing()` all describe the SAME
     /// zero-config state. Otherwise a Settings-dialog save that falls back to
@@ -62,6 +97,13 @@ impl Default for Config {
     /// disabling debouncing). A manual impl is used instead of `#[derive(Default)]`
     /// because the derive would zero-init `debounce_ms`, not match the serde
     /// default.
+    ///
+    /// NOTE (GOTCHA-1): the merged PRD (CONFIG.md §1) sketches
+    /// `#[derive(... Default)]` on `Config`. The production code intentionally
+    /// keeps this MANUAL impl — `#[derive(Default)]` would zero-init
+    /// `debounce_ms` to 0 (not 50), silently disabling debouncing. Code wins
+    /// (the standing PRD↔code drift rule). `LinuxConfig` itself CAN safely
+    /// `#[derive(Default)]` (both fields `Option` → `None`).
     fn default() -> Self {
         Self {
             vendor_id: None,
@@ -70,6 +112,7 @@ impl Default for Config {
             usage: None,
             debounce_ms: DEFAULT_DEBOUNCE_MS,
             poll_interval_ms: DEFAULT_POLL_INTERVAL_MS,
+            linux: LinuxConfig::default(),
         }
     }
 }
@@ -241,7 +284,15 @@ pub fn render_default_config_template() -> String {
      # poll_interval_ms = 0\n\
      \n\
      # vendor_id  = 0x????   # unset: auto-discover any QMK keyboard (recommended)\n\
-     # product_id = 0x????   # unset: auto-discover any QMK keyboard (recommended)\n"
+     # product_id = 0x????   # unset: auto-discover any QMK keyboard (recommended)\n\
+     #\n\
+     # Linux window-monitor backend ([linux]). Both fields OPTIONAL; omit the\n\
+     # whole table (or backend = \"auto\") for runtime auto-selection\n\
+     # (foreign-toplevel -> GNOME -> Hyprland -> AT-SPI -> X11). A forced backend\n\
+     # that is unavailable errors loudly. (Linux only.)\n\
+     # [linux]\n\
+     # backend = \"auto\"                 # auto | foreign-toplevel | gnome | hyprland | atspi | x11\n\
+     # gnome_poll_interval_ms = 1000    # GNOME backend drift-poll cadence (ms)\n"
         .to_string()
 }
 
@@ -277,6 +328,24 @@ pub fn render_config_body(config: &Config) -> String {
         Some(u) => format!("usage      = 0x{u:02x}"),
         None => "# usage      = 0x61".to_string(),
     };
+    // [linux] table (P2.M1.T2.S1). Mirror the Option render pattern above:
+    // active line when Some, commented hint when None (GOTCHA-3 — the save
+    // renderer MUST round-trip a manual [linux] override, or a Settings save
+    // strips it; same class of bug render_config_body was created to fix).
+    let backend_line = match &config.linux.backend {
+        Some(b) => format!("backend = {b:?}"), // active: backend = "x11"
+        None => {
+            "# backend = \"auto\"   # auto | foreign-toplevel | gnome | hyprland | atspi | x11"
+                .to_string()
+        }
+    };
+    let gnome_line = match config.linux.gnome_poll_interval_ms {
+        Some(ms) => format!("gnome_poll_interval_ms = {ms}"),
+        None => {
+            "# gnome_poll_interval_ms = 1000   # GNOME backend drift-poll cadence (ms)"
+                .to_string()
+        }
+    };
     format!(
         "# QMKonnect Configuration\n\
          #\n\
@@ -296,9 +365,19 @@ pub fn render_config_body(config: &Config) -> String {
          \n\
          # (Hyprland only) periodic active-window poll interval (ms).\n\
          # 0 disables. Default 0.\n\
-         poll_interval_ms = {poll}\n",
+         poll_interval_ms = {poll}\n\
+         \n\
+         # Linux window-monitor backend ([linux]). Both fields OPTIONAL; omit the\n\
+         # table (or backend = \"auto\") for runtime auto-selection\n\
+         # (foreign-toplevel -> GNOME -> Hyprland -> AT-SPI -> X11). A forced\n\
+         # backend that is unavailable errors loudly. (Linux only.)\n\
+         [linux]\n\
+         {backend_line}\n\
+         {gnome_line}\n",
         debounce = config.debounce_ms,
         poll = config.poll_interval_ms,
+        backend_line = backend_line,
+        gnome_line = gnome_line,
     )
 }
 
@@ -527,6 +606,8 @@ mod tests {
         // Timing fields still take their serde defaults when absent.
         assert_eq!(cfg.debounce_ms, DEFAULT_DEBOUNCE_MS);
         assert_eq!(cfg.poll_interval_ms, DEFAULT_POLL_INTERVAL_MS);
+        // P2.M1.T2.S1: no [linux] table => LinuxConfig::default() (both None).
+        assert_eq!(cfg.linux, LinuxConfig::default());
     }
 
     #[test]
@@ -561,6 +642,8 @@ mod tests {
         assert_eq!(cfg.usage, None);
         assert_eq!(cfg.debounce_ms, DEFAULT_DEBOUNCE_MS);
         assert_eq!(cfg.poll_interval_ms, DEFAULT_POLL_INTERVAL_MS);
+        // P2.M1.T2.S1: the [linux] hint is fully commented => default linux.
+        assert_eq!(cfg.linux, LinuxConfig::default());
     }
 
     #[test]
@@ -574,6 +657,8 @@ mod tests {
         assert_eq!(cfg.usage, None);
         assert_eq!(cfg.debounce_ms, DEFAULT_DEBOUNCE_MS);
         assert_eq!(cfg.poll_interval_ms, DEFAULT_POLL_INTERVAL_MS);
+        // P2.M1.T2.S1: default-rendered body => default linux (commented hints).
+        assert_eq!(cfg.linux, LinuxConfig::default());
 
         // Explicit VID/PID -> parse back to Some (timing still at defaults).
         let body = render_config_body(&Config {
@@ -624,6 +709,10 @@ mod tests {
             usage: Some(0x61),
             debounce_ms: 120,
             poll_interval_ms: 250,
+            linux: LinuxConfig {
+                backend: Some("x11".into()),
+                gnome_poll_interval_ms: Some(2000),
+            },
         };
         let body = render_config_body(&original);
         let parsed: Config = toml::from_str(&body).unwrap();
@@ -633,6 +722,89 @@ mod tests {
         assert_eq!(parsed.usage, original.usage);
         assert_eq!(parsed.debounce_ms, original.debounce_ms);
         assert_eq!(parsed.poll_interval_ms, original.poll_interval_ms);
+        // P2.M1.T2.S1: the [linux] table round-trips too (GOTCHA-3 — a Settings
+        // save must NOT strip a manual [linux] backend override).
+        assert_eq!(parsed.linux.backend, original.linux.backend);
+        assert_eq!(
+            parsed.linux.gnome_poll_interval_ms,
+            original.linux.gnome_poll_interval_ms
+        );
+    }
+
+    // ========================================================================
+    // P2.M1.T2.S1 — [linux] table: LinuxConfig struct + Config.linux field
+    // ========================================================================
+
+    #[test]
+    fn linux_config_parses_from_table() {
+        // CONFIG.md §1.3: a full [linux] table binds BOTH fields. Other Config
+        // fields stay at their serde defaults (vendor_id None, etc.).
+        let cfg: Config =
+            toml::from_str("[linux]\nbackend = \"x11\"\ngnome_poll_interval_ms = 2000\n").unwrap();
+        assert_eq!(cfg.linux.backend.as_deref(), Some("x11"));
+        assert_eq!(cfg.linux.gnome_poll_interval_ms, Some(2000));
+        // other fields stay None/default
+        assert_eq!(cfg.vendor_id, None);
+        assert_eq!(cfg.product_id, None);
+        assert_eq!(cfg.debounce_ms, DEFAULT_DEBOUNCE_MS);
+    }
+
+    #[test]
+    fn linux_config_absent_table_is_default() {
+        // Zero-config parity: a config with no [linux] table deserializes to
+        // LinuxConfig::default() (both None). The #[serde(default)] on
+        // Config.linux fills the field.
+        let cfg: Config = toml::from_str("debounce_ms = 100\n").unwrap();
+        assert_eq!(cfg.linux, LinuxConfig::default()); // both None
+        assert_eq!(cfg.debounce_ms, 100);
+    }
+
+    #[test]
+    fn linux_config_partial_table_only_backend() {
+        // A partial [linux] table binds only the fields it names; an unset
+        // field stays None (#[serde(default)] per-field).
+        let cfg: Config = toml::from_str("[linux]\nbackend = \"hyprland\"\n").unwrap();
+        assert_eq!(cfg.linux.backend.as_deref(), Some("hyprland"));
+        assert_eq!(cfg.linux.gnome_poll_interval_ms, None); // unset field stays None
+    }
+
+    #[test]
+    fn linux_config_backend_auto_parses_to_some_auto() {
+        // "auto" is a valid parse value — auto-normalization to None happens at
+        // the USE site (create_monitor), NOT at parse time. Here the parser
+        // preserves backend = Some("auto").
+        let cfg: Config = toml::from_str("[linux]\nbackend = \"auto\"\n").unwrap();
+        assert_eq!(cfg.linux.backend.as_deref(), Some("auto"));
+    }
+
+    #[test]
+    fn render_config_body_emits_linux_block_when_set() {
+        // An active [linux] backend must appear as an active line in the save
+        // renderer (round-trip safety — GOTCHA-3).
+        let cfg = Config {
+            linux: LinuxConfig {
+                backend: Some("x11".into()),
+                ..Default::default()
+            },
+            ..Config::default()
+        };
+        let body = render_config_body(&cfg);
+        assert!(body.contains("[linux]"));
+        assert!(body.contains("backend = \"x11\""));
+    }
+
+    #[test]
+    fn render_config_body_comments_linux_block_when_default() {
+        // Default config (both linux fields None) => the [linux] block is
+        // present but the backend line is a COMMENTED hint, NOT an active line
+        // (so a Settings save of a default config doesn't activate a bogus
+        // override). GOTCHA-3 / GOTCHA-7.
+        let body = render_config_body(&Config::default());
+        assert!(body.contains("[linux]"));
+        // The active `backend = "auto"` line must NOT appear (it'd be a comment
+        // `# backend = "auto" ...`). Match only at line start to avoid matching
+        // the commented hint.
+        assert!(!body.contains("\nbackend = \"auto\""));
     }
 
     // ========================================================================

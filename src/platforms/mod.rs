@@ -51,9 +51,23 @@ pub fn create_monitor(verbose: bool) -> Result<Box<dyn WindowMonitor>, Box<dyn E
         // On Linux the runtime selector probes each compiled-in backend
         // (select_linux_backend, PLATFORMS.md §6) and returns the first present
         // one — or `Err` when none is available (the runner then keeps the tray
-        // + device pipeline alive). TODO(P2.M1.T2.S1): wire `[linux] backend`
-        // from core::cached_config() into the `forced` arg below.
-        linux::select_linux_backend(verbose, None)
+        // + device pipeline alive). The `[linux] backend` config override
+        // (CONFIG.md §1.3) is wired into `forced` here (P2.M1.T2.S1): a config
+        // value of `None` or `"auto"` ⇒ auto-selection (forced=None); any other
+        // value forces that named backend (loud-Err if it's unavailable).
+        let forced = crate::core::cached_config()
+            .ok()
+            .and_then(|c| c.linux.backend)
+            .and_then(|b| match b.to_ascii_lowercase().as_str() {
+                "auto" | "" => None, // auto / empty = runtime priority order
+                _ => Some(b),         // force the named backend
+            });
+        if verbose {
+            if let Some(ref b) = forced {
+                println!("config [linux] backend = {b:?} (forced)");
+            }
+        }
+        linux::select_linux_backend(verbose, forced.as_deref())
     }
 
     #[cfg(target_os = "macos")]
