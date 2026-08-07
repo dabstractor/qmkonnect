@@ -83,6 +83,8 @@ fn construct_backend(name: &str, verbose: bool) -> Result<Box<dyn WindowMonitor>
         "hyprland" => Ok(Box::new(crate::platforms::hyprland::HyprlandMonitor::new(
             verbose,
         ))),
+        #[cfg(feature = "atspi")]
+        "atspi" => Ok(Box::new(crate::platforms::atspi::AtspiMonitor::new(verbose))),
         "x11" => Ok(Box::new(crate::platforms::x11::X11Monitor::new(verbose))),
         other => Err(format!(
             "backend '{other}' was selected but its construction is not wired in this build"
@@ -176,8 +178,8 @@ fn gnome_probe(_verbose: bool) -> Result<(), String> {
     crate::platforms::gnome::probe_available(_verbose)
 }
 #[cfg(feature = "atspi")]
-fn atspi_probe(_verbose: bool) -> Result<(), String> {
-    Err("AT-SPI backend not yet implemented (P2.M4)".into())
+fn atspi_probe(verbose: bool) -> Result<(), String> {
+    crate::platforms::atspi::probe_available(verbose)
 }
 
 /// Path of the on-demand, config-driven fallback udev rule. Only written when a
@@ -961,8 +963,14 @@ mod select_tests {
 
     #[test]
     fn select_auto_picks_first_available() {
-        // Craft env so X11 is the only available (no Hyprland sig, DISPLAY set,
-        // no Wayland, xprop present). The dispatcher must pick it.
+        // Craft env so a Linux backend is available (no Hyprland sig, DISPLAY
+        // set, no Wayland, xprop present). The dispatcher must pick the
+        // first available backend. NOTE: on a box with a real a11y bus
+        // (`org.a11y.Bus` owned) the AT-SPI backend (priority #4) is selected
+        // ahead of X11 (#5) — that is correct, not a failure. Before P2.M4.T1.S1
+        // the atspi probe was a stub returning Err, so X11 was the only available;
+        // now atspi is real, so this asserts "some compiled-in backend is picked"
+        // rather than pinning X11 specifically.
         if !xprop_present() {
             return;
         }
@@ -970,19 +978,26 @@ mod select_tests {
         let snap_w = env_snapshot("WAYLAND_DISPLAY");
         let snap_s = env_snapshot("HYPRLAND_INSTANCE_SIGNATURE");
         let snap_r = env_snapshot("XDG_RUNTIME_DIR");
+        let snap_a = env_snapshot("ATSPI_BUS_ADDRESS");
         std::env::set_var("DISPLAY", ":0");
         std::env::remove_var("WAYLAND_DISPLAY");
         std::env::remove_var("HYPRLAND_INSTANCE_SIGNATURE");
         std::env::remove_var("XDG_RUNTIME_DIR");
+        std::env::remove_var("ATSPI_BUS_ADDRESS");
         let r = select_linux_backend(false, None);
         env_restore("DISPLAY", snap_d);
         env_restore("WAYLAND_DISPLAY", snap_w);
         env_restore("HYPRLAND_INSTANCE_SIGNATURE", snap_s);
         env_restore("XDG_RUNTIME_DIR", snap_r);
-        assert!(r.is_ok(), "auto must pick X11 when it's the only available");
-        assert_eq!(
-            r.unwrap().platform_name(),
-            crate::platforms::x11::X11Monitor::new(false).platform_name()
+        env_restore("ATSPI_BUS_ADDRESS", snap_a);
+        assert!(r.is_ok(), "auto must pick an available backend");
+        // The selected backend must be a compiled-in Linux backend. With a real
+        // a11y bus it's atspi (#4); without it (org.a11y.Bus unowned) it's X11.
+        let monitor = r.unwrap();
+        let name = monitor.platform_name();
+        assert!(
+            name == "atspi" || name == "Linux (X11)",
+            "expected atspi or X11; got {name:?}"
         );
     }
 }

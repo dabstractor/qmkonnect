@@ -2,6 +2,7 @@ use crate::platforms;
 use crate::runners::PlatformRunner;
 use std::error::Error;
 use std::process;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 pub struct LinuxRunner {
     verbose: bool,
@@ -53,6 +54,13 @@ impl PlatformRunner for LinuxRunner {
         #[cfg(all(not(feature = "linux-tray"), not(feature = "hyprland")))]
         crate::tray::setup_tray(self.verbose);
 
+        // PLATFORMS.md §8.4: on a GNOME session where the Shell extension is
+        // missing, fire a one-shot hint — REGARDLESS of which backend ends up
+        // selected (AT-SPI may win selection and the hint must still fire).
+        // Idempotent per process via the AtomicBool guard below. This runs BEFORE
+        // backend selection so it covers BOTH the Ok and Err branches.
+        maybe_gnome_first_run_notify(self.verbose);
+
         // The merged runtime path. `create_monitor` delegates to
         // `select_linux_backend`, which probes each compiled-in backend at runtime
         // and returns `Err` when none is available. We do NOT propagate that `Err`
@@ -97,12 +105,12 @@ impl PlatformRunner for LinuxRunner {
             Err(e) => {
                 // No window backend available (every probe failed). The app is NOT
                 // useless: the tray + device-status poll + HID pipeline are all
-                // already running above. Fire the GNOME one-shot extension hint,
-                // then keep main alive. PLATFORMS.md §6 / §8.4.
+                // already running above. Keep main alive. PLATFORMS.md §6. (The
+                // §8.4 GNOME one-shot extension hint already fired above, before
+                // backend selection.)
                 eprintln!(
                     "No Linux window backend available; running tray + device pipeline only. ({e})"
                 );
-                maybe_gnome_first_run_notify(self.verbose);
 
                 // Keep main alive so the tray + poll thread keep running. Under
                 // linux-tray, park main (ksni owns its D-Bus thread). Under
@@ -130,25 +138,136 @@ impl PlatformRunner for LinuxRunner {
     }
 }
 
-/// Fire a one-shot `notify-send` hint on GNOME sessions with no window backend
-/// (PLATFORMS.md §8.4). Guarded by `$XDG_CURRENT_DESKTOP` containing "GNOME"
-/// (case-insensitive). Because this is only called from the no-backend `Err`
-/// branch (entered at most once per process), the one-shot is automatic — no
-/// dedup state needed. Reuses `platforms::notify` (the existing notify-send
-/// shell-out that swallows failure).
-fn maybe_gnome_first_run_notify(verbose: bool) {
-    let gnome = std::env::var("XDG_CURRENT_DESKTOP")
+/// §8.4 one-shot guard: the GNOME extension hint fires at most once per
+/// process. Fire-once-and-stay (never re-armed) — unlike
+/// `linux_tray.rs::NO_MODULE_NOTIFIED`, which re-arms on a state transition;
+/// PLATFORMS.md §8.4 is strictly "at most once per launch", period.
+static GNOME_FIRST_RUN_FIRED: AtomicBool = AtomicBool::new(false);
+
+/// `true` iff `$XDG_CURRENT_DESKTOP` contains `GNOME` (case-insensitive).
+/// Pure so it is unit-testable. PLATFORMS.md §8.4. (Real Ubuntu sets
+/// `ubuntu:GNOME`; GNOME Flashback/Fedora set `GNOME`/`GNOME-classic`.)
+fn gnome_session() -> bool {
+    std::env::var("XDG_CURRENT_DESKTOP")
         .ok()
         .filter(|s| !s.is_empty())
         .map(|s| s.to_ascii_uppercase().contains("GNOME"))
-        .unwrap_or(false);
-    if gnome {
+        .unwrap_or(false)
+}
+
+/// Consume the §8.4 one-shot: returns `true` the first time it is called on a
+/// GNOME session this process, `false` thereafter. Pure except for the
+/// AtomicBool mutation (which is exactly what we test). Does NOT touch D-Bus
+/// or `notify-send` — that keeps the once-per-launch invariant hermetically
+/// testable without shelling out or hitting the session bus.
+fn consume_gnome_hint_shot(flag: &AtomicBool) -> bool {
+    if flag.swap(true, Ordering::SeqCst) {
+        return false; // already fired this launch
+    }
+    gnome_session()
+}
+
+/// Fire a one-shot `notify-send` hint on GNOME sessions where the Shell
+/// extension is missing (PLATFORMS.md §8.4). Fires when: GNOME session AND
+/// the well-known name `io.mulletware.QMKonnect` is NOT owned on the session
+/// bus (reuses `gnome::probe_available`, Ok ⇔ name owned ⇔ extension
+/// installed+enabled). Idempotent per process via [`GNOME_FIRST_RUN_FIRED`],
+/// so it is safe to call from any startup path — it now runs before backend
+/// selection, covering both the `Ok` and `Err` branches. Reuses
+/// `platforms::notify` (the existing notify-send shell-out that swallows
+/// failure).
+fn maybe_gnome_first_run_notify(verbose: bool) {
+    if !consume_gnome_hint_shot(&GNOME_FIRST_RUN_FIRED) {
+        return;
+    }
+    // GOTCHA-3: skip when the GNOME backend isn't compiled in — pointing a
+    // user at the extension is misleading if no client can consume it (the
+    // exotic --no-default-features trayless service build skips `gnome`).
+    #[cfg(not(feature = "gnome"))]
+    {
+        let _ = verbose;
+        return;
+    }
+    // GOTCHA-4: reuse S1's probe (Ok ⇔ name owned ⇔ extension installed+enabled).
+    #[cfg(feature = "gnome")]
+    {
+        if crate::platforms::gnome::probe_available(false).is_ok() {
+            return; // extension present — nothing to hint
+        }
         if verbose {
-            println!("GNOME session with no window backend — firing one-shot extension hint");
+            println!("GNOME session without the Shell extension — firing one-shot hint");
         }
         crate::platforms::notify(
             "QMKonnect needs the GNOME Shell extension",
-            "Window detection requires the QMKonnect GNOME Shell extension — install it from extensions.gnome.org (see docs).",
+            "Window detection needs the QMKonnect GNOME Shell extension — install it \
+             from extensions.gnome.org (see the QMKonnect docs).",
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn with_xdg(value: Option<&str>, f: impl FnOnce()) {
+        let snap = std::env::var("XDG_CURRENT_DESKTOP").ok();
+        match value {
+            Some(v) => std::env::set_var("XDG_CURRENT_DESKTOP", v),
+            None => std::env::remove_var("XDG_CURRENT_DESKTOP"),
+        }
+        f();
+        match snap {
+            Some(v) => std::env::set_var("XDG_CURRENT_DESKTOP", v),
+            None => std::env::remove_var("XDG_CURRENT_DESKTOP"),
+        }
+    }
+
+    #[test]
+    fn gnome_session_detects_bare_gnome() {
+        with_xdg(Some("GNOME"), || assert!(gnome_session()));
+    }
+
+    #[test]
+    fn gnome_session_detects_ubuntu_gnome() {
+        // Real Ubuntu default: colon-separated desktop list.
+        with_xdg(Some("ubuntu:GNOME"), || assert!(gnome_session()));
+    }
+
+    #[test]
+    fn gnome_session_case_insensitive() {
+        with_xdg(Some("gnome"), || assert!(gnome_session()));
+    }
+
+    #[test]
+    fn gnome_session_rejects_non_gnome() {
+        with_xdg(Some("KDE"), || assert!(!gnome_session()));
+    }
+
+    #[test]
+    fn gnome_session_unset_is_false() {
+        with_xdg(None, || assert!(!gnome_session()));
+    }
+
+    #[test]
+    fn gnome_session_empty_is_false() {
+        with_xdg(Some(""), || assert!(!gnome_session()));
+    }
+
+    #[test]
+    fn consume_gnome_hint_shot_is_one_shot() {
+        with_xdg(Some("ubuntu:GNOME"), || {
+            let flag = AtomicBool::new(false);
+            assert!(consume_gnome_hint_shot(&flag)); // first call proceeds
+            assert!(!consume_gnome_hint_shot(&flag)); // second call is a no-op
+            assert!(!consume_gnome_hint_shot(&flag)); // …and stays that way
+        });
+    }
+
+    #[test]
+    fn consume_gnome_hint_shot_false_when_not_gnome() {
+        with_xdg(Some("KDE"), || {
+            let flag = AtomicBool::new(false);
+            assert!(!consume_gnome_hint_shot(&flag)); // not GNOME → never proceeds
+        });
     }
 }

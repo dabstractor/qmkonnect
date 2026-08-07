@@ -18,8 +18,18 @@ mod wayland_ft;
 // GNOME Shell-extension D-Bus client backend (PLATFORMS.md §8 — priority #2).
 // GNOME (Mutter) advertises neither foreign-toplevel protocol; the
 // `qmkonnect@mulletware` extension republishes the active window over D-Bus.
+// `pub(crate)`: the Linux runner (`runners/linux.rs::maybe_gnome_first_run_notify`)
+// reaches `gnome::probe_available` across module branches to fire the one-shot
+// install hint (PLATFORMS.md §8.4).
 #[cfg(all(target_os = "linux", feature = "gnome"))]
-mod gnome;
+pub(crate) mod gnome;
+// AT-SPI fallback backend (PLATFORMS.md §9 — priority #4, last-resort). Tracks
+// the focused accessible on the a11y bus via typed `atspi` proxies over a pure
+// `zbus::blocking` connection (NO async runtime — the crate's high-level
+// `AccessibilityConnection` is async-only). Best-effort: app_class is the
+// readable name (not WM_CLASS); requires enabling Assistive Technology.
+#[cfg(all(target_os = "linux", feature = "atspi"))]
+mod atspi;
 
 // Define the WindowMonitor trait. A single `Send` trait serves every platform:
 // Hyprland's `start()` blocks on its IPC listener, so it no longer needs to keep
@@ -147,6 +157,19 @@ pub fn list_foreground_windows() -> Vec<(String, String)> {
     ))]
     return gnome::list_foreground_windows();
 
+    // AT-SPI fallback backend (PLATFORMS.md §9 — priority #4). Reached when
+    // foreign-toplevel/gnome/hyprland are all off (mirrors the gnome arm's
+    // not(feature=…) gating so the cfg ladder stays mutually exclusive).
+    // Best-effort single focused accessible from the process-global cache.
+    #[cfg(all(
+        target_os = "linux",
+        not(feature = "wayland"),
+        not(feature = "hyprland"),
+        not(feature = "gnome"),
+        feature = "atspi"
+    ))]
+    return atspi::list_foreground_windows();
+
     #[cfg(not(any(
         target_os = "macos",
         target_os = "windows",
@@ -157,6 +180,13 @@ pub fn list_foreground_windows() -> Vec<(String, String)> {
             not(feature = "wayland"),
             not(feature = "hyprland"),
             feature = "gnome"
+        ),
+        all(
+            target_os = "linux",
+            not(feature = "wayland"),
+            not(feature = "hyprland"),
+            not(feature = "gnome"),
+            feature = "atspi"
         )
     )))]
     return Vec::new();
