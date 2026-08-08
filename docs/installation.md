@@ -26,10 +26,6 @@ the exact commands and caveats are in each platform's **Package Managers** secti
 | **macOS** 13+ | `.dmg` (universal) | Homebrew Cask |
 | **Linux** | GNOME · KDE Plasma · COSMIC · Hyprland · Sway · Niri · wlroots (Wayland); XFCE · MATE · Cinnamon · Budgie · LXQt (X11) | AUR · Nix · `.deb`/`.rpm` · PKGBUILD/binary (systemd user service + XDG autostart `.desktop` (F17)) |
 
-**mise / asdf** are cross-platform version managers that install the prebuilt release binary:
-**Linux** (full app) and **macOS** (**CLI only — no menu-bar tray**); not available on Windows.
-See the per-platform sections.
-
 ## Windows
 
 ### Installer (Recommended)
@@ -286,19 +282,6 @@ the one-time HID-permissions setup (install the static rule, symlink the `qmkonn
 the package ships, reload udev) — see the
 [Nix flake README](https://github.com/dabstractor/qmkonnect/blob/main/packaging/nix/README.md).
 
-**mise / asdf** — cross-platform version managers. The same `asdf-qmkonnect` plugin serves both
-(mise runs asdf plugin scripts unchanged). **Linux is fully supported** — install the binary, then
-run the one-time udev/systemd setup the plugin documents:
-
-```bash
-# asdf:
-asdf plugin add qmkonnect https://github.com/dabstractor/asdf-qmkonnect
-asdf install qmkonnect latest
-# mise:
-mise plugin add qmkonnect https://github.com/dabstractor/asdf-qmkonnect
-mise install qmkonnect@latest
-```
-
 **.deb (Debian / Ubuntu)** — built with `cargo-deb`. Download a release
 `.deb` (e.g. `qmkonnect_<ver>_amd64.deb`) and install it, or build one from
 source:
@@ -363,16 +346,6 @@ brew install --cask qmkonnect
 
 Uninstall with `brew uninstall --cask qmkonnect` (add `--zap` to also remove the per-user config
 under `~/Library/Application Support/QMKonnect/`).
-
-**mise / asdf — CLI only (no menu-bar tray).** These install the raw Mach-O binary from the DMG,
-which runs CLI flags (`--help`, `--list-callbacks`, `-r`, …) but **not** the menu-bar tray/icon —
-that needs the full `.app` bundle. For the complete macOS app, use the **Homebrew cask** above or
-the **direct DMG** instead:
-
-```bash
-asdf plugin add qmkonnect https://github.com/dabstractor/asdf-qmkonnect
-asdf install qmkonnect latest        # CLI only — no menu-bar app
-```
 
 ### Launch at login
 

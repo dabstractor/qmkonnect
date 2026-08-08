@@ -4,7 +4,7 @@
       "type": "Phase",
       "id": "P1",
       "title": "Documentation Sync: Remove mise/asdf Channel",
-      "status": "Ready",
+      "status": "Planned",
       "description": "Documentation-only delta. mise/asdf have been removed from F15 (community distribution channels) in all spec/PRD/code/CI surfaces, but the user-facing Jekyll docs (docs/installation.md) and the generated concatenation (docs/llms_full.txt) still advertise mise/asdf as an install channel with dead links to the removed github.com/dabstractor/asdf-qmkonnect plugin repo. This phase removes the stale content and regenerates the generated artifact. No Rust source, packaging, or CI changes are needed — they are already complete (verified: see plan/008_2cb9c1ec28a2/architecture/stale_content_audit.md).",
       "milestones": [
         {
@@ -18,28 +18,43 @@
               "type": "Task",
               "id": "P1.M1.T1",
               "title": "Remove mise/asdf from docs/installation.md + regenerate llms_full.txt",
-              "status": "Planned",
+              "status": "Researching",
               "description": "Delete the three stale mise/asdf blocks from docs/installation.md (the intro paragraph, the Linux subsection, and the macOS subsection), then regenerate the llms_full.txt concatenation so the generated artifact no longer carries the removed content. These are ordered: S1 (edit) must complete before S2 (regenerate).",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M1.T1.S1",
                   "title": "Remove mise/asdf sections from docs/installation.md",
-                  "status": "Planned",
+                  "status": "Complete",
                   "story_points": 1,
                   "dependencies": [],
-                  "prd_selectors": ["h3.140", "h2.81", "h3.138", "h3.131", "h3.1", "h2.3", "h2.4"],
-                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: Three self-contained mise/asdf blocks exist in docs/installation.md (verified via grep — see plan/008_2cb9c1ec28a2/architecture/stale_content_audit.md). All 12 mise/asdf grep hits and all 4 broken asdf-qmkonnect links are confined to these three blocks. No other mise/asdf content exists elsewhere in the file.\n2. INPUT: The authoritative decision is spec/PACKAGING.md §6.4 ('mise / asdf — NOT a channel (category mismatch)') and spec/PRD.md F15 row (line 152), both of which are already synced. These define WHY the user-facing docs must change.\n3. LOGIC: Delete exactly three blocks from docs/installation.md:\n   - BLOCK 1 (lines 29–32): The intro paragraph '**mise / asdf** are cross-platform version managers…' through its trailing blank line. Preceded by the platform overview table (lines 23–27); followed by '## Windows' (line 33).\n   - BLOCK 2 (lines 289–301): The Linux '**mise / asdf** — cross-platform version managers…' subsection including its ```bash code block (asdf plugin add / mise install commands) and trailing blank line. Preceded by the Nix flake README paragraph (line 287); followed by '**.deb (Debian / Ubuntu)**' (line 302).\n   - BLOCK 3 (lines 367–376): The macOS '**mise / asdf — CLI only (no menu-bar tray).**' subsection including its ```bash code block and trailing blank line. Preceded by the Homebrew uninstall paragraph (line 366); followed by '### Launch at login' (line 377).\n   DO NOT touch: Nix, .deb, .rpm, Homebrew, Scoop, Winget, AUR sections — they are correct. DO NOT modify the platform overview table (lines 23–27).\n4. OUTPUT: A clean docs/installation.md where `grep -in 'mise\\|asdf' docs/installation.md` returns ZERO hits and `grep -in 'asdf-qmkonnect' docs/installation.md` returns ZERO hits. The surrounding sections (Nix, .deb, Homebrew, Launch at login) must be intact and properly spaced.\n5. DOCS: [Mode A] This edit IS the doc work — there is no code change to document. No separate docs subtask needed."
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: Three self-contained mise/asdf blocks exist in docs/installation.md (verified via grep — see plan/008_2cb9c1ec28a2/architecture/stale_content_audit.md). All 12 mise/asdf grep hits and all 4 broken asdf-qmkonnect links are confined to these three blocks. No other mise/asdf content exists elsewhere in the file.\n2. INPUT: The authoritative decision is spec/PACKAGING.md §6.4 ('mise / asdf — NOT a channel (category mismatch)') and spec/PRD.md F15 row (line 152), both of which are already synced. These define WHY the user-facing docs must change.\n3. LOGIC: Delete exactly three blocks from docs/installation.md:\n   - BLOCK 1 (lines 29–32): The intro paragraph '**mise / asdf** are cross-platform version managers…' through its trailing blank line. Preceded by the platform overview table (lines 23–27); followed by '## Windows' (line 33).\n   - BLOCK 2 (lines 289–301): The Linux '**mise / asdf** — cross-platform version managers…' subsection including its ```bash code block (asdf plugin add / mise install commands) and trailing blank line. Preceded by the Nix flake README paragraph (line 287); followed by '**.deb (Debian / Ubuntu)**' (line 302).\n   - BLOCK 3 (lines 367–376): The macOS '**mise / asdf — CLI only (no menu-bar tray).**' subsection including its ```bash code block and trailing blank line. Preceded by the Homebrew uninstall paragraph (line 366); followed by '### Launch at login' (line 377).\n   DO NOT touch: Nix, .deb, .rpm, Homebrew, Scoop, Winget, AUR sections — they are correct. DO NOT modify the platform overview table (lines 23–27).\n4. OUTPUT: A clean docs/installation.md where `grep -in 'mise\\|asdf' docs/installation.md` returns ZERO hits and `grep -in 'asdf-qmkonnect' docs/installation.md` returns ZERO hits. The surrounding sections (Nix, .deb, Homebrew, Launch at login) must be intact and properly spaced.\n5. DOCS: [Mode A] This edit IS the doc work — there is no code change to document. No separate docs subtask needed.",
+                  "prd_selectors": [
+                    "h3.140",
+                    "h2.81",
+                    "h3.138",
+                    "h3.131",
+                    "h3.1",
+                    "h2.3",
+                    "h2.4"
+                  ]
                 },
                 {
                   "type": "Subtask",
                   "id": "P1.M1.T1.S2",
                   "title": "Regenerate docs/llms_full.txt + verify",
-                  "status": "Planned",
+                  "status": "Researching",
                   "story_points": 1,
-                  "dependencies": ["P1.M1.T1.S1"],
-                  "prd_selectors": ["h3.140", "h2.81", "h2.3", "h2.4"],
-                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: docs/llms_full.txt currently has 14 stale mise/asdf grep hits at lines 157, 160 (from an old README.md snapshot — the live README is already clean), 490, 750–760, and 828–835 (mirroring the stale installation.md content fixed by S1). The generator script docs/generate_llms_full.sh is executable (0755) and concatenates 8 hardcoded source files in order: README.md, docs/index.md, docs/installation.md, docs/qmk-integration.md, docs/configuration.md, docs/usage.md, docs/examples.md, docs/troubleshooting.md. It strips Jekyll front-matter and excludes docs/vendor/ by design.\n2. INPUT: A clean docs/installation.md from P1.M1.T1.S1 (mise/asdf blocks removed). README.md is already clean (zero mise/asdf hits). All 8 source files must be in their final state before regenerating.\n3. LOGIC: Run `bash docs/generate_llms_full.sh` to regenerate the concatenation. This clears all 14 stale mise/asdf references in one pass — the README-derived staleness (lines 157/160) resolves because README.md is already clean, and the installation.md-derived staleness (lines 490, 750–760, 828–835) resolves because S1 fixed the source.\n4. OUTPUT: A regenerated docs/llms_full.txt where:\n   - `grep -in 'mise\\|asdf' docs/llms_full.txt` returns ZERO hits.\n   - `grep -in 'asdf-qmkonnect' docs/llms_full.txt` returns ZERO hits.\n   - The script's stdout confirms the new line/byte count.\n5. DOCS: [Mode B] This IS the changeset-level regeneration step. It depends on S1 and serves as the changeset-wide documentation sweep for the generated artifact."
+                  "dependencies": [
+                    "P1.M1.T1.S1"
+                  ],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: docs/llms_full.txt currently has 14 stale mise/asdf grep hits at lines 157, 160 (from an old README.md snapshot — the live README is already clean), 490, 750–760, and 828–835 (mirroring the stale installation.md content fixed by S1). The generator script docs/generate_llms_full.sh is executable (0755) and concatenates 8 hardcoded source files in order: README.md, docs/index.md, docs/installation.md, docs/qmk-integration.md, docs/configuration.md, docs/usage.md, docs/examples.md, docs/troubleshooting.md. It strips Jekyll front-matter and excludes docs/vendor/ by design.\n2. INPUT: A clean docs/installation.md from P1.M1.T1.S1 (mise/asdf blocks removed). README.md is already clean (zero mise/asdf hits). All 8 source files must be in their final state before regenerating.\n3. LOGIC: Run `bash docs/generate_llms_full.sh` to regenerate the concatenation. This clears all 14 stale mise/asdf references in one pass — the README-derived staleness (lines 157/160) resolves because README.md is already clean, and the installation.md-derived staleness (lines 490, 750–760, 828–835) resolves because S1 fixed the source.\n4. OUTPUT: A regenerated docs/llms_full.txt where:\n   - `grep -in 'mise\\|asdf' docs/llms_full.txt` returns ZERO hits.\n   - `grep -in 'asdf-qmkonnect' docs/llms_full.txt` returns ZERO hits.\n   - The script's stdout confirms the new line/byte count.\n5. DOCS: [Mode B] This IS the changeset-level regeneration step. It depends on S1 and serves as the changeset-wide documentation sweep for the generated artifact.",
+                  "prd_selectors": [
+                    "h3.140",
+                    "h2.81",
+                    "h2.3",
+                    "h2.4"
+                  ]
                 }
               ]
             },
@@ -56,9 +71,18 @@
                   "title": "Verify README.md and spec docs remain correctly synced",
                   "status": "Planned",
                   "story_points": 1,
-                  "dependencies": ["P1.M1.T1.S1", "P1.M1.T1.S2"],
-                  "prd_selectors": ["h2.81", "h3.140", "h2.3", "h2.4", "h3.1"],
-                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: Research (see plan/008_2cb9c1ec28a2/architecture/stale_content_audit.md §3) confirmed that README.md, spec/PRD.md, spec/PACKAGING.md, .github/workflows/release.yml, and packaging/asdf/ are ALL already synced — zero stale mise/asdf channel references. The spec/PRD.md and spec/PACKAGING.md mise/asdf mentions are INTENTIONAL (they document the exclusion decision, not advertise the channel).\n2. INPUT: A clean docs/installation.md (from S1) and regenerated docs/llms_full.txt (from S2).\n3. LOGIC: Run a comprehensive grep sweep to confirm the entire changeset is clean:\n   - `grep -rin 'mise\\|asdf' docs/ README.md` — confirm ZERO channel-advertising hits (spec docs that intentionally reference mise/asdf as 'NOT a channel' are NOT in docs/ or README.md, so they won't appear). Any remaining hits in spec/PRD.md or spec/PACKAGING.md §6.4 are intentional and correct.\n   - `grep -rn 'asdf-qmkonnect' .` (excluding .git/, target/, node_modules/, .pi-subagents/) — confirm ZERO hits anywhere in the repo. The removed plugin repo link must not survive in any file.\n   - Verify README.md Package-Managers table has no mise/asdf row (it should already be clean — no action expected).\n   - If any stale reference is found in a file NOT covered by S1/S2, remove it (this would be an unexpected finding requiring a fix; document it).\n4. OUTPUT: A signed-off confirmation that all user-facing docs (docs/*.md, README.md, docs/llms_full.txt) are free of mise/asdf channel-advertising content and dead asdf-qmkonnect links. The spec/PRD.md and spec/PACKAGING.md intentional 'NOT a channel' references are explicitly noted as correct.\n5. DOCS: [Mode B] This is the final changeset-level documentation verification task. It depends on all implementing subtasks (S1, S2) and runs last."
+                  "dependencies": [
+                    "P1.M1.T1.S1",
+                    "P1.M1.T1.S2"
+                  ],
+                  "context_scope": "CONTRACT DEFINITION:\n1. RESEARCH NOTE: Research (see plan/008_2cb9c1ec28a2/architecture/stale_content_audit.md §3) confirmed that README.md, spec/PRD.md, spec/PACKAGING.md, .github/workflows/release.yml, and packaging/asdf/ are ALL already synced — zero stale mise/asdf channel references. The spec/PRD.md and spec/PACKAGING.md mise/asdf mentions are INTENTIONAL (they document the exclusion decision, not advertise the channel).\n2. INPUT: A clean docs/installation.md (from S1) and regenerated docs/llms_full.txt (from S2).\n3. LOGIC: Run a comprehensive grep sweep to confirm the entire changeset is clean:\n   - `grep -rin 'mise\\|asdf' docs/ README.md` — confirm ZERO channel-advertising hits (spec docs that intentionally reference mise/asdf as 'NOT a channel' are NOT in docs/ or README.md, so they won't appear). Any remaining hits in spec/PRD.md or spec/PACKAGING.md §6.4 are intentional and correct.\n   - `grep -rn 'asdf-qmkonnect' .` (excluding .git/, target/, node_modules/, .pi-subagents/) — confirm ZERO hits anywhere in the repo. The removed plugin repo link must not survive in any file.\n   - Verify README.md Package-Managers table has no mise/asdf row (it should already be clean — no action expected).\n   - If any stale reference is found in a file NOT covered by S1/S2, remove it (this would be an unexpected finding requiring a fix; document it).\n4. OUTPUT: A signed-off confirmation that all user-facing docs (docs/*.md, README.md, docs/llms_full.txt) are free of mise/asdf channel-advertising content and dead asdf-qmkonnect links. The spec/PRD.md and spec/PACKAGING.md intentional 'NOT a channel' references are explicitly noted as correct.\n5. DOCS: [Mode B] This is the final changeset-level documentation verification task. It depends on all implementing subtasks (S1, S2) and runs last.",
+                  "prd_selectors": [
+                    "h2.81",
+                    "h3.140",
+                    "h2.3",
+                    "h2.4",
+                    "h3.1"
+                  ]
                 }
               ]
             }
