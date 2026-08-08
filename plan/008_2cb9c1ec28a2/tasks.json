@@ -18,7 +18,7 @@
               "type": "Task",
               "id": "P1.M1.T1",
               "title": "Remove mise/asdf from docs/installation.md + regenerate llms_full.txt",
-              "status": "Ready",
+              "status": "Complete",
               "description": "Delete the three stale mise/asdf blocks from docs/installation.md (the intro paragraph, the Linux subsection, and the macOS subsection), then regenerate the llms_full.txt concatenation so the generated artifact no longer carries the removed content. These are ordered: S1 (edit) must complete before S2 (regenerate).",
               "subtasks": [
                 {
@@ -43,7 +43,7 @@
                   "type": "Subtask",
                   "id": "P1.M1.T1.S2",
                   "title": "Regenerate docs/llms_full.txt + verify",
-                  "status": "Ready",
+                  "status": "Complete",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M1.T1.S1"
