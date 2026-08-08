@@ -247,7 +247,9 @@ impl Dispatch<ZwlrForeignToplevelManagerV1, ()> for DispatchState {
         _qh: &QueueHandle<Self>,
     ) {
         if let MgrEvent::Toplevel { toplevel } = event {
-            _state.toplevels.insert(toplevel.id(), HandleInfo::default());
+            _state
+                .toplevels
+                .insert(toplevel.id(), HandleInfo::default());
         }
     }
 
@@ -626,10 +628,7 @@ mod tests {
         // ObjectIds, so verify the single-active-among-inactive case via the
         // shape: an active toplevel is found even when it's the only entry.
         let map = single_map(info("code", "VS Code", true));
-        assert_eq!(
-            recompute_focus(&map).unwrap().0,
-            "code".to_string()
-        );
+        assert_eq!(recompute_focus(&map).unwrap().0, "code".to_string());
     }
 
     // ---------------- build_list ----------------

@@ -80,7 +80,7 @@ pub fn create_monitor(verbose: bool) -> Result<Box<dyn WindowMonitor>, Box<dyn E
             .and_then(|c| c.linux.backend)
             .and_then(|b| match b.to_ascii_lowercase().as_str() {
                 "auto" | "" => None, // auto / empty = runtime priority order
-                _ => Some(b),         // force the named backend
+                _ => Some(b),        // force the named backend
             });
         if verbose {
             if let Some(ref b) = forced {

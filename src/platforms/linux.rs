@@ -84,7 +84,9 @@ fn construct_backend(name: &str, verbose: bool) -> Result<Box<dyn WindowMonitor>
             verbose,
         ))),
         #[cfg(feature = "atspi")]
-        "atspi" => Ok(Box::new(crate::platforms::atspi::AtspiMonitor::new(verbose))),
+        "atspi" => Ok(Box::new(crate::platforms::atspi::AtspiMonitor::new(
+            verbose,
+        ))),
         "x11" => Ok(Box::new(crate::platforms::x11::X11Monitor::new(verbose))),
         other => Err(format!(
             "backend '{other}' was selected but its construction is not wired in this build"

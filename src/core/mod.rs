@@ -334,16 +334,13 @@ pub fn render_config_body(config: &Config) -> String {
     // strips it; same class of bug render_config_body was created to fix).
     let backend_line = match &config.linux.backend {
         Some(b) => format!("backend = {b:?}"), // active: backend = "x11"
-        None => {
-            "# backend = \"auto\"   # auto | foreign-toplevel | gnome | hyprland | atspi | x11"
-                .to_string()
-        }
+        None => "# backend = \"auto\"   # auto | foreign-toplevel | gnome | hyprland | atspi | x11"
+            .to_string(),
     };
     let gnome_line = match config.linux.gnome_poll_interval_ms {
         Some(ms) => format!("gnome_poll_interval_ms = {ms}"),
         None => {
-            "# gnome_poll_interval_ms = 1000   # GNOME backend drift-poll cadence (ms)"
-                .to_string()
+            "# gnome_poll_interval_ms = 1000   # GNOME backend drift-poll cadence (ms)".to_string()
         }
     };
     format!(

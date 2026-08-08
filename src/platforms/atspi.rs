@@ -262,7 +262,8 @@ fn open_a11y_bus(verbose: bool) -> Option<(String, Connection)> {
     if let Ok(session) = Connection::session() {
         if let Ok(bus) = BusProxyBlocking::new(&session) {
             if let Ok(addr) = bus.get_address() {
-                if let Ok(a11y) = ConnectionBuilder::address(addr.as_str()).and_then(|b| b.build()) {
+                if let Ok(a11y) = ConnectionBuilder::address(addr.as_str()).and_then(|b| b.build())
+                {
                     return Some((addr, a11y));
                 }
             }
@@ -308,7 +309,10 @@ fn run_signal_loop(
     if let Ok(registry) = RegistryProxyBlocking::new(&a11y) {
         if let Err(e) = registry.register_event("object:state-changed") {
             if verbose {
-                eprintln!("[{}ms] atspi: register_event failed (continuing): {e}", crate::core::now_ms());
+                eprintln!(
+                    "[{}ms] atspi: register_event failed (continuing): {e}",
+                    crate::core::now_ms()
+                );
             }
         }
     } else if verbose {
@@ -443,8 +447,8 @@ pub(crate) fn probe_available(verbose: bool) -> Result<(), String> {
     }
     // Presence signal #2: org.a11y.Bus owned on the session bus (one
     // name_has_owner round-trip — mirrors gnome::probe_available).
-    let conn = Connection::session()
-        .map_err(|e| format!("cannot connect to the session bus: {e}"))?;
+    let conn =
+        Connection::session().map_err(|e| format!("cannot connect to the session bus: {e}"))?;
     let dbus = DBusProxy::new(&conn).map_err(|e| format!("DBusProxy failed: {e}"))?;
     let owned = dbus
         .name_has_owner(
