@@ -2,7 +2,7 @@
 
 > Companion to `PRD.md`. Cargo build profile, the per-platform installers
 > (Inno / PKGBUILD / DMG), the **community package-manager channels**
-> (AUR / `.deb` / `.rpm` / Nix flake / Homebrew / Scoop / Winget / mise+asdf),
+> (AUR / `.deb` / `.rpm` / Nix flake / Homebrew / Scoop / Winget),
 > the GNOME Shell extension artifact, the CI release workflow, code signing, and
 > the committed dev test loop. Covers `Cargo.toml`, `.cargo/config.toml`,
 > `release.toml`, `.github/workflows/release.yml`, and `packaging/`.
@@ -307,6 +307,14 @@ NoDisplay=true
 - The user disables it by copying to `~/.config/autostart/` with
   `Hidden=true`, or by deleting the system file — same convention as every other
   autostart app.
+- **Self-install on first run (binary-only installs):** for installs with no
+  system package (Scoop / cargo-binstall / generic tarball), the app writes the
+  **user** equivalent — `~/.config/autostart/qmkonnect.desktop` with
+  `Exec=<absolute current_exe()>` — on first run, gated by a marker file
+  (`~/.config/qmkonnect/.autostart_initialized`) so it never re-enables after
+  the user removes it (mirrors the macOS first-run default-on; `LINUX.md` §6.3).
+  A user file shadows a same-named system file in the XDG spec, so this is safe
+  (no double-launch) alongside a packaged install.
 
 ### 4.8 Runtime dependencies per distro (summary)
 
@@ -364,8 +372,11 @@ placeholder that CI fills from the real release artifact (`PACKAGING.md` §9).
 ### 6.2 Scoop (`packaging/scoop/qmkonnect.json`)
 - Windows manifest, per-user (no admin). `"innosetup": true` ⇒ Scoop extracts via
   `innounp` (**the Inno installer logic does NOT run**: no HKCU Run autostart, no
-  ARP entry). Document this trade-off; autostart must be enabled from the tray's
-  "Open at Login" toggle after install.
+  ARP entry). The user launches `QMKonnect.exe` once (Scoop's Start Menu
+  shortcut), enables "Open at Login" from the tray — the HKCU Run entry
+  self-heals from `current_exe()`, so autostart works from then on. It's a weaker
+  out-of-box experience than the Inno installer (Winget wraps the real
+  installer), but acceptable for the Scoop-purist audience.
 - CI fills the 64-zero `hash` placeholder (`update-manifest.ps1`). `checkver` +
   `autoupdate` follow GitHub releases. Published to a Scoop bucket (README +
   `bucket-README.md`).
@@ -379,15 +390,22 @@ placeholder that CI fills from the real release artifact (`PACKAGING.md` §9).
   installer ⇒ Windows shows an "unverified publisher" prompt (PRD §12).
 - `UpgradeBehavior: install`; `Silent: /VERYSILENT`, `SilentWithProgress: /SILENT`.
 
-### 6.4 mise + asdf (`packaging/asdf/`)
-- One plugin (`github.com/dabstractor/asdf-qmkonnect`) serves **both** managers:
-  mise runs an asdf plugin's `bin/*` unchanged (`packaging/asdf/mise.toml` is a
-  documentation example, not consumed at runtime). `bin/download` fetches the
-  GitHub release asset per OS/arch; `bin/install` places it in the manager's
-  prefix; `bin/list-all` lists releases via the GitHub API.
-- Cross-platform (Linux/macOS/Windows-WSL). Installs the **binary only**; the
-  platform autostart + (on Linux) the udev rule are set up separately by the user
-  (documented). `publish.sh` cuts plugin releases.
+### 6.4 mise / asdf — NOT a channel (category mismatch)
+
+Runtime version managers (mise, asdf) are the **wrong model** for an always-on
+single-instance tray daemon and are **not** a distribution channel:
+- **No autostart.** They drop a version-prefixed binary into the manager's
+  prefix; "start at login" is the user's problem (and the single-instance mutex
+  forbids the "two versions" workflow they're built around).
+- **Updates re-wire autostart.** Bumping the version repaths the binary, so the
+  autostart entry must be re-pointed each time.
+- The "pin a version per project" workflow (`.tool-versions` / `mise.toml`) has
+  no meaning for a global daemon.
+
+A maintainer may still track updates via mise personally — just don't advertise
+it. (`packaging/asdf/` has been removed; a future **`cargo-binstall`** metadata
+block would be a better fit for the "one-command binary install, no full
+installer" niche, since the app self-wires autostart on first run — §4.7.)
 
 > **Why these and not Flatpak/AppImage as primary?** Flatpak's sandbox blocks
 > `/dev/hidraw` and portals don't cover HID — wrong model for a HID daemon.
@@ -494,8 +512,6 @@ artifacts before cutting a tag).
 - **GNOME extension job (NEW):** zip `packaging/gnome-shell-extension/` →
   `qmkonnect@mulletware.shell-extension.zip`, attach to the Release. (EGO upload
   is a manual maintainer step; CI just builds the zip.)
-- **asdf/mise job:** on tag, `packaging/asdf/publish.sh` cuts a plugin release
-  tagging the new version.
 
 > The legacy WiX MSI path (`build-installer.ps1`) is **not** invoked by CI.
 

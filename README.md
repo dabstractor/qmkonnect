@@ -133,11 +133,8 @@ current automatically. Pick your platform's channel (full per-channel setup and 
 | **macOS** | Homebrew Cask | `brew install --cask qmkonnect` *(custom tap — see guide)* |
 | **Windows** | Scoop | `scoop install qmkonnect` *(custom bucket — see guide)* |
 | **Windows** | Winget | `winget install dabstractor.QMKonnect` |
-| **Linux / macOS** | mise · asdf | `mise install qmkonnect@latest` · `asdf install qmkonnect latest` |
 
 > ⚠️ **Before you pick a channel:**
-> - **mise / asdf on macOS is CLI-only** — no menu-bar tray (use Homebrew or the DMG for the full
->   app), and **not available on Windows** (use Scoop, Winget, or the Inno installer).
 > - The DMG and Windows installer are **ad-hoc / unsigned**, so expect a Gatekeeper / SmartScreen
 >   **"unverified publisher"** prompt until a stable code-signing certificate lands
 >   (`brew install --cask --no-quarantine qmkonnect` for Homebrew, *More info → Run anyway* for

@@ -32,6 +32,12 @@ impl PlatformRunner for LinuxRunner {
             crate::core::notifier::perform_handshake(self.verbose);
         }
 
+        // First-run login autostart for binary-only installs (Scoop /
+        // cargo-binstall / generic tarball) with no system-package postinst to
+        // install /etc/xdg/autostart. Idempotent + marker-gated; a safe no-op
+        // for packaged installs (LINUX.md §6.3).
+        crate::platforms::ensure_xdg_autostart(self.verbose);
+
         // Exit promptly on Ctrl+C / SIGTERM. We rely on systemd Restart=always
         // (and `panic = "abort"` in release) for crash recovery instead of the
         // former `catch_unwind` scaffolding, which is a no-op under panic=abort.

@@ -237,6 +237,15 @@ distros and a belt-and-suspenders on systemd ones.
 - **Disable:** copy to `~/.config/autostart/qmkonnect.desktop` with
   `Hidden=true`, or remove the system file — same convention as every other
   autostart app.
+- **Self-install for binary-only installs:** `ensure_xdg_autostart(verbose)`
+  (`src/platforms/linux.rs`, called once at startup from `runners/linux.rs`)
+  writes the **user** `~/.config/autostart/qmkonnect.desktop` (with
+  `Exec=<absolute current_exe()>`) on the first run, gated by the marker file
+  `~/.config/qmkonnect/.autostart_initialized` so it never re-enables after the
+  user removes it (mirrors the macOS first-run default-on, `UI.md` §6.2). A user
+  file shadows a same-named system file in the XDG spec → no double-launch
+  alongside a packaged install. This is what makes Scoop / cargo-binstall /
+  generic-tarball installs start at login without a package `postinst`.
 
 ---
 

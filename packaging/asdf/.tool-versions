@@ -1,7 +1,0 @@
-# Example .tool-versions — copy the pin line into YOUR project root, not the plugin repo.
-# asdf/mise read .tool-versions from your project's working directory (walking up from cwd),
-# NEVER from an installed plugin directory. This file here is a documentation example only.
-#
-#   asdf global qmkonnect 0.2.8      # user-wide default
-#   # or, per-project: copy the line below into your project's .tool-versions
-qmkonnect 0.2.8

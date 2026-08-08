@@ -383,7 +383,7 @@ jobs:
   #
   # A POST-PUBLISH job: runs after `publish` creates the GitHub Release and
   # APPENDS qmkonnect-<ver>-linux-amd64.deb to it (it is the only post-publish
-  # job that writes to THIS repo's release — the aur/homebrew/scoop/winget/asdf
+  # job that writes to THIS repo's release — the aur/homebrew/scoop/winget
   # jobs push to EXTERNAL repos — so it needs contents: write). Keeping it off
   # the publish critical path means a .deb build failure never blocks the core
   # release. Skipped on workflow_dispatch dry-runs (publish creates no release).
@@ -911,96 +911,3 @@ jobs:
           installers-regex: 'QMKonnect-.*-windows-x64\.exe$'
           token: ${{ secrets.WINGET_GITHUB_TOKEN }}
 
-  # ─────────────────────────────────────────────────────────────────────────
-  # asdf plugin — publish packaging/asdf/ to dabstractor/asdf-qmkonnect
-  # (the cross-platform version-manager channel, PRD §4 F15; serves BOTH asdf
-  # AND mise, which is asdf-compatible).
-  #
-  # Runs AFTER `publish` (so the plugin's stamped example versions + commit
-  # message reference a RELEASED version) and only on real tag pushes (skipped
-  # for workflow_dispatch dry-runs). publish.sh downloads NO release asset —
-  # asdf resolves versions at runtime via bin/list-all's GitHub Releases API —
-  # so the release dependency is only the version string.
-  #
-  # FLOW: (1) TEST the plugin with NO secrets — shellcheck + publish.sh
-  #   --dry-run against a LOCAL file:// mock remote (validates the full
-  #   clone→sync→chmod→sed→commit flow, skipping only the push); (2) load the
-  #   SSH deploy key; (3) PUBLISH via publish.sh (clones the real repo, syncs
-  #   the plugin scripts + metadata, stamps the version, commits, pushes).
-  #   publish.sh sets its OWN git identity — this job does NOT set git config.
-  #
-  # SECRET — ASDF_PLUGIN_DEPLOY_KEY (REQUIRED for the publish step):
-  #   The plugin repo is pushed via a GitHub deploy key (SSH, WRITE access).
-  #
-  #   One-time setup:
-  #     1. Generate a dedicated ed25519 key pair (do NOT reuse a personal key):
-  #          ssh-keygen -t ed25519 -C "qmkonnect-asdf-ci" -f qmkonnect-asdf
-  #     2. Add the PUBLIC half (qmkonnect-asdf.pub) to the plugin repo
-  #        dabstractor/asdf-qmkonnect: Settings → Deploy keys → "Add new
-  #        deploy key". CHECK "Allow write access" (or the push is denied).
-  #     3. Store the PRIVATE half (qmkonnect-asdf, the full PEM incl. the
-  #        BEGIN/END lines) as the ASDF_PLUGIN_DEPLOY_KEY Actions secret in
-  #        dabstractor/qmkonnect (Settings → Secrets and variables → Actions).
-  #     4. Ensure dabstractor/asdf-qmkonnect PRE-EXISTS on GitHub (empty is
-  #        fine — create it once at github.com/new; do NOT add a README so the
-  #        first push is clean). publish.sh clones it; a missing repo 404s.
-  #
-  #   Per-REPO GitHub deploy key (public half on the plugin repo) — the SAME
-  #   model as HOMEBREW_TAP_DEPLOY_KEY + SCOOP_BUCKET_DEPLOY_KEY (NOT the AUR
-  #   per-account SSH-key model, NOT the Winget classic-PAT model). Until this
-  #   secret is set, the publish step fails with "Permission denied (publickey)"
-  #   — expected on the very first run. The TEST steps run with NO secret.
-  # ─────────────────────────────────────────────────────────────────────────
-  asdf-plugin:
-    name: Publish to asdf plugin (asdf-qmkonnect)
-    needs: [publish]
-    if: github.event_name == 'push'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      # Build-less: GITHUB_REF_NAME is the tag (v0.2.8); strip the 'v' for the
-      # BARE version publish.sh requires (it REJECTS a leading 'v').
-      - name: Determine version
-        id: ver
-        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
-
-      # ── TEST (no secrets) ─────────────────────────────────────────────
-      # shellcheck is preinstalled on ubuntu-latest. The plugin scripts carry
-      # `# shellcheck disable=SC1091` for the sourced utils.bash (intentional;
-      # not a real failure). FAIL on real issues. Verified clean at author time.
-      - name: shellcheck plugin scripts
-        run: shellcheck packaging/asdf/bin/* packaging/asdf/lib/*.bash packaging/asdf/publish.sh
-
-      # Dry-run publish.sh against a LOCAL bare mock remote (file://, no SSH, no
-      # secret). Exercises the full clone→sync→chmod→sed-stamp→git-add→commit
-      # flow and verifies the bin/* exec bit lands as 100755 in the index; only
-      # the push is skipped. publish.sh rejects a leading 'v' → bare VERSION.
-      # ASDF_QMKONNECT_REMOTE overrides its default git@ remote.
-      - name: Test publish.sh (dry-run against a local mock remote)
-        env:
-          VERSION: ${{ steps.ver.outputs.version }}
-        run: |
-          set -euo pipefail
-          git init --bare /tmp/asdf-mock.git
-          ASDF_QMKONNECT_REMOTE=file:///tmp/asdf-mock.git \
-            ./packaging/asdf/publish.sh --dry-run "$VERSION"
-
-      # ── PUBLISH ───────────────────────────────────────────────────────
-      # Loads the deploy key into ssh-agent + pre-trusts github.com (built-in
-      # host-key list). MUST run before publish.sh — its `git clone` uses SSH.
-      - name: Configure SSH deploy key for the plugin repo
-        uses: webfactory/ssh-agent@v0.9.0
-        with:
-          ssh-private-key: ${{ secrets.ASDF_PLUGIN_DEPLOY_KEY }}
-
-      # publish.sh clones dabstractor/asdf-qmkonnect over the deploy key, syncs
-      # packaging/asdf/{bin,lib,README.md,.tool-versions,mise.toml,CHANGELOG.md},
-      # stamps the version into .tool-versions + mise.toml, verifies the bin/*
-      # exec bit (100755), commits, and pushes. It sets its OWN git identity —
-      # do NOT set git config here.
-      - name: Publish to asdf-qmkonnect (publish.sh)
-        working-directory: packaging/asdf
-        env:
-          VERSION: ${{ steps.ver.outputs.version }}
-        run: ./publish.sh "$VERSION"

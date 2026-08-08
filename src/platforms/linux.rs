@@ -607,6 +607,95 @@ pub fn create_config_dir() -> Result<PathBuf, Box<dyn Error>> {
     Ok(config_dir)
 }
 
+/// First-run, default-on login autostart for binary-only installs (Scoop /
+/// cargo-binstall / generic tarball) that have no system-package `postinst` to
+/// install `/etc/xdg/autostart/qmkonnect.desktop`. Writes the **user**
+/// equivalent at `$XDG_CONFIG_HOME/autostart/qmkonnect.desktop` (or
+/// `~/.config/autostart/…`) with `Exec = <absolute current_exe()>`, gated by a
+/// marker file so it never re-enables after the user removes it — mirrors the
+/// macOS first-run default-on (`UI.md` §6.2 / `LINUX.md` §6.3). Idempotent; a
+/// user file shadows a same-named system file in the XDG spec, so this is safe
+/// alongside a packaged install (no double-launch). Failures are non-fatal.
+pub fn ensure_xdg_autostart(verbose: bool) {
+    // 1. Marker file in the qmkonnect config dir — skip if already initialized.
+    //    Never fight the user: if they deleted the .desktop, we don't recreate it.
+    let config_dir = match create_config_dir() {
+        Ok(p) => p,
+        Err(e) => {
+            if verbose {
+                eprintln!("ensure_xdg_autostart: no config dir: {e}");
+            }
+            return;
+        }
+    };
+    let marker = config_dir.join(".autostart_initialized");
+    if marker.exists() {
+        return;
+    }
+
+    // 2. Resolve the user autostart dir (same XDG logic as create_config_dir:
+    //    an *empty* XDG_CONFIG_HOME is treated as unset so we never build a
+    //    relative path).
+    let autostart_dir = match std::env::var("XDG_CONFIG_HOME") {
+        Ok(x) if !x.is_empty() => PathBuf::from(x).join("autostart"),
+        _ => match dirs::home_dir() {
+            Some(home) => home.join(".config").join("autostart"),
+            None => {
+                if verbose {
+                    eprintln!("ensure_xdg_autostart: cannot determine home dir");
+                }
+                return;
+            }
+        },
+    };
+    if let Err(e) = fs::create_dir_all(&autostart_dir) {
+        if verbose {
+            eprintln!(
+                "ensure_xdg_autostart: cannot create {}: {e}",
+                autostart_dir.display()
+            );
+        }
+        return;
+    }
+
+    // 3. Exec = absolute current_exe (portable installs); fall back to the bare
+    //    name on PATH for the rare case current_exe() is unavailable.
+    let exec = std::env::current_exe()
+        .ok()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "qmkonnect".to_string());
+
+    let desktop = format!(
+        "[Desktop Entry]\n\
+         Type=Application\n\
+         Name=QMKonnect\n\
+         Comment=Send the foreground window to your QMK keyboard\n\
+         Exec={exec}\n\
+         Icon=input-keyboard\n\
+         Terminal=false\n\
+         NoDisplay=true\n\
+         X-GNOME-Autostart-enabled=true\n\
+         Categories=Utility;\n"
+    );
+
+    let target = autostart_dir.join("qmkonnect.desktop");
+    if let Err(e) = fs::write(&target, &desktop) {
+        if verbose {
+            eprintln!(
+                "ensure_xdg_autostart: cannot write {}: {e}",
+                target.display()
+            );
+        }
+        return;
+    }
+
+    // 4. Touch the marker so we never rewrite the user's file (they own it now).
+    let _ = fs::write(&marker, b"");
+    if verbose {
+        println!("Wrote login autostart entry: {}", target.display());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

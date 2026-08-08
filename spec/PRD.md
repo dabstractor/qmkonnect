@@ -87,12 +87,16 @@ QMKonnect is one node in a small ecosystem. A dev agent must understand all of:
 5. **Per-user, no-admin install.** No elevation anywhere; per-user installer on
    Windows, user systemd service on Linux, app bundle on macOS.
 6. **Native package-manager distribution.** Beyond the direct installers, ship
-   through the channels users already trust — **AUR**, a **Nix** flake, and
-   native **.deb**/**.rpm** packages on Linux, **Homebrew** on macOS, **Scoop**
-   and **Winget** on Windows, plus cross-platform **mise**/**asdf**
-   version-manager plugins — each honoring the per-user, no-admin philosophy
-   where the channel permits (system packages like .deb/.rpm/AUR install via the
-   distro's root-owned packager, the norm for system-level udev/systemd wiring).
+   through the channels users already trust and that **run installer logic**
+   (autostart + device wiring), so a tray daemon integrates cleanly: **AUR**,
+   a **Nix** flake, and native **.deb**/**.rpm** packages on Linux, **Homebrew**
+   (cask) on macOS, **Winget** on Windows, and **Scoop** (binary-drop, with a
+   documented autostart caveat) — each honoring the per-user, no-admin
+   philosophy where the channel permits (system packages like .deb/.rpm/AUR
+   install via the distro's root-owned packager, the norm for system-level
+   udev/systemd wiring). *(Runtime version managers like mise/asdf are a
+   category mismatch for an always-on tray daemon and are explicitly NOT a
+   channel — see `PACKAGING.md` §6.)*
 
 ### 2.2 Non-Goals (explicitly out of scope for the beta)
 
@@ -145,7 +149,7 @@ QMKonnect is one node in a small ecosystem. A dev agent must understand all of:
 | **F12** | **Named callback registry** + typed Raw HID commands (`QUERY_INFO` / `QUERY_CALLBACK` / `APPLY_HOST_CONTEXT`) with a capability handshake | `HOST_RULES.md` |
 | **F13** | **Two-tier device discovery + capability selection:** `0xFF60` presence then `0x81 0x9F` `QUERY_INFO` probe; truthful three-state tray status; live discovered-device Settings picker; broadcast to all capable boards | `DEVICE_DISCOVERY.md` |
 | **F14** | **VIA coexistence guarantee:** the always-on QMKonnect opens every HID handle shared / non-seize and reads only around its own writes, so the intermittently-used VIA app can always open the device | `DEVICE_DISCOVERY.md` §6 |
-| **F15** | **Community package-manager distribution:** publish every release to **AUR**, native **.deb**/**.rpm** packages, **Homebrew**, **Scoop**, **Winget**, a **Nix** flake, and **mise**/**asdf** plugins, so users install via their native package/version manager alongside the direct installers (F8) | `PACKAGING.md` |
+| **F15** | **Community package-manager distribution:** publish every release to **AUR**, native **.deb**/**.rpm** packages, **Homebrew** (cask), **Scoop**, **Winget**, and a **Nix** flake — the channels that run installer logic so a tray daemon integrates cleanly. (Runtime version managers mise/asdf are a category mismatch and are NOT a channel.) | `PACKAGING.md` |
 | **F16** | **Cross-DE Linux window monitor:** runtime-selected backend — foreign-toplevel Wayland (wlr + ext protocols) → GNOME (Shell extension over D-Bus) → Hyprland IPC → AT-SPI → X11 — so one binary works on GNOME, KDE Plasma, COSMIC, Hyprland, Sway, Niri, the wlroots family, and the X11 DE tail | `PLATFORMS.md` §6–§10 |
 | **F17** | **Universal Linux autostart:** XDG autostart `.desktop` alongside the systemd user service, so login-autostart works on systemd **and** non-systemd distros (MX/Artix/Void/Gentoo) | `LINUX.md` §6 · `PACKAGING.md` §4.7 |
 
@@ -162,10 +166,11 @@ QMKonnect is one node in a small ecosystem. A dev agent must understand all of:
 > **Distribution channels (F15):** each platform also ships through its native
 > package managers — Windows: **Scoop** + **Winget**; macOS: **Homebrew** (cask);
 > Linux: **AUR** + **Nix** flake + native **.deb**/**.rpm** — alongside the
-> direct installers above. **mise** and **asdf** version-manager plugins
-> cross-cut every platform, installing the release binary into the manager's
-> prefix. Per-channel packaging and the per-OS autostart/udev wiring each channel
-> performs live in `PACKAGING.md`.
+> direct installers above. **mise/asdf are not channels** — runtime version
+> managers are a category mismatch for an always-on single-instance tray daemon
+> (no autostart; the "switch versions" workflow is meaningless; updates would
+> require re-wiring autostart). Per-channel packaging and the per-OS
+> autostart/udev wiring each channel performs live in `PACKAGING.md`.
 
 Not supported: 32-bit Windows, Windows ≤ 8.1. (Linux: every major DE/Wayland
 compositor + the X11 tail is now supported — F16.) The Rust **MSRV is 1.88**
@@ -333,8 +338,8 @@ failures degrade silently and recover automatically.)
   stable Developer ID + notarization is the intended fix. Distribution-channel
   impact (F15): **Winget** prompts "unverified publisher"; **Homebrew** ships
   via a custom tap until notarization qualifies it for the official cask;
-  **Scoop**, **Nix** (builds from source), **AUR**, native **.deb**/**.rpm**, and
-  **mise**/**asdf** are unaffected (they don't enforce code-signing).
+  **Scoop**, **Nix** (builds from source), **AUR**, and native **.deb**/**.rpm**
+  are unaffected (they don't enforce code-signing).
 - **Settings UX** is native-per-platform today (Win32 / NSAlert / zenity+GTK);
   a richer cross-platform UI is future work.
 - **Architecture unification**: three near-duplicate runners and a dual-trait
@@ -396,7 +401,7 @@ PRD.
 | @UI.md | Tray/menu-bar UI, menu layouts, Settings dialogs, "Show Window Information" dialogs, device-status indicator, "Open at Login" autostart. |
 | @LINUX.md | Linux-specific: static udev rule, `qmkonnect-hid-id` helper, config-driven fallback rule, dangerous-rule detection/repair, root-aware `--reload`, systemd service, SNI tray, GTK window-info dialog. |
 | @CONFIG.md | TOML schema, defaults, render body, config paths per OS, CLI flag reference. |
-| @PACKAGING.md | Cargo build profile, per-platform installers (Inno/PKGBUILD/DMG), **community package-manager channels (AUR / .deb / .rpm / Homebrew / Scoop / Winget / Nix flake / mise+asdf)**, CI release workflow, code signing, the dev test loop. |
+| @PACKAGING.md | Cargo build profile, per-platform installers (Inno/PKGBUILD/DMG), **community package-manager channels (AUR / .deb / .rpm / Homebrew cask / Scoop / Winget / Nix flake)**, CI release workflow, code signing, the dev test loop. |
 | @FIRMWARE.md | The `qmk_notifier` firmware module contract, keymap integration steps, pattern-matching syntax, the user's reference keymap. |
 | @HOST_RULES.md | **Host-side `rules.toml`** (no-reflash layer/callback rules, per-rule `disable_firmware_config`), the typed-command wire mirror (canonical: firmware `PRD.md` §4.6), named callback registry, three-repo rollout. |
 
