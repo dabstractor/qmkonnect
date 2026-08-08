@@ -4,14 +4,14 @@
       "type": "Phase",
       "id": "P1",
       "title": "Documentation Sync: Remove mise/asdf Channel",
-      "status": "Ready",
+      "status": "Complete",
       "description": "Documentation-only delta. mise/asdf have been removed from F15 (community distribution channels) in all spec/PRD/code/CI surfaces, but the user-facing Jekyll docs (docs/installation.md) and the generated concatenation (docs/llms_full.txt) still advertise mise/asdf as an install channel with dead links to the removed github.com/dabstractor/asdf-qmkonnect plugin repo. This phase removes the stale content and regenerates the generated artifact. No Rust source, packaging, or CI changes are needed — they are already complete (verified: see plan/008_2cb9c1ec28a2/architecture/stale_content_audit.md).",
       "milestones": [
         {
           "type": "Milestone",
           "id": "P1.M1",
           "title": "Remove mise/asdf from user-facing docs",
-          "status": "Ready",
+          "status": "Complete",
           "description": "Delete the three mise/asdf sections from docs/installation.md, regenerate docs/llms_full.txt, and verify the README + overview docs are correctly synced.",
           "tasks": [
             {
@@ -62,14 +62,14 @@
               "type": "Task",
               "id": "P1.M1.T2",
               "title": "Sync changeset-level documentation",
-              "status": "Ready",
+              "status": "Complete",
               "description": "Final sweep to confirm README.md, spec docs, and all overview-level documentation are correctly synced with the mise/asdf removal decision. The PRD confirms these are already clean, but per SOW §5 this final task must run after all implementing subtasks to verify no drift was introduced and no cross-cutting doc was missed.",
               "subtasks": [
                 {
                   "type": "Subtask",
                   "id": "P1.M1.T2.S1",
                   "title": "Verify README.md and spec docs remain correctly synced",
-                  "status": "Ready",
+                  "status": "Complete",
                   "story_points": 1,
                   "dependencies": [
                     "P1.M1.T1.S1",
