@@ -1126,8 +1126,10 @@ fn populate_device_picker(
         }
 
         // Resolve the three picker cases (spec/DEVICE_DISCOVERY.md §5.1).
+        // clean-auto: a lone board + no configured VID/PID ⇒ auto-select it
+        // (hide the picker). The picker only disambiguates MULTIPLE boards, so a
+        // single board is the default regardless of Capable/qmk-only kind.
         let clean_auto = devices.len() == 1
-            && matches!(devices[0].kind, DeviceKind::Capable { .. })
             && open_vid.is_none()
             && open_pid.is_none();
         let (header, show_picker) = if devices.is_empty() {
@@ -1712,16 +1714,16 @@ fn show_settings_dialog_with_pool(
     // Classify the Tier-1 devices ONCE (runModal blocks, so there is no
     // dialog-open window to re-scan within — no [Rescan] button on macOS).
     let devices = crate::core::notifier::classify_devices(true);
+    // clean-auto: exactly ONE board + no VID/PID configured ⇒ auto-select it
+    // (hide the picker). The picker only exists to disambiguate MULTIPLE boards,
+    // so a lone board is the default regardless of its Capable/qmk-only kind —
+    // auto-discovery already targets the single board (zero-config promise,
+    // spec/DEVICE_DISCOVERY.md §5.1). Requiring Capable here meant a lone board
+    // that momentarily probed as qmk-only (a transient QUERY_INFO miss) fell
+    // into the picker case and looked "not selected".
     let clean_auto = devices.len() == 1
-        && matches!(
-            devices[0].kind,
-            crate::core::notifier::DeviceKind::Capable { .. }
-        )
         && current_config.vendor_id.is_none()
         && current_config.product_id.is_none();
-    let has_capable = devices
-        .iter()
-        .any(|d| matches!(d.kind, crate::core::notifier::DeviceKind::Capable { .. }));
     let show_picker = !devices.is_empty() && !clean_auto;
 
     unsafe {
@@ -1832,9 +1834,18 @@ fn show_settings_dialog_with_pool(
         }];
         let _: () = msg_send![adv_btn, setTarget: target];
         let _: () = msg_send![adv_btn, setAction: sel!(toggleAdvanced:)];
-        let init_state: isize = if has_capable { 0 } else { 1 };
+        // The checkbox reflects whether manual override (explicit VID/PID) is
+        // actually in effect — checked iff config.toml already has a
+        // vendor_id/product_id. It is NEVER auto-turned-on merely because no
+        // capable board was detected: that used to force the override on for
+        // regular users even though it is a manufacturer-only feature. A user
+        // with no explicit IDs always sees it unchecked; checking it reveals
+        // the hex fields. (was: `if has_capable { 0 } else { 1 }`)
+        let manual_active =
+            current_config.vendor_id.is_some() || current_config.product_id.is_some();
+        let init_state: isize = if manual_active { 1 } else { 0 };
         let _: () = msg_send![adv_btn, setState: init_state];
-        let hide_fields = if has_capable { YES } else { NO };
+        let hide_fields = if manual_active { NO } else { YES };
         let _: () = msg_send![vendor_field, setHidden: hide_fields];
         let _: () = msg_send![product_field, setHidden: hide_fields];
 
@@ -1927,58 +1938,62 @@ fn show_settings_dialog_with_pool(
                 let s: isize = msg_send![row_btns[i], state]; // NSOnState = 1
                 (s == 1).then(|| (devices[i].vendor_id, devices[i].product_id))
             });
-            // manual: read both typed fields → parse_id_field each (G10: each
-            // Option<u16>; blank/"auto" ⇒ None ⇒ auto-discovery). The fields
-            // were prefilled with the open-time hex ⇒ "leave as-is" when the
-            // user changes nothing + no row picked.
-            let vendor_nsstring: *mut Object = msg_send![vendor_field, stringValue];
-            let product_nsstring: *mut Object = msg_send![product_field, stringValue];
-            let vendor_str = nsstring_to_rust_string(vendor_nsstring)?;
-            let product_str = nsstring_to_rust_string(product_nsstring)?;
-
-            match (parse_id_field(&vendor_str), parse_id_field(&product_str)) {
-                (Ok(vid), Ok(pid)) => {
-                    // Snapshot pre-save VID/PID BEFORE the move below — Config
-                    // is Clone (not Copy), so `let mut merged = current_config`
-                    // moves it; vendor_id/product_id are Option<u16> (Copy), so
-                    // copying them out here is valid and required for the
-                    // post-save diff check (Bug 4 / PRD ID 3).
-                    let old_vid = current_config.vendor_id;
-                    let old_pid = current_config.product_id;
-
-                    // PRESERVE every non-VID/PID field
-                    // (usage_page/usage/debounce_ms/poll_interval_ms): overlay
-                    // the dialog's result onto the config parsed at dialog-open
-                    // time. chosen takes precedence over manual (G10); manual
-                    // applies only when no radio row was selected.
-                    let mut merged = current_config;
-                    if let Some((v, p)) = chosen {
-                        merged.vendor_id = Some(v);
-                        merged.product_id = Some(p);
-                    } else {
-                        merged.vendor_id = vid;
-                        merged.product_id = pid;
-                    }
-                    let config_content = crate::core::render_config_body(&merged);
-                    crate::core::atomic_write(config_path, &config_content)?;
-
-                    // Bug 4 / PRD ID 3: if VID/PID changed, reset the handshake
-                    // state and re-run the handshake for the newly-selected
-                    // board. reset_handshake_state clears HOST_CAPABLE/
-                    // BOARD_HAS_RULES/CALLBACK_NAMES/HAS_HANDSHAKED;
-                    // perform_handshake then re-runs (its HAS_HANDSHAKED guard
-                    // was just cleared) and reads config.toml fresh, so the
-                    // just-written VID/PID selects the new board and rebuilds its
-                    // name→id map. `false` = non-verbose (verbose is not in
-                    // scope here — bug_findings.md §132).
-                    if merged.vendor_id != old_vid || merged.product_id != old_pid {
-                        crate::core::notifier::reset_handshake_state();
-                        crate::core::notifier::perform_handshake(false);
+            // Read the Advanced checkbox: NSOnState (1) ⇒ manual override ON.
+            let adv_state: isize = msg_send![adv_btn, state];
+            let manual_on = adv_state == 1;
+            // The checkbox is AUTHORITATIVE — an explicit uncheck wins over
+            // everything. Unchecked ⇒ override OFF ⇒ clear VID/PID
+            // (auto-discovery), IGNORING any picker radio selection, so a stray
+            // or stale selection can never defeat "I turned it off" (the
+            // user-facing contract: turning it off must stay off). When checked,
+            // a picker row (explicit disambiguation) takes precedence over the
+            // typed hex fields.
+            let (vid, pid): (Option<u16>, Option<u16>) = if !manual_on {
+                (None, None)
+            } else if let Some((v, p)) = chosen {
+                (Some(v), Some(p))
+            } else {
+                // manual: read both typed fields → parse_id_field each (G10:
+                // each Option<u16>; blank/"auto" ⇒ None ⇒ auto-discovery).
+                let vendor_nsstring: *mut Object = msg_send![vendor_field, stringValue];
+                let product_nsstring: *mut Object = msg_send![product_field, stringValue];
+                let vendor_str = nsstring_to_rust_string(vendor_nsstring)?;
+                let product_str = nsstring_to_rust_string(product_nsstring)?;
+                match (parse_id_field(&vendor_str), parse_id_field(&product_str)) {
+                    (Ok(v), Ok(p)) => (v, p),
+                    (Err(e), _) | (_, Err(e)) => {
+                        show_macos_error_message(&format!("Invalid input: {}", e));
+                        return Ok(());
                     }
                 }
-                (Err(e), _) | (_, Err(e)) => {
-                    show_macos_error_message(&format!("Invalid input: {}", e));
-                }
+            };
+
+            // Snapshot pre-save VID/PID BEFORE the move below — Config
+            // is Clone (not Copy), so `let mut merged = current_config`
+            // moves it; vendor_id/product_id are Option<u16> (Copy), so
+            // copying them out here is valid and required for the post-save
+            // diff check (Bug 4 / PRD ID 3). PRESERVE every non-VID/PID field
+            // (usage_page/usage/debounce_ms/poll_interval_ms): overlay the
+            // dialog's result onto the config parsed at dialog-open time.
+            let old_vid = current_config.vendor_id;
+            let old_pid = current_config.product_id;
+            let mut merged = current_config;
+            merged.vendor_id = vid;
+            merged.product_id = pid;
+            let config_content = crate::core::render_config_body(&merged);
+            crate::core::atomic_write(config_path, &config_content)?;
+
+            // Bug 4 / PRD ID 3: if VID/PID changed, reset the handshake state
+            // and re-run the handshake for the newly-selected board.
+            // reset_handshake_state clears HOST_CAPABLE/BOARD_HAS_RULES/
+            // CALLBACK_NAMES/HAS_HANDSHAKED; perform_handshake then re-runs
+            // (its HAS_HANDSHAKED guard was just cleared) and reads config.toml
+            // fresh, so the just-written VID/PID selects the new board and
+            // rebuilds its name→id map. `false` = non-verbose (verbose is not
+            // in scope here — bug_findings.md §132).
+            if merged.vendor_id != old_vid || merged.product_id != old_pid {
+                crate::core::notifier::reset_handshake_state();
+                crate::core::notifier::perform_handshake(false);
             }
         }
     }
