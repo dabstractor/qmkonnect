@@ -228,6 +228,38 @@ form.
 both the copy-button target and the Win32 WndProc look up the row to copy **by
 index**. Only one dialog open at a time, so a single shared slot suffices.
 
+### 3.5 Keyboard dismissal (Escape to close)
+
+QMKonnect targets keyboard power-users, so **every popup must be dismissible
+without a mouse**: pressing **Escape** closes any Settings or "Show Window
+Information" dialog. A dialog that traps focus until a mouse click is a UX bug.
+
+| Popup | Windows | macOS | Linux |
+|---|---|---|---|
+| Settings | ✅ message-loop Escape intercept (`show_settings_dialog`) | ✅ `NSAlert` — Escape fires the cancel button natively (Cocoa default) | ✅ `zenity` — Escape natively |
+| Window Information | ✅ message-loop Escape intercept (`show_window_info_dialog`) | ✅ `RustWindowInfoWindow` (NSWindow subclass) overrides `cancelOperation:` → `close` | ✅ native GTK — `Window::connect_key_press_event` → `Escape` → `close()` (zenity fallback: native) |
+
+- **Linux** (§3.3): Escape is wired on the toplevel `GtkWindow`; key events
+  propagate from the focused child in GTK3, so it fires regardless of which
+  row/Copy button has focus.
+- **Windows** (§3.1/§2.1): Escape is intercepted in each dialog's message loop
+  — `msg.message == WM_KEYDOWN && wParam == 0x1B` on the window **or any child**
+  (`IsChild`) → `DestroyWindow`. The WndProc can't see Escape from a focused
+  child control, so the loop catches it. The literal `0x1B` is used because
+  `VK_ESCAPE` lives under the `Win32_UI_Input_KeyboardAndMouse` feature, which
+  isn't otherwise enabled (avoids a Cargo.toml feature change).
+- **macOS** (§3.2): the window is `alloc`'d as a `RustWindowInfoWindow` (an
+  NSWindow subclass) whose `cancelOperation:` — NSResponder's Escape hook,
+  invoked via `performKeyEquivalent:` — calls `close`, which fires
+  `windowWillClose:` → `[NSApp stopModal]`.
+
+> **Verification status:** the Linux path is build/clippy/test-green on the
+> dev host. The Windows and macOS paths could not be cross-compiled from Linux
+> (the `hidapi` C dep blocks it) and need a build + interactive Escape test on
+> the platform dev loops in `AGENTS.md`. If `cancelOperation:` proves not to fire
+> on macOS for a non-text first responder, switch to overriding
+> `performKeyEquivalent:` and inspecting the `NSEvent` keyCode (Escape = 53).
+
 ---
 
 ## 4. Device-Connection Status Indicator

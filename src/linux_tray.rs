@@ -674,6 +674,23 @@ mod gtk_dialog {
         });
         vbox.pack_start(&close, false, false, 0);
 
+        // Escape closes the window. This is a keyboard-power-user app, so every
+        // popup must be dismissible by key — and the sibling Settings popup
+        // (zenity) already closes on Escape natively. The native GTK window had
+        // no key handler, so on Hyprland/Wayland only the mouse Close button
+        // worked. Key events propagate from the focused child up to this
+        // toplevel in GTK3, so this fires regardless of which row/button is
+        // focused. (spec/UI.md §3.5 — keyboard dismissal requirement.)
+        let win_for_escape = win.clone();
+        win.connect_key_press_event(move |_, event| {
+            if event.keyval() == gtk::gdk::keys::constants::Escape {
+                win_for_escape.close();
+                glib::Propagation::Stop
+            } else {
+                glib::Propagation::Proceed
+            }
+        });
+
         win.add(&vbox);
         win.show_all();
     }
