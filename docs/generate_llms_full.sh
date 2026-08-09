@@ -45,9 +45,11 @@ HDR
   strip_fm "$DOCS_DIR/configuration.md"
   emit "6. docs/usage.md"            "Usage"
   strip_fm "$DOCS_DIR/usage.md"
-  emit "7. docs/examples.md"         "Firmware examples"
-  strip_fm "$DOCS_DIR/examples.md"
-  emit "8. docs/troubleshooting.md"  "Troubleshooting"
-  strip_fm "$DOCS_DIR/troubleshooting.md"
+  # NOTE: docs/examples.md (firmware examples) and docs/troubleshooting.md are
+  # DELIBERATELY excluded from this agent/LLM reference artifact (commit f7617cc,
+  # "Strip firmware examples from llms_full.txt artifact"). The committed
+  # llms_full.txt ends at this section; emitting them here would make the
+  # validate.sh sync check (byte-for-byte vs regeneration) fail. To re-include
+  # either source doc, add its emit/strip_fm pair back HERE and regenerate.
 } > "$OUT"
 echo "wrote $OUT ($(wc -l < "$OUT") lines, $(wc -c < "$OUT") bytes)"

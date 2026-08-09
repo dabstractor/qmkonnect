@@ -78,6 +78,16 @@ fn run() -> Result<(), Box<dyn Error>> {
     let args: Vec<String> = env::args().collect();
     let verbose = args.iter().any(|arg| arg == "-v" || arg == "--verbose");
 
+    // Reject unrecognized `-`-prefixed options up front, before any subcommand
+    // dispatch. Every branch below matches a *known* flag via
+    // `args.iter().any(|a| a == <flag>)`; an unknown token (a typo like
+    // `--verbos` or `--list-device`) would otherwise be silently ignored and —
+    // when no other flag matches — fall through to `runner.run()` and start the
+    // daemon (the Linux runner ignores `args` entirely). Mirrors clap's exit
+    // code (2). This is also what makes the validate.sh `--bogus-flag` gate
+    // exit instead of hanging.
+    reject_unknown_flag(&args);
+
     // Check for help
     if args.iter().any(|arg| arg == "-h" || arg == "--help") {
         print_help();
@@ -151,6 +161,59 @@ fn run() -> Result<(), Box<dyn Error>> {
     // Use platform-specific runner
     let mut runner = runners::create_runner(verbose)?;
     runner.run(&args)
+}
+
+// --- unknown-flag rejection (CLI robustness) --------------------------------
+// Recognized tokens for `run()`'s hand-rolled parser. A `-`-prefixed argv
+// element not in this set is rejected with exit code 2 (clap parity) instead of
+// silently starting the service. `--flag=value` is recognized by its head
+// (the part before `=`).
+//
+// `--console`/`--tray-app` are Windows-only runner modes but are listed
+// unconditionally so the cross-platform parser never rejects a flag the Windows
+// runner legitimately consumes. Value flags (`--config`, `--user`, `--uid`,
+// `--rules-path`) take the NEXT argv element as a value; those values are paths /
+// names / numbers and never start with `-`, so they are never mistaken for flags.
+const KNOWN_FLAGS: &[&str] = &[
+    "-h",
+    "--help",
+    "-v",
+    "--verbose",
+    "-r",
+    "--reload",
+    "-c",
+    "--config", // create-config boolean AND --reload value flag
+    "-l",
+    "--list",
+    "--list-devices",
+    "--list-callbacks",
+    "--validate-rules",
+    "--rules-path",       // value flag (--validate-rules)
+    "--user",             // value flag (--reload, sudo'd)
+    "--uid",              // value flag (--reload, sudo'd)
+    "--show-window-info", // macOS/Windows debug dialog
+    "--console",
+    "--tray-app", // Windows runner modes
+];
+
+/// True if `arg` is a recognized CLI token (a known flag, or `--known=value`).
+/// Pure syntactic recognition — does NOT validate flag *combinations*.
+fn is_known_flag(arg: &str) -> bool {
+    let head = arg.split('=').next().unwrap_or(arg);
+    KNOWN_FLAGS.contains(&head)
+}
+
+/// Reject any unrecognized `-`-prefixed argv element. Emits a clap-shaped error
+/// and exits 2. A bare `-` (stdin convention) and non-flag values are left alone.
+fn reject_unknown_flag(args: &[String]) {
+    for arg in args.iter().skip(1) {
+        if arg.starts_with('-') && arg != "-" && !is_known_flag(arg) {
+            eprintln!(
+                "error: unrecognized option '{arg}'\n\nUsage: qmkonnect [OPTIONS]\nFor more information, try '--help'."
+            );
+            process::exit(2);
+        }
+    }
 }
 
 fn print_help() {
@@ -600,6 +663,62 @@ mod tests {
         // Flag not present at all.
         let args: Vec<String> = vec!["-v".to_string(), "--verbose".to_string()];
         assert_eq!(parse_value_flag(&args, "--rules-path"), None);
+    }
+
+    // ---- is_known_flag: recognized vs typo'd options (CLI robustness) ----
+    // Guards reject_unknown_flag: a typo must NOT be classified as known, or the
+    // app would silently start the daemon instead of erroring (the bug behind
+    // the validate.sh `--bogus-flag` hang).
+
+    #[test]
+    fn test_is_known_flag_recognizes_documented_options() {
+        for ok in [
+            "-h",
+            "--help",
+            "-v",
+            "--verbose",
+            "-r",
+            "--reload",
+            "-c",
+            "--config",
+            "-l",
+            "--list",
+            "--list-devices",
+            "--list-callbacks",
+            "--validate-rules",
+            "--rules-path",
+            "--user",
+            "--uid",
+            "--show-window-info",
+            "--console",
+            "--tray-app",
+        ] {
+            assert!(is_known_flag(ok), "{ok:?} should be a known flag");
+            // `--flag=value` form is recognized by its head.
+            assert!(
+                is_known_flag(&format!("{ok}=x")),
+                "--flag=value form for {ok:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_is_known_flag_rejects_typos_and_unknowns() {
+        for bad in [
+            "--bogus-flag-xyz",
+            "--verbos",
+            "--validat-rules",
+            "--list-device",
+            "--hepl",
+            "-x",
+            "-vc",
+            "--configg",
+        ] {
+            assert!(
+                !is_known_flag(bad),
+                "{bad:?} should be UNKNOWN (would start the daemon)"
+            );
+        }
     }
 
     // ---- collect_callback_names: dedupe + sorted union + empty default ----

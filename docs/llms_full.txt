@@ -1983,8 +1983,3 @@ For detailed troubleshooting, see the [troubleshooting guide]({{ site.baseurl }}
 
 - [See real-world examples]({{ site.baseurl }}/examples)
 - [Learn about troubleshooting]({{ site.baseurl }}/troubleshooting)
-
-================================================================================
- 7. docs/examples.md (Firmware examples)
-================================================================================
-

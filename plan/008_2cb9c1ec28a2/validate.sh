@@ -13,7 +13,16 @@
 # =============================================================================
 set -uo pipefail
 
+# Resolve the REPO ROOT (the directory containing Cargo.toml) by walking up,
+# so the script works regardless of where it lives (e.g. archived under
+# plan/NNN_.../). All check paths (docs/, packaging/, src/, target/, …) are
+# relative to the repo root.
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+while [ "$ROOT" != "/" ] && [ ! -f "$ROOT/Cargo.toml" ]; do
+  ROOT="$(dirname "$ROOT")"
+done
+[ -f "$ROOT/Cargo.toml" ] || {
+  echo "FATAL: cannot locate repo root (no Cargo.toml upward from $(dirname "${BASH_SOURCE[0]}"))"; exit 1; }
 cd "$ROOT" || { echo "FATAL: cannot cd to $ROOT"; exit 1; }
 
 # --- color / summary helpers -------------------------------------------------
@@ -29,12 +38,20 @@ bad()     { printf "${C_RED}  ✗${C_OFF} %s\n" "$1"; FAIL=$((FAIL+1)); FAILED_C
 skip()    { printf "${C_YEL}  ⊘${C_OFF} %s\n" "$1"; SKIP=$((SKIP+1)); }
 # run a check: $1=label, rest=command. Captures exit code; prints tail on fail.
 chk() {
+  # Run a check bounded by CHK_TIMEOUT (default 180s). Without this, a single
+  # command that hangs (e.g. a CLI flag that accidentally starts the daemon)
+  # stalls the ENTIRE script — and any outer agent watchdog — forever. `timeout`
+  # exits 124 on expiry, which we surface as a (marked) failure rather than a hang.
   local label="$1"; shift
   local log; log="$(mktemp)"
-  if "$@" >"$log" 2>&1; then
+  local T="${CHK_TIMEOUT:-180}"
+  local rc=0
+  timeout "$T" "$@" >"$log" 2>&1 || rc=$?
+  if [ "$rc" -eq 0 ]; then
     ok "$label"; rm -f "$log"; return 0
   else
     bad "$label"
+    [ "$rc" -eq 124 ] && echo "    (timed out after ${T}s — possible hang)" >&2
     { echo "    ----- last 15 lines of output -----"; tail -n 15 "$log" | sed 's/^/    /'; } >&2
     rm -f "$log"; return 1
   fi
@@ -227,7 +244,7 @@ else
   grep -rinE 'mise|asdf' docs/*.md README.md 2>/dev/null | grep -viE 'promise' | sed 's/^/      /' >&2
 fi
 # Dead plugin-repo link must not survive anywhere outside plan/ history.
-asdf_dead=$(grep -rn 'asdf-qmkonnect' . --include='*.md' --include='*.txt' --include='*.json' --include='*.yaml' --include='*.yml' --include='*.sh' --include='*.rb' 2>/dev/null | grep -vE '/plan/|/\.git/|/target/|/docs/vendor/' | wc -l)
+asdf_dead=$(grep -rn 'asdf-qmkonnect' . --include='*.md' --include='*.txt' --include='*.json' --include='*.yaml' --include='*.yml' --include='*.sh' --include='*.rb' 2>/dev/null | grep -vE '/plan/|/\.git/|/target/|/docs/vendor/|/\.pi-subagents/' | wc -l)
 if [ "$asdf_dead" -eq 0 ]; then
   ok "no dead asdf-qmkonnect links outside plan/ history"
 else
