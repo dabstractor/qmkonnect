@@ -873,11 +873,12 @@ fn show_settings_dialog_linux() {
     let devices = classify_devices(true);
     let (cur_vid, cur_pid) = current_config_vidpid();
 
-    // CASE B (clean-auto): exactly one capable board AND no VID/PID configured.
+    // CASE B (clean-auto): exactly one board AND no VID/PID configured.
     // The picker is skipped — auto-discovery already targets the single board, so
     // there is nothing to choose and nothing to write (zero-config promise, §5.1).
+    // Any kind qualifies (not just Capable): the picker only disambiguates
+    // MULTIPLE boards, so a lone board is the default.
     let clean_auto = devices.len() == 1
-        && matches!(devices[0].kind, DeviceKind::Capable { .. })
         && cur_vid.is_none()
         && cur_pid.is_none();
     // The picker is shown only when devices were found AND it's not clean-auto.
