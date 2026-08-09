@@ -135,6 +135,21 @@ impl WindowMonitor for HyprlandMonitor {
                 continue;
             }
 
+            // One-shot startup (and reconnect) context sync: emit the current
+            // foreground window so the board reflects the active app
+            // immediately, instead of waiting for the first focus-change event
+            // (PRD §6/§7). `poll_window_state` dedups against
+            // `last_window_state` (`None` on a cold start) so the very first
+            // call notifies exactly once; on a later Hyprland reconnect it
+            // re-syncs the board only if the focused window changed while the
+            // listener was down. This closes the one backend that — with the
+            // default `poll_interval_ms = 0` (polling disabled) and a purely
+            // event-driven listener — would otherwise never tell the board the
+            // current window until the user actually switches apps. (macOS /
+            // Windows / foreign-toplevel / X11 / GNOME all already emit the
+            // initial window in their own `start()` / first event / first poll.)
+            let _ = poll_window_state(&self.last_window_state, self.verbose);
+
             // Create a new event listener for each attempt
             let mut listener = EventListener::new();
             let verbose = self.verbose;

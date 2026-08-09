@@ -245,6 +245,17 @@ pre-built `owner → title` map from the CG window list, sorts alphabetically.
   - `add_layer_opened_handler` / `add_layer_closed_handler` →
     `handle_window_state_change` **+** `spawn_poll_burst` (scratchpad/layer focus)
 - `listener.start_listener()` **blocks**; on error, reconnect with backoff.
+- **One-shot startup context sync (PRD §6/§7):** on each successful
+  (re)connect — after `check_hyprland_environment()` succeeds, before
+  `start_listener()` blocks — `start()` calls `poll_window_state` **once**.
+  Because `last_window_state` starts `None`, the very first call always emits
+  the current foreground window exactly once. This closes the gap where this
+  purely event-driven backend (with the default `poll_interval_ms = 0`, polling
+  off) would otherwise never tell the board the active window until the user
+  actually switches apps. On a later reconnect it re-syncs only if the focused
+  window changed while the listener was down. (macOS / Windows /
+  foreign-toplevel / X11 / GNOME already emit the initial window in their own
+  `start()` / first event / first poll.)
 
 ### 5.2 `handle_window_state_change`
 - `Client::get_active()` → if `Some`, report `initial_class` + `title`. If

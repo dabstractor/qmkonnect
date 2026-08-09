@@ -180,6 +180,12 @@ compositor + the X11 tail is now supported — F16.) The Rust **MSRV is 1.88**
 
 ## 6. The End-to-End Data Flow (30-second tour)
 
+**Step 0 — startup context sync.** Before any focus change, on launch each
+backend reads the *current* foreground window and sends it to the board **once**
+(see §7 "Startup context sync"), so the keyboard's layer/callback state matches
+the active app from the moment QMKonnect starts — not only after the first
+focus change. The steady-state flow below then takes over:
+
 1. **Platform monitor** detects a foreground-window focus change
    (`src/platforms/{windows,macos,hyprland,x11}.rs`) and produces a
    `WindowInfo { app_class, title }`.
@@ -206,6 +212,17 @@ model is in `ARCHITECTURE.md`.
 
 ## 7. Key Product Behaviors (the "feel")
 
+- **Startup context sync.** On launch, QMKonnect sends the current foreground
+  window to the board **once** — before the user changes focus — so the
+  keyboard reflects the active app immediately rather than lingering in its
+  previous layer until the first focus-change event. Each backend does this in
+  its own `start()`: macOS queries `get_active_window_info`, Windows calls
+  `handle_focus_change(GetForegroundWindow())`, Hyprland runs `poll_window_state`
+  on (re)connect, and the foreign-toplevel / X11 / GNOME backends emit it on
+  their first state event / poll tick (their dedup state starts empty, so the
+  first observed window always notifies). (AT-SPI is best-effort: it has no way
+  to synchronously query the focused window, so it learns the context on the
+  first focus event.)
 - **Window class is the stable identifier.** Windows uses the Win32 window
   *class* (`GetClassNameW`); macOS uses the app's `localizedName`; Hyprland uses
   `initial_class`; X11 uses `WM_CLASS`. These are the strings the user matches
