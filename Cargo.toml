@@ -10,12 +10,12 @@ rust-version = "1.88"  # MSRV floor: image 0.25.x (see docs/installation.md)
 
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
-# Pinned to a tagged release for reproducible CI/release builds. Bump the tag
-# when qmk-notifier cuts a newer release. v0.3.0 adds the typed-command
-# transport API (CommandResponse return type, RunCommand::{QueryInfo,
-# QueryCallback, SetOs, ApplyHostContext}, HostOs) consumed by
-# Notifier::send_command (PRD §5.7/§8.4-5, P4.M1.T1).
-qmk-notifier = { git = "https://github.com/dabstractor/qmk-notifier", tag = "v0.3.0" }
+# Vendored locally (vendor/qmk-notifier) with a macOS hot-plug fix in
+# ensure_cache: drop stale cached HID handles BEFORE opening new ones
+# (macOS/IOKit exclusive access — kIOReturnExclusiveAccess 0xE00002C5).
+# Tracks upstream tag v0.3.0; re-sync from
+# https://github.com/dabstractor/qmk-notifier when convenient.
+qmk-notifier = { path = "vendor/qmk-notifier" }
 # hidapi link nuance (ARCHITECTURE invariant 12 / PACKAGING.md §2):
 # Arch ships libhidapi-hidraw SEPARATE from libhidapi-libusb, so the Arch
 # PKGBUILD (packaging/linux/arch/PKGBUILD) passes
