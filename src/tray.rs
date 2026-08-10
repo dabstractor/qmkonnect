@@ -2813,6 +2813,24 @@ extern "C" fn wi_window_will_close(
     }
 }
 
+// Escape closes the macOS "Show Window Information" window. NSResponder sends
+// `cancelOperation:` when the user presses Escape (NSWindow's default
+// `performKeyEquivalent:` routes Escape to it on the responder chain); the
+// default impl is a no-op, so override it on the window subclass (registered in
+// `show_macos_window_info_dialog_inner`) to close the window →
+// `windowWillClose:` → `[NSApp stopModal]`. Without this, pressing Escape just
+// beeps (the macOS "no key equivalent" sound). (Keyboard-power-user UX;
+// spec/UI.md §3.5.)
+#[cfg(target_os = "macos")]
+extern "C" fn wi_cancel_operation(
+    this: &objc::runtime::Object,
+    _sel: objc::runtime::Sel,
+    _sender: *mut objc::runtime::Object,
+) {
+    use objc::{msg_send, sel, sel_impl};
+    let _: () = unsafe { msg_send![this, close] };
+}
+
 #[cfg(target_os = "macos")]
 fn copy_to_pasteboard_macos(text: &str) {
     use objc::runtime::Object;
@@ -2917,6 +2935,27 @@ fn show_macos_window_info_dialog_inner() -> Result<(), Box<dyn std::error::Error
             new
         ];
 
+        // --- Register the NSWindow subclass that closes on Escape ----------
+        // (cancelOperation: → wi_cancel_operation → close). Built once; alloc'd
+        // below in place of a bare NSWindow. Without this the window is a plain
+        // NSWindow whose cancelOperation: is a no-op, so Escape only beeps.
+        // spec/UI.md §3.5.
+        if Class::get("RustWindowInfoWindow").is_none() {
+            let superclass = Class::get("NSWindow").ok_or("NSWindow class not found")?;
+            let mut decl = ClassDecl::new("RustWindowInfoWindow", superclass)
+                .ok_or("failed to declare RustWindowInfoWindow")?;
+            decl.add_method(
+                sel!(cancelOperation:),
+                wi_cancel_operation
+                    as extern "C" fn(
+                        &objc::runtime::Object,
+                        objc::runtime::Sel,
+                        *mut objc::runtime::Object,
+                    ),
+            );
+            decl.register();
+        }
+
         // --- Build the window. ---------------------------------------------
         let n = WINDOW_INFO_ROWS.lock().unwrap().len();
 
@@ -2937,7 +2976,10 @@ fn show_macos_window_info_dialog_inner() -> Result<(), Box<dyn std::error::Error
         // `initWithContentRect:styleMask:backing:defer:` on the instance.
         // Sending that instance selector straight to the class raises
         // doesNotRecognizeSelector and aborts the process.
-        let allocated: *mut Object = msg_send![class!(NSWindow), alloc];
+        let allocated: *mut Object = msg_send![
+            Class::get("RustWindowInfoWindow").ok_or("RustWindowInfoWindow missing")?,
+            alloc
+        ];
         let window: *mut Object = msg_send![
             allocated,
             initWithContentRect: content_rect
