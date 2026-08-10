@@ -31,8 +31,18 @@
   #define MyAppVersion "0.2.8"
 #endif
 
-; Built exe: CARGO_TARGET_DIR\release if set (this machine = C:\cargo-target),
-; else ../../../target/release relative to this .iss.
+; Built exe: CARGO_TARGET_DIR\release if set, else ../../../target/release
+; relative to this .iss.
+;
+; IMPORTANT (untrusted-mount foot-gun, see build.ps1): this path is baked into
+; the installer at COMPILE time and re-read at install time. If it lands on a
+; VM-shared / network volume (e.g. the Z:\ host mount on the dev VM), Windows
+; rejects the read with STATUS_UNTRUSTED_MOUNT_POINT ("The path cannot be
+; traversed because it contains an untrusted mount point"). When the project
+; lives on such a mount, set CARGO_TARGET_DIR to a system-drive path (e.g.
+; C:\qmk-target) in the shell that runs BOTH `cargo build --release` and
+; build.ps1. build.ps1 validates this and aborts before producing a broken
+; installer.
 #ifndef ReleaseDir
   #if Len(GetEnv("CARGO_TARGET_DIR")) > 0
     #define ReleaseDir GetEnv("CARGO_TARGET_DIR") + "\release"

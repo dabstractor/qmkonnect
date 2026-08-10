@@ -85,6 +85,13 @@ static PICKER_DEVICES: std::sync::Mutex<Vec<crate::core::notifier::ClassifiedDev
 static DIALOG_OPEN_VIDPID: std::sync::Mutex<(Option<u16>, Option<u16>)> =
     std::sync::Mutex::new((None, None));
 
+// Virtual-key code for Escape. `VK_ESCAPE` lives in the
+// `Win32_UI_Input_KeyboardAndMouse` feature, which isn't otherwise enabled, so
+// define the 0x1B constant locally to avoid a Cargo.toml feature change
+// (spec/UI.md §3.5).
+#[cfg(target_os = "windows")]
+const VK_ESCAPE: usize = 0x1B;
+
 // Control IDs for the discovered-device picker controls. The existing settings
 // dialog uses 1001-1004 (VID EDIT, PID EDIT, OK, Cancel) and the window-info
 // dialog uses 4001-4013 / 5000+ / 6000+ (see the comment block near
@@ -840,9 +847,9 @@ fn show_settings_dialog(config_path: &std::path::Path) -> Result<(), Box<dyn std
     use windows::Win32::Foundation::HWND;
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows::Win32::UI::WindowsAndMessaging::{
-        CreateWindowExW, DispatchMessageW, GetMessageW, LoadCursorW, RegisterClassW, ShowWindow,
-        TranslateMessage, IDC_ARROW, MSG, SW_SHOW, WNDCLASSW, WS_CAPTION, WS_OVERLAPPED,
-        WS_SYSMENU, WS_VISIBLE,
+        CreateWindowExW, DispatchMessageW, GetMessageW, IsChild, LoadCursorW, PostMessageW,
+        RegisterClassW, ShowWindow, TranslateMessage, IDC_ARROW, MSG, SW_SHOW, WM_CLOSE,
+        WM_KEYDOWN, WNDCLASSW, WS_CAPTION, WS_OVERLAPPED, WS_SYSMENU, WS_VISIBLE,
     };
 
     // Load current configuration
@@ -884,7 +891,25 @@ fn show_settings_dialog(config_path: &std::path::Path) -> Result<(), Box<dyn std
         );
 
         let dialog_width = 420;
-        let dialog_height = 380;
+        // The OK/Cancel buttons sit at y=324 with height 30, so the lowest
+        // content pixel is 354. Size the window so its CLIENT area holds every
+        // control with a little bottom padding, then expand to the full window
+        // rect via AdjustWindowRectEx so the caption + border (which scale with
+        // DPI) are included. A hard-coded 380 left the buttons clipped below the
+        // client area and unclickable.
+        let mut content_rc = windows::Win32::Foundation::RECT {
+            left: 0,
+            top: 0,
+            right: 0,
+            bottom: 354 + 14,
+        };
+        let _ = windows::Win32::UI::WindowsAndMessaging::AdjustWindowRectEx(
+            &mut content_rc,
+            WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,
+            windows::Win32::Foundation::BOOL(0),
+            windows::Win32::UI::WindowsAndMessaging::WINDOW_EX_STYLE(0),
+        );
+        let dialog_height = (content_rc.bottom - content_rc.top) as i32;
         let x = (screen_width - dialog_width) / 2;
         let y = (screen_height - dialog_height) / 2;
 
@@ -945,11 +970,31 @@ fn show_settings_dialog(config_path: &std::path::Path) -> Result<(), Box<dyn std
 
         ShowWindow(hwnd, SW_SHOW);
 
-        // Message loop
+        // Message loop. Escape closes the dialog even when a child control
+        // (listbox / edit / button) has keyboard focus: that child owns the
+        // WM_KEYDOWN, so the keystroke never reaches our WndProc. Intercept it
+        // here and route it through the window's existing WM_CLOSE ->
+        // DestroyWindow -> WM_DESTROY -> PostQuitMessage teardown (do NOT call
+        // DestroyWindow directly from the loop: the focused child may hold
+        // mouse/keyboard capture, and centralizing teardown in the WndProc's
+        // WM_CLOSE handler keeps cleanup uniform). (Keyboard-power-user UX;
+        // spec/UI.md §3.5.)
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, None, 0, 0).as_bool() {
-            TranslateMessage(&msg);
-            DispatchMessageW(&msg);
+            if msg.message == WM_KEYDOWN
+                && msg.wParam.0 == VK_ESCAPE
+                && (msg.hwnd == hwnd || IsChild(hwnd, msg.hwnd).as_bool())
+            {
+                let _ = PostMessageW(
+                    hwnd,
+                    WM_CLOSE,
+                    windows::Win32::Foundation::WPARAM(0),
+                    windows::Win32::Foundation::LPARAM(0),
+                );
+            } else {
+                TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
         }
 
         // Get the result
@@ -2143,10 +2188,10 @@ pub(crate) fn show_window_info_dialog(
     use windows::Win32::Graphics::Gdi::{GetStockObject, UpdateWindow, WHITE_BRUSH};
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows::Win32::UI::WindowsAndMessaging::{
-        CreateWindowExW, DispatchMessageW, GetMessageW, GetSystemMetrics, LoadCursorW,
-        RegisterClassW, ShowWindow, TranslateMessage, IDC_ARROW, MSG, SM_CXSCREEN, SM_CYSCREEN,
-        SW_SHOW, WNDCLASSW, WS_CAPTION, WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_OVERLAPPED, WS_SYSMENU,
-        WS_THICKFRAME, WS_VSCROLL,
+        CreateWindowExW, DispatchMessageW, GetMessageW, GetSystemMetrics, IsChild, LoadCursorW,
+        PostMessageW, RegisterClassW, ShowWindow, TranslateMessage, IDC_ARROW, MSG, SM_CXSCREEN,
+        SM_CYSCREEN, SW_SHOW, WM_CLOSE, WM_KEYDOWN, WNDCLASSW, WS_CAPTION, WS_MAXIMIZEBOX,
+        WS_MINIMIZEBOX, WS_OVERLAPPED, WS_SYSMENU, WS_THICKFRAME, WS_VSCROLL,
     };
 
     *WINDOW_INFO_ROWS.lock().unwrap() = rows.to_vec();
@@ -2215,11 +2260,31 @@ pub(crate) fn show_window_info_dialog(
         let _ = ShowWindow(hwnd, SW_SHOW);
         let _ = UpdateWindow(hwnd);
 
-        // Modal message loop until WM_DESTROY posts WM_QUIT.
+        // Modal message loop until WM_DESTROY posts WM_QUIT. Escape closes the
+        // dialog even when a child control (a Copy button) has keyboard focus:
+        // that child owns the WM_KEYDOWN, so the keystroke never reaches our
+        // WndProc. Intercept it here and route it through the window's existing
+        // WM_CLOSE -> DestroyWindow -> WM_DESTROY -> PostQuitMessage teardown
+        // (do NOT call DestroyWindow directly from the loop: a focused child
+        // may hold capture, and centralizing teardown in the WndProc's WM_CLOSE
+        // handler keeps cleanup uniform). (Keyboard-power-user UX; spec/UI.md
+        // §3.5.)
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, None, 0, 0).as_bool() {
-            let _ = TranslateMessage(&msg);
-            DispatchMessageW(&msg);
+            if msg.message == WM_KEYDOWN
+                && msg.wParam.0 == VK_ESCAPE
+                && (msg.hwnd == hwnd || IsChild(hwnd, msg.hwnd).as_bool())
+            {
+                let _ = PostMessageW(
+                    hwnd,
+                    WM_CLOSE,
+                    windows::Win32::Foundation::WPARAM(0),
+                    windows::Win32::Foundation::LPARAM(0),
+                );
+            } else {
+                let _ = TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
         }
     }
 
