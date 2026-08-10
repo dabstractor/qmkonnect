@@ -1364,12 +1364,22 @@ fn presence_tick_decision(
 ) -> (HandshakeAction, bool) {
     let capable = if !tier1_present {
         false
-    } else if paths_changed {
-        reprobed_capable.unwrap_or(false)
+    } else if let Some(r) = reprobed_capable {
+        r // a re-probe ran (path change or grace-window retry) → use its fresh result
     } else {
-        last_capable
+        last_capable // stable bus, no re-probe → reuse
     };
-    (handshake_action(Some(last_capable), capable), capable)
+    let base = handshake_action(Some(last_capable), capable);
+    // Hot-swap-of-capable-boards fix: a path-set change to a (possibly DIFFERENT)
+    // capable board while ALREADY capable (capable→capable) must still `Gain` —
+    // `handshake_action` yields `None` for true→true, which would skip the
+    // re-handshake and leave CALLBACK_NAMES from the OLD board.
+    let action = if paths_changed && capable && last_capable {
+        HandshakeAction::Gain
+    } else {
+        base
+    };
+    (action, capable)
 }
 
 /// Tracks capable-board presence across poll ticks for the tray poll threads
@@ -1460,8 +1470,13 @@ impl PresenceTracker {
 
         // A path-set change (plug/unplug/hot-swap) re-arms the retry budget for
         // a present board, so a transient not-capable re-probe doesn't strand it.
+        // It also re-arms the per-boot handshake dedup: a path change is a
+        // (potentially) different physical board, so a `Gain` (e.g. a hot-swap to
+        // a different capable board) actually re-handshakes instead of being
+        // skipped by `HAS_HANDSHAKED`.
         if paths_changed {
             self.reprobe_budget = if tier1_present { PRESENCE_REPROBE_BUDGET } else { 0 };
+            HAS_HANDSHAKED.store(false, Ordering::SeqCst);
         }
 
         // Re-probe on a path-set change, OR while a present board is still within
@@ -1485,12 +1500,12 @@ impl PresenceTracker {
             None
         };
 
-        // `presence_tick_decision`'s 2nd arg means "the caller re-probed this
-        // tick" (use the fresh result rather than last_capable): pass the combined
-        // flag so a grace-window retry's result is honoured exactly like a
-        // path-change re-probe.
+        // Pass the REAL path-set change (not the re-probe flag):
+        // `presence_tick_decision` uses `reprobed` (Some ⇒ a re-probe ran) for the
+        // capable value, and `paths_changed` to decide whether a capable→capable
+        // transition is a `Gain` (a hot-swap to a different capable board).
         let (action, capable) =
-            presence_tick_decision(self.last_capable, reprobe_this_tick, tier1_present, reprobed);
+            presence_tick_decision(self.last_capable, paths_changed, tier1_present, reprobed);
         if capable {
             self.reprobe_budget = 0; // confirmed — stop pinging (Finding #3 preserved)
         }
@@ -3237,15 +3252,17 @@ disable = ["known_b", "phantom"]
     }
 
     #[test]
-    fn test_presence_tick_boot_reprobe_capable_is_none_when_already_capable() {
-        // At boot PresenceTracker::new seeds last_capable from host_capable(). If
-        // the startup handshake already found a capable board, the first tick's
-        // re-probe (path set empty→non-empty) returning capable=true matches the
-        // seed ⇒ None (no spurious re-handshake; perform_handshake is itself
-        // idempotent via HAS_HANDSHAKED, but the action is cleanly None here too).
+    fn test_presence_tick_path_change_to_capable_while_capable_is_gain() {
+        // A path-set change to a capable board while ALREADY capable
+        // (capable→capable) is now a `Gain`, not `None`: it may be a DIFFERENT
+        // capable board (hot-swap) whose callbacks/layers differ, so the
+        // handshake must re-run to refresh CALLBACK_NAMES. (At a real boot
+        // `PresenceTracker::new` seeds `last_paths` from the live bus, so the
+        // first tick sees paths_changed=false and this arm doesn't fire; this
+        // direct-call test pins the path-change semantics regardless.)
         assert_eq!(
             presence_tick_decision(true, true, true, Some(true)),
-            (HandshakeAction::None, true)
+            (HandshakeAction::Gain, true)
         );
     }
 
@@ -3305,11 +3322,24 @@ disable = ["known_b", "phantom"]
         assert!(!capable1); // last_capable is now false
 
         // Tick 2: stable path (paths_changed=false) but the tracker re-probed
-        // again within its grace window and this time found Capable. Passing
-        // reprobe_this_tick=true makes the decision use the fresh result.
-        let (action2, capable2) = presence_tick_decision(false, true, true, Some(true));
+        // again within its grace window and this time found Capable. The fresh
+        // result (Some(true)) is used; capable flips false→true ⇒ Gain.
+        let (action2, capable2) = presence_tick_decision(false, false, true, Some(true));
         assert_eq!(action2, HandshakeAction::Gain); // re-handshake fires
         assert!(capable2);
+    }
+
+    #[test]
+    fn test_presence_tick_hot_swap_between_two_capable_boards_is_gain() {
+        // The edge-case fix: board A (capable) is hot-swapped for board B (also
+        // capable). Path set changed; re-probe finds B capable; last_capable was
+        // already true (A was capable). The decision MUST be `Gain` so B is
+        // re-handshaked — otherwise CALLBACK_NAMES / board state stay A's. (The
+        // path-change also re-arms HAS_HANDSHAKED in `PresenceTracker::tick`, so
+        // the Gain's perform_handshake actually runs rather than dedup-skipping.)
+        let (action, capable) = presence_tick_decision(true, true, true, Some(true));
+        assert_eq!(action, HandshakeAction::Gain);
+        assert!(capable);
     }
 
     // ========================================================================
