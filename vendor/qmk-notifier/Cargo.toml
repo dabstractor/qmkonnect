@@ -1,0 +1,17 @@
+[package]
+name = "qmk-notifier"
+version = "0.3.0"
+edition = "2021"
+description = "Raw-HID transport layer for the QMKonnect ecosystem; sends legacy strings and typed commands to QMK keyboards"
+license = "MIT"
+repository = "https://github.com/dabstractor/qmk_notifier"
+homepage = "https://github.com/dabstractor/qmk_notifier"
+authors = ["Dustin Schultz <dustindschultz@gmail.com>"]
+readme = "README.md"
+
+[dependencies]
+clap = "4.5.31"
+hidapi = "2.4.1"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

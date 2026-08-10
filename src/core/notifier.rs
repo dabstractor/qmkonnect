@@ -1398,9 +1398,33 @@ fn presence_tick_decision(
 /// `Connected` (after the sub-second handshake; the brief `NoModule` window is
 /// the documented transient caveat).
 #[cfg_attr(not(any(target_os = "macos", target_os = "windows")), allow(dead_code))]
+/// Bounded extra re-probes a PRESENT-but-not-yet-confirmed-capable board gets
+/// after it appears (a plug or a path-set change / hot-swap) before its
+/// not-capable classification is trusted. Without this, a SINGLE transient
+/// not-capable re-probe right after a hot-swap — the board still enumerating,
+/// or the HID transport's stale post-unplug device cache (the `qmk_notifier`
+/// crate only rebuilds it on a write-failure / key-change) — latches the board
+/// `NoModule` until a restart, because the path set is then stable and no later
+/// tick re-probes. At the ~3s poll cadence this is ~18s of grace; a physical
+/// replug re-arms it.
+const PRESENCE_REPROBE_BUDGET: u32 = 6;
+
+/// Pure: should this poll tick re-probe capable presence? Re-probe when the
+/// Tier-1 path set changed (a plug/unplug/hot-swap) OR when a present board is
+/// still within its post-plug retry budget but hasn't been confirmed capable.
+/// Split out so the retry policy is unit-testable without HID hardware.
+#[cfg_attr(not(any(target_os = "macos", target_os = "windows")), allow(dead_code))]
+fn reprobe_needed(paths_changed: bool, tier1_present: bool, last_capable: bool, budget: u32) -> bool {
+    tier1_present && (paths_changed || (budget > 0 && !last_capable))
+}
+
 pub struct PresenceTracker {
     last_paths: Vec<String>,
     last_capable: bool,
+    /// Remaining grace re-probes for a present board that hasn't been confirmed
+    /// capable. Reset to [`PRESENCE_REPROBE_BUDGET`] on any path-set change;
+    /// decremented each re-probe; zeroed once a board is confirmed capable.
+    reprobe_budget: u32,
 }
 
 #[cfg_attr(not(any(target_os = "macos", target_os = "windows")), allow(dead_code))]
@@ -1409,9 +1433,20 @@ impl PresenceTracker {
     /// poll thread right after the runner's startup handshake so `last_capable`
     /// reflects it (the first tick then sees no transition ⇒ no spurious action).
     pub fn new() -> Self {
+        let last_paths = tier1_paths();
+        let last_capable = host_capable();
+        // If a board is present at construction but the startup handshake did not
+        // confirm it capable (e.g. it was still enumerating), arm the retry budget
+        // so the poll thread re-probes instead of trusting that single result.
+        let reprobe_budget = if !last_paths.is_empty() && !last_capable {
+            PRESENCE_REPROBE_BUDGET
+        } else {
+            0
+        };
         Self {
-            last_paths: tier1_paths(),
-            last_capable: host_capable(),
+            last_paths,
+            last_capable,
+            reprobe_budget,
         }
     }
 
@@ -1422,7 +1457,25 @@ impl PresenceTracker {
         let paths = tier1_paths();
         let tier1_present = !paths.is_empty();
         let paths_changed = paths != self.last_paths;
-        let reprobed = if paths_changed && tier1_present {
+
+        // A path-set change (plug/unplug/hot-swap) re-arms the retry budget for
+        // a present board, so a transient not-capable re-probe doesn't strand it.
+        if paths_changed {
+            self.reprobe_budget = if tier1_present { PRESENCE_REPROBE_BUDGET } else { 0 };
+        }
+
+        // Re-probe on a path-set change, OR while a present board is still within
+        // its post-plug grace window but hasn't been confirmed capable. This is
+        // the hot-swap recovery the single-shot path-change re-probe missed: a
+        // transient first miss is retried instead of latching NoModule.
+        let reprobe_this_tick = reprobe_needed(
+            paths_changed,
+            tier1_present,
+            self.last_capable,
+            self.reprobe_budget,
+        );
+        let reprobed = if reprobe_this_tick {
+            self.reprobe_budget = self.reprobe_budget.saturating_sub(1);
             Some(
                 classify_devices(verbose)
                     .iter()
@@ -1431,8 +1484,16 @@ impl PresenceTracker {
         } else {
             None
         };
+
+        // `presence_tick_decision`'s 2nd arg means "the caller re-probed this
+        // tick" (use the fresh result rather than last_capable): pass the combined
+        // flag so a grace-window retry's result is honoured exactly like a
+        // path-change re-probe.
         let (action, capable) =
-            presence_tick_decision(self.last_capable, paths_changed, tier1_present, reprobed);
+            presence_tick_decision(self.last_capable, reprobe_this_tick, tier1_present, reprobed);
+        if capable {
+            self.reprobe_budget = 0; // confirmed — stop pinging (Finding #3 preserved)
+        }
         self.last_capable = capable;
         self.last_paths = paths;
         action
@@ -3196,6 +3257,59 @@ disable = ["known_b", "phantom"]
             presence_tick_decision(false, true, true, Some(false)),
             (HandshakeAction::None, false)
         );
+    }
+
+    // ===== reprobe_needed: the hot-swap retry policy (PresenceTracker grace window) =====
+    // A board that is PRESENT but classified not-capable gets a bounded number of
+    // re-probes after it appears, so a single transient not-capable result right
+    // after a plug/hot-swap doesn't latch NoModule until restart.
+
+    #[test]
+    fn test_reprobe_needed_on_path_change() {
+        // A plug/hot-swap (path set changed) with a board present ⇒ always re-probe,
+        // regardless of last_capable or budget.
+        assert!(reprobe_needed(true, true, false, 0));
+        assert!(reprobe_needed(true, true, true, 0));
+    }
+
+    #[test]
+    fn test_reprobe_needed_grace_window_for_unconfirmed_present_board() {
+        // Stable bus, board present, not yet capable, budget remaining ⇒ keep
+        // re-probing (the hot-swap recovery: a transient first miss is retried).
+        assert!(reprobe_needed(false, true, false, 3));
+        // Budget exhausted ⇒ stop re-probing (trust the not-capable result).
+        assert!(!reprobe_needed(false, true, false, 0));
+        // Already capable ⇒ no need to keep probing (Finding #3 preserved).
+        assert!(!reprobe_needed(false, true, true, 3));
+    }
+
+    #[test]
+    fn test_reprobe_needed_no_board_present() {
+        // No Tier-1 board present ⇒ never re-probe, regardless of other inputs.
+        assert!(!reprobe_needed(true, false, false, 6));
+        assert!(!reprobe_needed(false, false, false, 6));
+    }
+
+    #[test]
+    fn test_hot_swap_transient_miss_then_capable_is_gain() {
+        // The headline fix: a capable board hot-swapped in. Tick 1 re-probes and
+        // TRANSIENTLY misses (board still enumerating / stale cache) ⇒ not-capable
+        // ⇒ Loss. Tick 2 (stable path, but grace budget armed) re-probes again and
+        // now sees Capable ⇒ the decision must be Gain so perform_handshake runs.
+        // Before the grace window, tick 2 would have seen paths_changed=false ⇒
+        // reused the false result ⇒ None ⇒ stranded NoModule.
+
+        // Tick 1: paths changed, present, re-probe said not-capable.
+        let (action1, capable1) = presence_tick_decision(true, true, true, Some(false));
+        assert_eq!(action1, HandshakeAction::Loss);
+        assert!(!capable1); // last_capable is now false
+
+        // Tick 2: stable path (paths_changed=false) but the tracker re-probed
+        // again within its grace window and this time found Capable. Passing
+        // reprobe_this_tick=true makes the decision use the fresh result.
+        let (action2, capable2) = presence_tick_decision(false, true, true, Some(true));
+        assert_eq!(action2, HandshakeAction::Gain); // re-handshake fires
+        assert!(capable2);
     }
 
     // ========================================================================
