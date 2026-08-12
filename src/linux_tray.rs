@@ -865,7 +865,7 @@ fn run_device_picker(devices: &[crate::core::notifier::ClassifiedDevice]) -> Opt
 /// The monitor + device-status poll re-read config on every notification / poll,
 /// so a save takes effect within ~3 s with no restart needed.
 fn show_settings_dialog_linux() {
-    use crate::core::notifier::{classify_devices, DeviceKind};
+    use crate::core::notifier::classify_devices;
 
     // Classify once per open (reads the warm 5 s-TTL cache ⇒ ~free; re-open after
     // TTL = fresh probe). G5/D5: do NOT clear the cache on open (parity with the
