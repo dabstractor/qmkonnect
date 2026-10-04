@@ -976,12 +976,42 @@ mod select_tests {
     fn hyprland_probe_err_when_no_signature() {
         let snap_s = env_snapshot("HYPRLAND_INSTANCE_SIGNATURE");
         let snap_r = env_snapshot("XDG_RUNTIME_DIR");
+        // Pin the runtime dir to an EMPTY TempDir: the probe's boot-race scan
+        // (find_live_hyprland_socket) would otherwise find the REAL live
+        // Hyprland socket on a Hyprland test machine and return Ok.
+        let dir = tempfile::TempDir::new().expect("tempdir");
         std::env::remove_var("HYPRLAND_INSTANCE_SIGNATURE");
+        std::env::set_var("XDG_RUNTIME_DIR", dir.path());
         let r = crate::platforms::hyprland::probe_available(false);
         env_restore("HYPRLAND_INSTANCE_SIGNATURE", snap_s);
         env_restore("XDG_RUNTIME_DIR", snap_r);
         assert!(r.is_err());
         assert!(r.unwrap_err().contains("HYPRLAND_INSTANCE_SIGNATURE"));
+    }
+
+    #[cfg(feature = "hyprland")]
+    #[test]
+    fn hyprland_probe_ok_via_scan_without_env_var() {
+        // THE boot-race regression: a systemd user service can probe before
+        // the session env is imported — $HYPRLAND_INSTANCE_SIGNATURE absent
+        // while the compositor's socket is already live. The probe must find
+        // the socket by SCANNING $XDG_RUNTIME_DIR/hypr/ instead of latching
+        // a lower-priority (session-bus-based) backend.
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let hypr_dir = dir.path().join("hypr").join("deadbeef");
+        std::fs::create_dir_all(&hypr_dir).expect("mkdir hypr/<sig>");
+        let _listener = UnixListener::bind(hypr_dir.join(".socket.sock")).expect("bind socket");
+
+        let snap_s = env_snapshot("HYPRLAND_INSTANCE_SIGNATURE");
+        let snap_r = env_snapshot("XDG_RUNTIME_DIR");
+        std::env::remove_var("HYPRLAND_INSTANCE_SIGNATURE");
+        std::env::set_var("XDG_RUNTIME_DIR", dir.path());
+        let r = crate::platforms::hyprland::probe_available(false);
+        env_restore("HYPRLAND_INSTANCE_SIGNATURE", snap_s);
+        env_restore("XDG_RUNTIME_DIR", snap_r);
+        // keep _listener alive until here
+        drop(_listener);
+        assert!(r.is_ok(), "live scanned socket ⇒ Ok even without the env var; got: {r:?}");
     }
 
     #[cfg(feature = "hyprland")]

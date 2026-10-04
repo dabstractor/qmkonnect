@@ -32,6 +32,8 @@ use crate::core::notifier;
 use crate::core::types::WindowInfo;
 use crate::platforms::WindowMonitor;
 use std::collections::HashMap;
+use std::os::unix::net::UnixStream;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::{self, JoinHandle};
@@ -347,8 +349,10 @@ fn run_dispatch_loop(
 
         let attempt_start = Instant::now();
 
-        // Connect to the compositor ($WAYLAND_DISPLAY / $WAYLAND_SOCKET).
-        let conn = match Connection::connect_to_env() {
+        // Connect to the compositor ($WAYLAND_DISPLAY / $WAYLAND_SOCKET, with
+        // a $XDG_RUNTIME_DIR/wayland-* scan fallback — see connect_compositor:
+        // the service env may never have had the session vars imported).
+        let conn = match connect_compositor() {
             Ok(c) => c,
             Err(e) => {
                 if verbose {
@@ -452,10 +456,93 @@ fn run_dispatch_loop(
 
 // ---------------------------------------------------------------------------
 // Availability probe (PLATFORMS.md §6). Side-effect-free (GOTCHA-12): does NOT
-// mutate env. Gate 1: $WAYLAND_DISPLAY resolvable (connect_to_env). Gate 2: the
-// compositor advertises zwlr_foreign_toplevel_manager_v1 (a sync roundtrip in
-// registry_queue_init populates the global list; with_list scans it).
+// mutate env. Gate 1: a compositor is reachable — $WAYLAND_DISPLAY/
+// $WAYLAND_SOCKET via connect_to_env, falling back to a SCAN of
+// $XDG_RUNTIME_DIR/wayland-* sockets (the boot race: a systemd user service
+// starts before the session env is imported, when the env vars are absent even
+// though the compositor socket is live — see [connect_compositor]). Gate 2:
+// the compositor advertises zwlr_foreign_toplevel_manager_v1 (a sync
+// roundtrip in registry_queue_init populates the global list; with_list scans
+// it).
 // ---------------------------------------------------------------------------
+
+/// True iff a `$XDG_RUNTIME_DIR` entry name is a Wayland socket candidate:
+/// `wayland-<digits>` exactly. The `wayland-N.lock` lockfiles and unrelated
+/// entries are excluded. Pure — unit-tested below.
+fn is_wayland_socket_name(name: &str) -> bool {
+    match name.strip_prefix("wayland-") {
+        Some(rest) => !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit()),
+        None => false,
+    }
+}
+
+/// Connect to the session compositor: `$WAYLAND_DISPLAY`/`$WAYLAND_SOCKET`
+/// first (connect_to_env), then — the boot-race path — a scan of every
+/// `wayland-<digits>` socket under `$XDG_RUNTIME_DIR`.
+///
+/// A systemd user service can start (and probe backends) BEFORE the session
+/// env is imported into the user manager: `$WAYLAND_DISPLAY` is absent then
+/// even though the compositor socket is live. connect_to_env-only discovery
+/// made the probe fail in that window while the session-bus-based AT-SPI
+/// probe succeeded — latching AT-SPI (present-but-useless under wlroots
+/// compositors, GOTCHA-8) for the whole uptime; a manual service restart was
+/// the only recovery. Scanning closes the window: this backend (priority #1)
+/// wins selection the moment the compositor socket exists, env or no env.
+/// The monitor's reconnect loop shares this fn, so a connection lost to
+/// compositor death also recovers via scan when env is still unimported.
+///
+/// Note: connecting is a plain `connect(2)`; no protocol handshake happens
+/// here (the registry roundtrip in the caller does that), so a non-compositor
+/// socket named `wayland-N` cannot hang THIS fn — only the caller's roundtrip
+/// could, same exposure the env path always had.
+fn connect_compositor() -> Result<Connection, String> {
+    let env_err = match Connection::connect_to_env() {
+        Ok(conn) => return Ok(conn),
+        Err(e) => e,
+    };
+
+    let runtime = match std::env::var("XDG_RUNTIME_DIR") {
+        Ok(dir) if !dir.is_empty() => dir,
+        _ => {
+            return Err(format!(
+                "cannot connect via $WAYLAND_DISPLAY ({env_err}) and $XDG_RUNTIME_DIR is not set \
+                 (no socket scan possible)"
+            ))
+        }
+    };
+
+    // Deterministic order (read_dir order is arbitrary) so multi-socket hosts
+    // always pick the same compositor.
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&runtime) {
+        for entry in entries.flatten() {
+            if let Some(name) = entry.file_name().to_str() {
+                if is_wayland_socket_name(name) {
+                    candidates.push(PathBuf::from(&runtime).join(name));
+                }
+            }
+        }
+    }
+    candidates.sort();
+
+    for socket in &candidates {
+        if let Ok(stream) = UnixStream::connect(socket) {
+            // from_socket wraps the stream without a protocol roundtrip, so
+            // this cannot block; an Err here means the fd was unusable, which
+            // for a freshly connected stream is not a real case — try the rest.
+            if let Ok(conn) = Connection::from_socket(stream) {
+                return Ok(conn);
+            }
+        }
+    }
+
+    Err(format!(
+        "cannot connect to Wayland ($WAYLAND_DISPLAY: {env_err}; scanned {} wayland-* \
+         socket(s) under $XDG_RUNTIME_DIR, none connectable)",
+        candidates.len()
+    ))
+}
+
 
 /// Minimal state just for the probe (keeps the real `DispatchState`'s state
 /// untouched — a dedicated empty type is cleaner than reusing it).
@@ -474,8 +561,8 @@ impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for ProbeState {
 }
 
 pub(crate) fn probe_available(_verbose: bool) -> Result<(), String> {
-    let conn = Connection::connect_to_env()
-        .map_err(|e| format!("cannot connect to Wayland ($WAYLAND_DISPLAY?): {e}"))?;
+    let conn = connect_compositor()
+        .map_err(|e| format!("cannot connect to Wayland ($WAYLAND_DISPLAY + $XDG_RUNTIME_DIR scan): {e}"))?;
     let (globals, _queue) = registry_queue_init::<ProbeState>(&conn)
         .map_err(|e| format!("Wayland registry init failed: {e}"))?;
     let has_wlr = globals.contents().with_list(|list| {
@@ -656,15 +743,21 @@ mod tests {
     }
 
     // ---------------- probe_available Err-path (GOTCHA-12) ----------------
-    // Unset $WAYLAND_DISPLAY so connect_to_env fails. Snapshot/restore like the
-    // select_tests in linux.rs. MUST run single-threaded (process-global env).
+    // Unset $WAYLAND_DISPLAY so connect_to_env fails AND pin $XDG_RUNTIME_DIR
+    // to an empty TempDir so the boot-race socket scan (connect_compositor)
+    // cannot reach the real compositor of the machine running the tests.
+    // Snapshot/restore like the select_tests in linux.rs. MUST run
+    // single-threaded (process-global env).
 
     #[test]
     fn probe_err_when_wayland_display_unset() {
         let snap_w = std::env::var("WAYLAND_DISPLAY").ok();
         let snap_s = std::env::var("WAYLAND_SOCKET").ok();
+        let snap_r = std::env::var("XDG_RUNTIME_DIR").ok();
+        let dir = tempfile::TempDir::new().unwrap();
         std::env::remove_var("WAYLAND_DISPLAY");
         std::env::remove_var("WAYLAND_SOCKET");
+        std::env::set_var("XDG_RUNTIME_DIR", dir.path());
         let r = probe_available(false);
         match snap_w {
             Some(v) => std::env::set_var("WAYLAND_DISPLAY", v),
@@ -674,11 +767,94 @@ mod tests {
             Some(v) => std::env::set_var("WAYLAND_SOCKET", v),
             None => std::env::remove_var("WAYLAND_SOCKET"),
         }
+        match snap_r {
+            Some(v) => std::env::set_var("XDG_RUNTIME_DIR", v),
+            None => std::env::remove_var("XDG_RUNTIME_DIR"),
+        }
         assert!(r.is_err(), "probe must fail when Wayland is unavailable");
         let msg = r.unwrap_err();
         assert!(
             msg.contains("Wayland") || msg.contains("WAYLAND") || msg.contains("connect"),
             "Err must mention the Wayland connection failure; got: {msg}"
+        );
+    }
+
+    // ---------------- boot-race socket scan (connect_compositor) ----------------
+    // Hermetic: TempDir runtime dir + a bound UnixListener stands in for the
+    // compositor socket. Snapshot/restore env like the tests above.
+
+    /// Snapshot the three env vars connect_compositor reads.
+    fn snap_conn_env() -> (Option<String>, Option<String>, Option<String>) {
+        (
+            std::env::var("WAYLAND_DISPLAY").ok(),
+            std::env::var("WAYLAND_SOCKET").ok(),
+            std::env::var("XDG_RUNTIME_DIR").ok(),
+        )
+    }
+
+    /// Restore them (None = unset).
+    fn restore_conn_env(snap: (Option<String>, Option<String>, Option<String>)) {
+        match snap.0 {
+            Some(v) => std::env::set_var("WAYLAND_DISPLAY", v),
+            None => std::env::remove_var("WAYLAND_DISPLAY"),
+        }
+        match snap.1 {
+            Some(v) => std::env::set_var("WAYLAND_SOCKET", v),
+            None => std::env::remove_var("WAYLAND_SOCKET"),
+        }
+        match snap.2 {
+            Some(v) => std::env::set_var("XDG_RUNTIME_DIR", v),
+            None => std::env::remove_var("XDG_RUNTIME_DIR"),
+        }
+    }
+
+    #[test]
+    fn wayland_socket_name_matches_only_digits() {
+        assert!(is_wayland_socket_name("wayland-0"));
+        assert!(is_wayland_socket_name("wayland-12"));
+        // Lockfiles, empties, non-numeric suffixes must all be rejected.
+        assert!(!is_wayland_socket_name("wayland-1.lock"));
+        assert!(!is_wayland_socket_name("wayland-"));
+        assert!(!is_wayland_socket_name("wayland"));
+        assert!(!is_wayland_socket_name("wayland-foo"));
+        assert!(!is_wayland_socket_name(".lock"));
+        assert!(!is_wayland_socket_name(""));
+    }
+
+    #[test]
+    fn connect_compositor_scans_runtime_dir_when_env_unset() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let _listener =
+            std::os::unix::net::UnixListener::bind(dir.path().join("wayland-7")).unwrap();
+        // Decoys the scan must skip: the lockfile and a non-numeric sibling.
+        std::fs::write(dir.path().join("wayland-7.lock"), b"").unwrap();
+        std::fs::write(dir.path().join("wayland-README"), b"").unwrap();
+
+        let snap = snap_conn_env();
+        std::env::remove_var("WAYLAND_DISPLAY");
+        std::env::remove_var("WAYLAND_SOCKET");
+        std::env::set_var("XDG_RUNTIME_DIR", dir.path());
+        let r = connect_compositor();
+        restore_conn_env(snap);
+        assert!(r.is_ok(), "scan must connect to the live socket: {r:?}");
+        // keep _listener alive until here
+        drop(_listener);
+    }
+
+    #[test]
+    fn connect_compositor_err_when_env_and_scan_both_fail() {
+        let dir = tempfile::TempDir::new().unwrap(); // empty runtime dir
+        let snap = snap_conn_env();
+        std::env::remove_var("WAYLAND_DISPLAY");
+        std::env::remove_var("WAYLAND_SOCKET");
+        std::env::set_var("XDG_RUNTIME_DIR", dir.path());
+        let r = connect_compositor();
+        restore_conn_env(snap);
+        assert!(r.is_err());
+        let msg = r.unwrap_err();
+        assert!(
+            msg.contains("scanned 0"),
+            "Err must report the scan found nothing; got: {msg}"
         );
     }
 }

@@ -218,7 +218,50 @@ service is the recommended path for hotplug auto-start.
 > The full `linux-tray` build does not have this limitation: its poll thread's
 > `PresenceTracker` re-handshakes on any capable-board transition.
 
-### 6.3 XDG autostart `.desktop` — the universal fallback (F17)
+### 6.3 The boot-ordering race (why the app re-probes for a backend)
+
+The unit's `After=graphical-session.target` is **best-effort only**:
+`After=` orders nothing unless the target is actually queued, and on a plain
+SDDM/GDM→Hyprland (or any non-GNOME/KDE, non-`uwsm`) session **nothing starts
+`graphical-session.target`** — it stays `inactive (dead)` for the whole
+session. Worse, three independent triggers can start the service *before the
+graphical session exists at all*:
+
+1. **systemd linger** (`loginctl enable-linger`): the user manager starts at
+   *boot*, pulling in every `WantedBy=default.target` service minutes before
+   anyone logs in;
+2. the static udev rule's **`SYSTEMD_USER_WANTS`** (§1) firing at pre-login
+   coldplug of an already-plugged keyboard;
+3. `WantedBy=default.target` itself racing the display manager on non-linger
+   setups.
+
+In that window `$WAYLAND_DISPLAY` / `$DISPLAY` /
+`$HYPRLAND_INSTANCE_SIGNATURE` are absent from the user-manager environment
+(the compositor exports them only after it is up, via
+`dbus-update-activation-environment` / `systemctl --user import-environment` —
+and then only into *subsequently started* units), so every backend probe
+(PLATFORMS.md §6) fails. Historical behavior: the runner parked forever after
+the first total failure, leaving the app permanently backendless until a
+manual `systemctl --user restart` after login.
+
+The fix is **app-side and does not rely on the unit**: the runner re-probes
+backend selection with exponential backoff (2 s → 30 s cap) until a backend
+appears, then starts it (PLATFORMS.md §6 "No-backend fallback", the journal
+contract for the re-probe lines is specified there). This heals all three
+triggers above, plus a compositor started long after the service. The unit
+ordering line is kept as documentation of intent, not as a correctness
+mechanism.
+
+A corollary trap: the re-probe loop accepts the **first** backend whose
+probe passes, so any probe that passes *without a session* poisons the latch.
+The known case is AT-SPI — `at-spi2-registryd` can be D-Bus-activated
+headless by any a11y-touching client while nobody is logged in (observed:
+linger-started service latched `atspi` 0.4 s after a stray activation, hours
+before login) — so the AT-SPI probe additionally requires the registry
+desktop to expose ≥ 1 accessible application (PLATFORMS.md §9) before it
+reports available.
+
+### 6.4 XDG autostart `.desktop` — the universal fallback (F17)
 
 Alongside the systemd user service, every Linux package ships an XDG autostart
 entry at `/etc/xdg/autostart/qmkonnect.desktop` (`PACKAGING.md` §4.7). Every

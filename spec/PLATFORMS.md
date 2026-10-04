@@ -313,7 +313,7 @@ Priority (first available wins):
 | 1 | **foreign-toplevel** (Wayland) | `wayland` | `$WAYLAND_DISPLAY` resolvable **and** the compositor advertises the `zwlr_foreign_toplevel_manager_v1` global |
 | 2 | **GNOME** (Shell extension) | `gnome` | the D-Bus well-known name `io.mulletware.QMKonnect` is owned on the session bus (§8) |
 | 3 | **Hyprland** (IPC) | `hyprland` | `$HYPRLAND_INSTANCE_SIGNATURE` + a live socket (§5). *Superseded by #1 on Hyprland; retained as a fallback when the `wayland` feature is off.* |
-| 4 | **AT-SPI** (a11y bus) | `atspi` | the a11y bus is reachable (`org.a11y.Bus` owned or `$ATSPI_BUS_ADDRESS`) |
+| 4 | **AT-SPI** (a11y bus) | `atspi` | the a11y bus is reachable (`org.a11y.Bus` owned or `$ATSPI_BUS_ADDRESS`) **and** the registry desktop enumerates ≥ 1 accessible application (`GetChildCount` on `/org/a11y/atspi/accessible_root`) — presence alone is a false positive (§9) |
 | 5 | **X11** | *(always on Linux)* | `$DISPLAY` set **and `$WAYLAND_DISPLAY` unset** and `xprop` present — *never* under a Wayland compositor (XWayland focus is unreliable; §10) |
 
 **Config override:** `[linux] backend = "foreign-toplevel" | "gnome" | "hyprland" | "atspi" | "x11" | "auto"` (default `auto`) in `config.toml` (`CONFIG.md` §1.3). A forced backend that is unavailable errors loudly with every probe result; `auto` is the normal path.
@@ -322,13 +322,50 @@ Priority (first available wins):
 result, and the chosen backend, so a "why did it pick X?" question is always
 answerable from the log.
 
-**No-backend fallback (the GNOME-Wayland-without-extension case):** if every
-probe fails (e.g. GNOME on Wayland with the extension uninstalled and a11y off),
-`select_linux_backend` returns `Err`. The runner still starts the tray +
-device-status poll + HID pipeline (the app is not useless — it shows connection
-state and the Settings/rules UIs), but emits no window events until a backend
-becomes available. On GNOME specifically a one-shot `notify-send` fires pointing
-the user at the extension (§8.4).
+**No-backend fallback = re-probe until a backend appears (the boot race +
+the GNOME-Wayland-without-extension case):** if every probe fails,
+`select_linux_backend` returns `Err` — but the runner treats total failure as
+*transient*, not terminal. It keeps the tray + device-status poll + HID
+pipeline running (the app is not useless — it shows connection state and the
+Settings/rules UIs) and **re-probes `create_monitor` with exponential backoff
+(2 s → 30 s cap, indefinitely) until a backend is available**, then starts it
+normally. Rationale: the service can start *before* the graphical session
+exists — systemd **linger** starts the user manager (and thus every
+`WantedBy=default.target` service) at *boot*, before anyone logs in; the udev
+`SYSTEMD_USER_WANTS` trigger (LINUX.md §1) fires at pre-login coldplug of an
+already-plugged keyboard; and under a display manager `default.target` can
+race the compositor. In that window `$WAYLAND_DISPLAY` / `$DISPLAY` /
+`$HYPRLAND_INSTANCE_SIGNATURE` have not yet been imported into the
+user-manager environment (the compositor's
+`dbus-update-activation-environment`/`import-environment` runs only after it
+is up), so *every* probe fails — a one-shot probe at that moment left the app
+permanently backendless until a manual `systemctl --user restart` once the
+session existed (the reboot bug).
+
+Journal contract for the re-probe loop (grep-able, tested by proxy via the
+pure backoff/heartbeat helpers in `runners/linux.rs`):
+
+| Event | Line (severity) |
+|---|---|
+| first total failure | `No Linux window backend available yet (…) … re-probing until the session is up…` (stderr) |
+| later attempts | verbose only; every 10th attempt a non-verbose heartbeat `Still no Linux window backend after N re-probes (…) still trying…` (stderr) |
+| recovery | `Window backend '<name>' became available on re-probe attempt N; starting window monitoring.` (stdout) |
+
+On GNOME specifically a one-shot `notify-send` fires pointing the user at the
+extension (§8.4) — before selection, hence before any re-probe, once per
+process. Note the backends' *own* reconnect loops (§5.3, §7) are a second,
+inner safety net: they handle the compositor dying *after* selection; the
+runner's re-probe loop handles it never having been there *at selection time*.
+
+One false positive had to be closed inside a probe for that loop to be
+sound: `at-spi2-registryd` can be **D-Bus-activated with no graphical
+session at all** (any headless a11y client — a crashed Qt helper, a
+browser-integration burst — auto-starts one on the user's session bus), and
+a lingered service's re-probe loop then latched the AT-SPI backend on a bare
+"`org.a11y.Bus` is owned" check and never saw a focus event again. The
+AT-SPI probe therefore also requires the registry desktop to enumerate ≥ 1
+accessible application (§9) — exactly the capability the backend needs to
+observe focus at all.
 
 **Feature gating:** backends whose feature is off are absent from the binary
 (their table row is skipped at compile time). `default =
@@ -494,9 +531,15 @@ elsewhere. **Best-effort, not primary** (see limitations).
 - **Poll fallback:** every 1000 ms query the a11y registry's focused object and
   dedup (same shape as §8.3).
 - **Availability:** the a11y bus is present (`org.a11y.Bus` owned or
-  `$ATSPI_BUS_ADDRESS`). Most distros ship a11y **off** until the user enables
-  "Assistive Technology / Screen Reader" in Settings — document that enabling
-  a11y is required for this backend.
+  `$ATSPI_BUS_ADDRESS`) **and** the registry desktop
+  (`/org/a11y/atspi/accessible_root`, destination `org.a11y.atspi.Registry`)
+  reports ≥ 1 accessible application via `GetChildCount`. Presence alone is
+  NOT availability: a registry can be D-Bus-activated headless with no
+  graphical session — its desktop introspects as an empty node and the call
+  fails — and a re-probe loop that accepted it would latch a backend that can
+  never emit a focus event. Most distros ship a11y **off** until the user
+  enables "Assistive Technology / Screen Reader" in Settings — document that
+  enabling a11y is required for this backend.
 - **Known limitations (why it's not the GNOME primary):**
   - `app_class` is the app's *readable* name, not `WM_CLASS` — usually fine
     (`"Firefox"`) but inconsistent for Electron/sandboxed apps (`"python3"`,

@@ -320,62 +320,55 @@ fn hyprland_socket_is_live(path: &Path) -> bool {
 }
 
 /// Availability probe for the Hyprland backend (PLATFORMS.md §6). Side-effect-
-/// free: reads `$HYPRLAND_INSTANCE_SIGNATURE` + `$XDG_RUNTIME_DIR`, checks the
-/// declared instance's socket is live, and returns `Ok`/`Err(reason)`. Does NOT
-/// self-heal env (the recovery scan + `env::set_var` stays in
-/// [`check_hyprland_environment`], which runs in `start()` where a retry won't
-/// double-mutate). This keeps a forced-backend re-probe or a future re-selection
-/// free of env side effects.
+/// free: reads `$HYPRLAND_INSTANCE_SIGNATURE` + `$XDG_RUNTIME_DIR` and checks a
+/// live socket is reachable — the DECLARED instance first, then (the boot-race
+/// path) every `<sig>` under `$XDG_RUNTIME_DIR/hypr/` via
+/// [`find_live_hyprland_socket`]. Does NOT self-heal env (the recovery scan +
+/// `env::set_var` stays in [`check_hyprland_environment`], which runs in
+/// `start()` where a retry won't double-mutate). This keeps a forced-backend
+/// re-probe or a future re-selection free of env side effects.
 pub(crate) fn probe_available(_verbose: bool) -> Result<(), String> {
-    let sig = std::env::var("HYPRLAND_INSTANCE_SIGNATURE")
-        .ok()
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| "$HYPRLAND_INSTANCE_SIGNATURE is not set".to_string())?;
-    let runtime = std::env::var("XDG_RUNTIME_DIR")
-        .ok()
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| "$XDG_RUNTIME_DIR is not set".to_string())?;
-    let socket = PathBuf::from(&runtime)
-        .join("hypr")
-        .join(&sig)
-        .join(".socket.sock");
-    if !socket.exists() {
-        return Err(format!(
-            "no Hyprland socket at {} (instance {sig})",
-            socket.display()
-        ));
+    if find_live_hyprland_socket().is_some() {
+        return Ok(());
     }
-    if !hyprland_socket_is_live(&socket) {
-        return Err(format!(
-            "Hyprland socket exists but no listener (crashed instance {sig}?)"
-        ));
-    }
-    Ok(())
+    let declared = std::env::var("HYPRLAND_INSTANCE_SIGNATURE")
+        .ok()
+        .filter(|s| !s.is_empty());
+    Err(match declared {
+        Some(sig) => format!(
+            "declared instance '{sig}' has no live socket and no other live socket under \
+             $XDG_RUNTIME_DIR/hypr/ (a crashed Hyprland can leave stale socket files behind)"
+        ),
+        None => match std::env::var("XDG_RUNTIME_DIR") {
+            Ok(dir) if !dir.is_empty() => format!(
+                "$HYPRLAND_INSTANCE_SIGNATURE is not set and no live socket under {dir}/hypr/ \
+                 (the session env may not be imported into the systemd user manager yet, or \
+                 Hyprland is not running)"
+            ),
+            _ => "$XDG_RUNTIME_DIR is not set".to_string(),
+        },
+    })
 }
 
-/// Resolve the Hyprland instance to talk to and guarantee
-/// `$HYPRLAND_INSTANCE_SIGNATURE` points at a *live* one.
+/// First LIVE Hyprland IPC socket reachable, as `(signature, socket_path)`:
+/// the session-declared `$HYPRLAND_INSTANCE_SIGNATURE` first, then every
+/// `<sig>` directory under `$XDG_RUNTIME_DIR/hypr/` (deduped, env candidate
+/// first). `socket.exists()` is a cheap fast-path to skip socket-less
+/// directories; the real decision is the connectivity check
+/// ([`hyprland_socket_is_live`]), which tells a live instance apart from the
+/// stale socket file a crashed one leaves. `None` when nothing is reachable
+/// (or `$XDG_RUNTIME_DIR` is unset).
 ///
-/// Candidate signatures are gathered in priority order:
-///   1. `$HYPRLAND_INSTANCE_SIGNATURE` — the instance the session declares.
-///      Preferred because, when it's live, it names the user's own seat rather
-///      than some other instance on a multi-seat box.
-///   2. every `<sig>` directory under `$XDG_RUNTIME_DIR/hypr/` — the recovery
-///      path used when the env var is unset *or* points at a dead instance
-///      (e.g. a systemd user service that inherited the signature of a
-///      now-dead Hyprland).
-///
-/// The first candidate whose `.socket.sock` actually accepts a connection wins.
-/// If that candidate isn't the current `$HYPRLAND_INSTANCE_SIGNATURE`, the env
-/// var is republished so the `hyprland` crate (which selects its instance from
-/// it) targets the live socket — this is the self-heal. We no longer shell out
-/// to `ps` (#15); a connectivity check against the socket is authoritative.
-///
-/// Returns `Err` only when no live socket is reachable anywhere; the caller
-/// ([`wait_for_hyprland`]) then backs off and retries until Hyprland comes up.
-fn check_hyprland_environment() -> Result<(), Box<dyn Error>> {
-    let runtime_dir = env::var("XDG_RUNTIME_DIR")
-        .map_err(|_| "XDG_RUNTIME_DIR is not set; cannot locate Hyprland socket".to_string())?;
+/// Shared by the availability probe (side-effect-free: no env republish) and
+/// [`check_hyprland_environment`] (which republishes on top of it). The scan
+/// matters for the boot race: a systemd user service starts before the
+/// session env is imported into the user manager, when
+/// `$HYPRLAND_INSTANCE_SIGNATURE` is absent even though the compositor socket
+/// is live — without the scan the probe fails in that window while the
+/// session-bus-based AT-SPI probe succeeds, latching a backend that never
+/// delivers focus events under Hyprland (GOTCHA-8) until a manual restart.
+fn find_live_hyprland_socket() -> Option<(String, PathBuf)> {
+    let runtime_dir = env::var("XDG_RUNTIME_DIR").ok().filter(|s| !s.is_empty())?;
     let hypr_dir = PathBuf::from(&runtime_dir).join("hypr");
 
     // Candidate signatures, deduped, session-declared instance first.
@@ -395,16 +388,32 @@ fn check_hyprland_environment() -> Result<(), Box<dyn Error>> {
         }
     }
 
-    // First candidate with a live IPC socket wins. `socket.exists()` is only a
-    // cheap fast-path to skip socket-less directories without spawning a probe
-    // thread; the real decision is the connectivity check, which is what tells
-    // a live instance apart from the stale socket file a crashed one leaves.
-    for sig in &candidates {
-        let socket_path = hypr_dir.join(sig).join(".socket.sock");
+    for sig in candidates {
+        let socket_path = hypr_dir.join(&sig).join(".socket.sock");
         if !socket_path.exists() {
             continue;
         }
         if hyprland_socket_is_live(&socket_path) {
+            return Some((sig, socket_path));
+        }
+    }
+    None
+}
+
+/// Resolve the Hyprland instance to talk to and guarantee
+/// `$HYPRLAND_INSTANCE_SIGNATURE` points at a *live* one.
+///
+/// Delegates the search to [`find_live_hyprland_socket`] (env-declared
+/// signature first, then a scan) and republishes the env var when the live
+/// winner differs (the `hyprland` crate selects its instance from it — this
+/// is the self-heal). We no longer shell out to `ps` (#15); a connectivity
+/// check against the socket is authoritative.
+///
+/// Returns `Err` only when no live socket is reachable anywhere; the caller
+/// ([`wait_for_hyprland`]) then backs off and retries until Hyprland comes up.
+fn check_hyprland_environment() -> Result<(), Box<dyn Error>> {
+    match find_live_hyprland_socket() {
+        Some((sig, _socket)) => {
             // The hyprland crate selects its instance via this env var, so
             // republish it whenever it differs from the live one we found
             // (stale / dead-value recovery). Runs once, on the main thread,
@@ -413,21 +422,30 @@ fn check_hyprland_environment() -> Result<(), Box<dyn Error>> {
             if env::var("HYPRLAND_INSTANCE_SIGNATURE").ok().as_deref() != Some(sig.as_str()) {
                 env::set_var("HYPRLAND_INSTANCE_SIGNATURE", sig);
             }
-            return Ok(());
+            Ok(())
+        }
+        None => {
+            let declared = env::var("HYPRLAND_INSTANCE_SIGNATURE")
+                .ok()
+                .filter(|s| !s.is_empty());
+            let hint = match declared {
+                Some(sig) => format!(
+                    "declared instance '{sig}' is not live and no other live socket was found \
+                     under $XDG_RUNTIME_DIR/hypr/ (a crashed Hyprland can leave stale socket \
+                     files behind)"
+                ),
+                None => match env::var("XDG_RUNTIME_DIR") {
+                    Ok(dir) if !dir.is_empty() => format!(
+                        "$HYPRLAND_INSTANCE_SIGNATURE is not set and no live socket was found \
+                         under {dir}/hypr/ (the session env may not be imported into the \
+                         systemd user manager yet, or Hyprland is not running)"
+                    ),
+                    _ => "XDG_RUNTIME_DIR is not set; cannot locate the Hyprland socket".to_string(),
+                },
+            };
+            Err(format!("No reachable Hyprland socket. {hint}. Is Hyprland running?").into())
         }
     }
-
-    let hint = if candidates.is_empty() {
-        "no Hyprland instance directories found under $XDG_RUNTIME_DIR/hypr/".to_string()
-    } else {
-        format!(
-            "found {} instance dir(s) but none have a live IPC socket \
-             (a crashed Hyprland can leave stale socket files behind): [{}]",
-            candidates.len(),
-            candidates.join(", ")
-        )
-    };
-    Err(format!("No reachable Hyprland socket. {hint}. Is Hyprland running?").into())
 }
 
 /// A short, bounded poll burst spawned after layer (scratchpad) events to catch

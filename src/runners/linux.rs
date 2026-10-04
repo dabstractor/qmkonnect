@@ -69,78 +69,210 @@ impl PlatformRunner for LinuxRunner {
 
         // The merged runtime path. `create_monitor` delegates to
         // `select_linux_backend`, which probes each compiled-in backend at runtime
-        // and returns `Err` when none is available. We do NOT propagate that `Err`
-        // with `?` — the no-backend case keeps the tray + device pipeline alive.
-        match platforms::create_monitor(self.verbose) {
-            Ok(mut monitor) => {
-                if self.verbose {
-                    println!("Using platform: {}", monitor.platform_name());
+        // and returns `Err` when none is available. We do NOT propagate that
+        // `Err` with `?` — a total probe failure is usually TEMPORARY: the
+        // service can start before the graphical session exists (systemd
+        // linger starts the user manager — and every `WantedBy=default.target`
+        // service — at BOOT, before anyone logs in; the udev
+        // `SYSTEMD_USER_WANTS` trigger fires at pre-login coldplug of an
+        // already-plugged keyboard; and under a display manager `default.target`
+        // races the compositor). In that window no $WAYLAND_DISPLAY / $DISPLAY /
+        // $HYPRLAND_INSTANCE_SIGNATURE has been imported into the user-manager
+        // environment yet, so EVERY probe fails. A one-shot probe there left the
+        // app backendless until a manual `systemctl --user restart` after the
+        // session's `dbus-update-activation-environment` import (the reboot
+        // bug); `acquire_backend_with_backoff` re-probes until the session
+        // shows up instead (PLATFORMS.md §6 "No-backend fallback").
+        let mut consecutive_start_failures: u32 = 0;
+        loop {
+            let mut monitor = match platforms::create_monitor(self.verbose) {
+                Ok(monitor) => monitor,
+                Err(first_err) => {
+                    // Loud first notice — the tray + device pipeline is already
+                    // running above, so this is a degradation notice, not a
+                    // fatal one. (The §8.4 GNOME one-shot extension hint
+                    // already fired above, before backend selection.)
+                    eprintln!(
+                        "No Linux window backend available yet ({first_err}); running tray \
+                         + device pipeline only, re-probing until the session is up…"
+                    );
+                    acquire_backend_with_backoff(self.verbose)
                 }
-                if monitor.start_blocks_calling_thread() {
-                    // Hyprland: start() blocks the calling thread on the IPC
-                    // event listener. There is no GUI loop to run alongside it.
-                    monitor.start()?;
-                } else {
-                    // Spawn-and-return backends (X11, and the future foreign-
-                    // toplevel / GNOME / AT-SPI): run the monitor on a worker
-                    // thread and keep main alive via the tray loop or park.
-                    #[cfg(feature = "linux-tray")]
-                    let monitor_verbose = self.verbose;
-                    let _monitor_handle = std::thread::spawn(move || {
-                        if let Err(e) = monitor.start() {
-                            eprintln!("Monitor error: {}", e);
-                        }
-                    });
-
-                    // When the SNI tray is enabled there is no blocking GUI loop
-                    // to drive (ksni owns its D-Bus thread), so park main;
-                    // Ctrl+C / SIGTERM still exits via the handler above.
-                    #[cfg(feature = "linux-tray")]
-                    {
-                        if monitor_verbose {
-                            println!("StatusNotifierItem tray active; blocking on main thread");
-                        }
-                        loop {
-                            std::thread::park();
-                        }
-                    }
-                    // (under not(linux-tray) AND not(hyprland): tray::setup_tray
-                    // above already drives a blocking loop — fall through.)
-                }
+            };
+            let backend = monitor.platform_name().to_owned();
+            if self.verbose {
+                println!("Using platform: {backend}");
             }
-            Err(e) => {
-                // No window backend available (every probe failed). The app is NOT
-                // useless: the tray + device-status poll + HID pipeline are all
-                // already running above. Keep main alive. PLATFORMS.md §6. (The
-                // §8.4 GNOME one-shot extension hint already fired above, before
-                // backend selection.)
-                eprintln!(
-                    "No Linux window backend available; running tray + device pipeline only. ({e})"
-                );
 
-                // Keep main alive so the tray + poll thread keep running. Under
-                // linux-tray, park main (ksni owns its D-Bus thread). Under
-                // not(linux-tray) AND not(hyprland), tray::setup_tray above is
-                // already the blocking loop — fall through. Under hyprland+
-                // not(linux-tray) there is no tray loop at all, so park main
-                // explicitly to keep the device pipeline alive.
-                #[cfg(feature = "linux-tray")]
-                loop {
-                    std::thread::park();
+            if monitor.start_blocks_calling_thread() {
+                // Hyprland: start() blocks the calling thread on the IPC
+                // event listener. There is no GUI loop to run alongside it.
+                // It only returns when the listener gives up (compositor
+                // death etc.) — re-acquire in-process rather than exit:
+                // a crash-flapping process would otherwise hit systemd's
+                // StartLimitBurst and leave the service DEAD until a
+                // manual restart.
+                match monitor.start() {
+                    Ok(()) => println!("Monitor '{backend}' stopped."),
+                    Err(e) => eprintln!("Monitor error ('{backend}'): {e}"),
                 }
-                #[cfg(all(feature = "hyprland", not(feature = "linux-tray")))]
-                loop {
-                    std::thread::park();
-                }
-                #[cfg(all(not(feature = "linux-tray"), not(feature = "hyprland")))]
-                {
-                    // tray::setup_tray above is the blocking loop; nothing to do.
+                eprintln!(
+                    "Window backend '{backend}' exited; re-acquiring a window backend…"
+                );
+                monitor_reacquire_cooldown(&mut consecutive_start_failures);
+                continue;
+            }
+
+            // Spawn-and-return backends (X11, and the foreign-toplevel /
+            // GNOME / AT-SPI): start() hands off to its own worker thread(s) —
+            // which own reconnect themselves — and returns. `Err` here means
+            // the backend never came up: re-acquire (previously this logged
+            // once and main parked forever behind a blind window pipeline).
+            match monitor.start() {
+                Ok(()) => break, // healthy: the monitor's own threads take over
+                Err(e) => {
+                    eprintln!(
+                        "Window backend '{backend}' failed to start: {e}; re-acquiring…"
+                    );
+                    monitor_reacquire_cooldown(&mut consecutive_start_failures);
                 }
             }
         }
 
-        println!("Monitor stopped, exiting.");
-        Ok(())
+        // When the SNI tray is enabled there is no blocking GUI loop
+        // to drive (ksni owns its D-Bus thread): park main until Ctrl+C /
+        // SIGTERM (the handler above exits the process). The diverging tail
+        // satisfies the fn's Result return via never-type coercion. Under
+        // not(linux-tray) AND not(hyprland), tray::setup_tray above already
+        // drove a blocking loop — fall through and return normally.
+        #[cfg(feature = "linux-tray")]
+        {
+            if self.verbose {
+                println!("StatusNotifierItem tray active; blocking on main thread");
+            }
+            loop {
+                std::thread::park();
+            }
+        }
+        #[cfg(not(feature = "linux-tray"))]
+        {
+            println!("Monitor stopped, exiting.");
+            Ok(())
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Backend re-acquisition — the boot race (PLATFORMS.md §6 "No-backend
+// fallback"). The service can start before the graphical session exists
+// (linger boot start, udev SYSTEMD_USER_WANTS coldplug, or default.target
+// racing the display manager), when no session env vars have been imported
+// into the user-manager environment yet. Total probe failure is therefore
+// usually "too early", not "never": re-probe with backoff instead of parking
+// forever (the old behavior needed a manual `systemctl --user restart` after
+// every reboot).
+// ---------------------------------------------------------------------------
+
+/// Delay before the FIRST backend re-probe (ms). The boot/login race is
+/// seconds-scale (DM → compositor → `dbus-update-activation-environment`
+/// import), so retry briskly at first, then back off.
+const BACKEND_RETRY_INITIAL_MS: u64 = 2_000;
+/// Backoff cap (ms). A linger-enabled machine can sit pre-login for minutes
+/// to hours; at cap each probe is a handful of env reads + socket connects,
+/// so a 30 s poll is negligible.
+const BACKEND_RETRY_MAX_MS: u64 = 30_000;
+/// Non-verbose heartbeat: re-log the persistent failure every N attempts so a
+/// long wait stays visible in the journal without per-attempt spam (at the
+/// 30 s cap this is one line every ~5 minutes).
+const BACKEND_RETRY_HEARTBEAT_EVERY: u32 = 10;
+
+/// Delay before re-probe attempt `attempt` (1 = the first re-probe after the
+/// initial loud failure): `2s, 4s, 8s, 16s, 30s, 30s, …` (capped). Pure —
+/// unit-tested below.
+fn backend_retry_delay_ms(attempt: u32) -> u64 {
+    // Clamp the shift so absurd attempt counts (a linger box waiting hours)
+    // can neither overflow nor panic: 2s ≪ 16 doublings to reach any cap.
+    let shift = attempt.saturating_sub(1).min(16);
+    BACKEND_RETRY_INITIAL_MS
+        .saturating_mul(1u64 << shift)
+        .min(BACKEND_RETRY_MAX_MS)
+}
+
+/// True on heartbeat attempts — every [`BACKEND_RETRY_HEARTBEAT_EVERY`]th.
+/// Pure — unit-tested below.
+fn is_heartbeat_attempt(attempt: u32) -> bool {
+    attempt % BACKEND_RETRY_HEARTBEAT_EVERY == 0
+}
+
+// ---------------------------------------------------------------------------
+// Monitor re-acquisition cooldown — the failed-start counterpart of
+// `acquire_backend_with_backoff` (which covers total probe failure). A
+// backend that is ACQUIRED but fails to run used to leave the service either
+// dead (blocking `start()` error → process exit → systemd `StartLimitBurst=5`
+// can permanently stop the unit after flapping) or blind (spawn-style
+// `start()` error → logged once, main parked forever behind a live tray over
+// a dead window pipeline). Both paths now re-acquire after this cooldown.
+// ---------------------------------------------------------------------------
+
+const MONITOR_REACQUIRE_INITIAL_MS: u64 = 2_000;
+const MONITOR_REACQUIRE_MAX_MS: u64 = 30_000;
+
+/// Delay before re-acquiring a window backend after `consecutive_failures`
+/// back-to-back failed starts (1 = the first failure): `2s, 6s, 18s, 30s, 30s, …`
+/// (×3 growth off a 2 s base, capped — mirrors the backends' internal
+/// reconnect curves: wayland_ft.rs / hyprland.rs GOTCHA-7). Pure —
+/// unit-tested below. The caller's counter is a CONSECUTIVE-failure streak:
+/// the acquire-and-run loop breaks out on the first healthy start, so the
+/// streak only ever grows within one failure streak and is implicitly reset
+/// by that break.
+fn monitor_reacquire_delay_ms(consecutive_failures: u32) -> u64 {
+    let n = consecutive_failures.saturating_sub(1).min(3);
+    MONITOR_REACQUIRE_INITIAL_MS
+        .saturating_mul(3u64.saturating_pow(n))
+        .min(MONITOR_REACQUIRE_MAX_MS)
+}
+
+/// Sleep before the next acquisition attempt and bump the failure streak.
+fn monitor_reacquire_cooldown(consecutive_failures: &mut u32) {
+    *consecutive_failures = consecutive_failures.saturating_add(1);
+    std::thread::sleep(std::time::Duration::from_millis(
+        monitor_reacquire_delay_ms(*consecutive_failures),
+    ));
+}
+
+/// Re-probe `create_monitor` with backoff until a backend is available, then
+/// return it, logging the self-heal. The caller (`run`) has already logged
+/// the first failure loudly. Sleeps on the calling thread — Ctrl+C / SIGTERM
+/// still exit via the handler installed in `run()`. Never returns `Err`: the
+/// loop is unbounded by design (a machine may sit pre-login under linger for
+/// hours; the probes are cheap).
+fn acquire_backend_with_backoff(verbose: bool) -> Box<dyn platforms::WindowMonitor> {
+    let mut attempt: u32 = 0;
+    loop {
+        attempt += 1;
+        std::thread::sleep(std::time::Duration::from_millis(
+            backend_retry_delay_ms(attempt),
+        ));
+        match platforms::create_monitor(verbose) {
+            Ok(monitor) => {
+                println!(
+                    "Window backend '{}' became available on re-probe attempt {attempt}; \
+                     starting window monitoring.",
+                    monitor.platform_name()
+                );
+                return monitor;
+            }
+            Err(e) => {
+                if verbose {
+                    println!("Backend re-probe attempt {attempt}: still none ({e})");
+                } else if is_heartbeat_attempt(attempt) {
+                    eprintln!(
+                        "Still no Linux window backend after {attempt} re-probes (last: {e}); \
+                         still trying…"
+                    );
+                }
+            }
+        }
     }
 }
 
@@ -215,6 +347,55 @@ fn maybe_gnome_first_run_notify(verbose: bool) {
 mod tests {
     use super::*;
 
+    // ------------- backend re-probe backoff (PLATFORMS.md §6 boot race) --------------
+
+    #[test]
+    fn backend_retry_delay_doubles_from_initial() {
+        assert_eq!(backend_retry_delay_ms(1), BACKEND_RETRY_INITIAL_MS);
+        assert_eq!(backend_retry_delay_ms(2), 2 * BACKEND_RETRY_INITIAL_MS);
+        assert_eq!(backend_retry_delay_ms(3), 4 * BACKEND_RETRY_INITIAL_MS);
+    }
+
+    #[test]
+    fn backend_retry_delay_caps_at_max() {
+        // 2s, 4s, 8s, 16s, 30s (cap hits at attempt 5), 30s, …
+        assert_eq!(backend_retry_delay_ms(4), 16_000);
+        assert_eq!(backend_retry_delay_ms(5), BACKEND_RETRY_MAX_MS);
+        assert_eq!(backend_retry_delay_ms(6), BACKEND_RETRY_MAX_MS);
+        // A linger box can wait hours pre-login: absurd attempt counts must
+        // neither overflow nor panic — they pin at the cap.
+        assert_eq!(backend_retry_delay_ms(1_000_000), BACKEND_RETRY_MAX_MS);
+        assert_eq!(backend_retry_delay_ms(u32::MAX), BACKEND_RETRY_MAX_MS);
+    }
+
+    #[test]
+    fn heartbeat_is_every_tenth_attempt() {
+        for attempt in 1..=21u32 {
+            assert_eq!(
+                is_heartbeat_attempt(attempt),
+                attempt % BACKEND_RETRY_HEARTBEAT_EVERY == 0,
+                "attempt {attempt}"
+            );
+        }
+        assert!(!is_heartbeat_attempt(1)); // the loud first notice covers it
+        assert!(is_heartbeat_attempt(10));
+        assert!(is_heartbeat_attempt(20));
+    }
+
+    // ------------- monitor re-acquisition cooldown (failed starts) --------------
+
+    #[test]
+    fn monitor_reacquire_delay_grows_by_three_then_caps() {
+        assert_eq!(monitor_reacquire_delay_ms(1), 2_000);
+        assert_eq!(monitor_reacquire_delay_ms(2), 6_000);
+        assert_eq!(monitor_reacquire_delay_ms(3), 18_000);
+        assert_eq!(monitor_reacquire_delay_ms(4), MONITOR_REACQUIRE_MAX_MS);
+        assert_eq!(monitor_reacquire_delay_ms(5), MONITOR_REACQUIRE_MAX_MS);
+        // A long failure streak must neither overflow nor panic — it pins at
+        // the cap.
+        assert_eq!(monitor_reacquire_delay_ms(u32::MAX), MONITOR_REACQUIRE_MAX_MS);
+    }
+
     fn with_xdg(value: Option<&str>, f: impl FnOnce()) {
         let snap = std::env::var("XDG_CURRENT_DESKTOP").ok();
         match value {
@@ -277,3 +458,4 @@ mod tests {
         });
     }
 }
+

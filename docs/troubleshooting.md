@@ -210,6 +210,23 @@ qmkonnect -v 2>&1 | grep -i "backend\|probing\|selected"
 # Expect: 'select_linux_backend: probing …' lines + '… selected' for the winner.
 ```
 
+If the service starts **before your graphical session exists** (systemd
+linger, boot-time udev coldplug, or a display-manager race), every probe
+fails on the first try — that's expected, not a misconfiguration. The daemon
+keeps re-probing with backoff and logs
+`No Linux window backend available yet … re-probing until the session is up…`,
+then `Window backend '…' became available on re-probe attempt N` once your
+compositor is up. If that recovery line never appears, your session's env
+isn't reaching the user manager — check
+`systemctl --user show-environment | grep -E 'WAYLAND_DISPLAY|DISPLAY'`.
+
+A related trap: the AT-SPI fallback probe declines an a11y registry whose
+desktop has no accessible applications connected (a registry can be
+D-Bus-activated headless, with no graphical session behind it). If verbose
+mode shows `atspi` failing with "no accessible applications" (or "not
+enumerable"), that is the probe correctly refusing a bus that could never
+emit focus events — chase the compositor backends instead.
+
 Then match your desktop:
 
 - **foreign-toplevel** (KDE Plasma 6, COSMIC, Hyprland, Sway, Niri, wlroots):
