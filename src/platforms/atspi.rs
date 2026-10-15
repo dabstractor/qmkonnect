@@ -426,14 +426,23 @@ fn run_poll_loop(
 }
 
 // ---------------------------------------------------------------------------
-// Availability probe (PLATFORMS.md §9). Cheap + side-effect-free. Present iff
-// `org.a11y.Bus` is owned on the session bus OR `$ATSPI_BUS_ADDRESS` is set
-// (GOTCHA-8: "present" ≠ "useful" — the daemon being up does NOT mean apps are
-// exposing a11y; that requires enabling Assistive Technology, documented in
-// troubleshooting.md).
+// Availability probe (PLATFORMS.md §9). Cheap + side-effect-free (apart from
+// the transient a11y-bus connection). Presence: `org.a11y.Bus` owned on the
+// session bus OR `$ATSPI_BUS_ADDRESS` set (GOTCHA-8: "present" ≠ "useful" —
+// the daemon being up does NOT mean apps are exposing a11y; that requires
+// enabling Assistive Technology, documented in troubleshooting.md). But
+// presence alone is not AVAILABILITY either: a D-Bus-activated
+// `at-spi2-registryd` can exist with no graphical session at all (any
+// headless a11y client — a crashed Qt helper, a browser-integration burst —
+// auto-starts one), and the re-probe loop accepting a bare presence check
+// would latch this backend and then never see a single focus event (the
+// boot-race false-positive latch). So the probe ALSO requires the registry's
+// desktop object to enumerate at least one accessible application — exactly
+// the capability the backend needs to ever observe a focus change.
 // ---------------------------------------------------------------------------
 pub(crate) fn probe_available(verbose: bool) -> Result<(), String> {
-    // Cheapest presence signal #1: the env var (set by at-spi-bus-launcher).
+    // Presence signal #1: the env var (set by at-spi-bus-launcher).
+    let mut present = false;
     if let Ok(addr) = std::env::var("ATSPI_BUS_ADDRESS") {
         if !addr.is_empty() {
             if verbose {
@@ -442,35 +451,92 @@ pub(crate) fn probe_available(verbose: bool) -> Result<(), String> {
                     crate::core::now_ms()
                 );
             }
-            return Ok(());
+            present = true;
         }
     }
     // Presence signal #2: org.a11y.Bus owned on the session bus (one
     // name_has_owner round-trip — mirrors gnome::probe_available).
-    let conn =
-        Connection::session().map_err(|e| format!("cannot connect to the session bus: {e}"))?;
-    let dbus = DBusProxy::new(&conn).map_err(|e| format!("DBusProxy failed: {e}"))?;
-    let owned = dbus
-        .name_has_owner(
-            BusName::from_static_str(A11Y_BUS_NAME)
-                .map_err(|e| format!("invalid bus name '{A11Y_BUS_NAME}': {e}"))?,
-        )
-        .map_err(|e| format!("name_has_owner('{A11Y_BUS_NAME}') failed: {e}"))?;
-    if owned {
-        if verbose {
-            println!(
-                "[{}ms] atspi: '{A11Y_BUS_NAME}' owned (a11y bus present)",
-                crate::core::now_ms()
-            );
+    if !present {
+        let conn =
+            Connection::session().map_err(|e| format!("cannot connect to the session bus: {e}"))?;
+        let dbus = DBusProxy::new(&conn).map_err(|e| format!("DBusProxy failed: {e}"))?;
+        let owned = dbus
+            .name_has_owner(
+                BusName::from_static_str(A11Y_BUS_NAME)
+                    .map_err(|e| format!("invalid bus name '{A11Y_BUS_NAME}': {e}"))?,
+            )
+            .map_err(|e| format!("name_has_owner('{A11Y_BUS_NAME}') failed: {e}"))?;
+        if owned {
+            if verbose {
+                println!(
+                    "[{}ms] atspi: '{A11Y_BUS_NAME}' owned (a11y bus present)",
+                    crate::core::now_ms()
+                );
+            }
+            present = true;
         }
-        Ok(())
-    } else {
-        Err(format!(
+    }
+    if !present {
+        return Err(format!(
             "the AT-SPI/a11y bus is not available ('{A11Y_BUS_NAME}' not owned, \
              $ATSPI_BUS_ADDRESS unset). Enable Assistive Technology / Screen Reader in \
              your desktop's Accessibility settings (see docs/troubleshooting.md)."
-        ))
+        ));
     }
+    // Usefulness (GOTCHA-8): the desktop must expose ≥ 1 accessible app.
+    desktop_verdict(desktop_app_count(verbose))
+}
+
+/// Probe verdict from the registry desktop's accessible-app count (pure —
+/// GOTCHA-13: the latch rule stays unit-testable without a live registry).
+/// `Ok(0)` and unqueryable desktops are BOTH rejections: an app-less desktop
+/// can never emit a focus event, so selecting this backend there would strand
+/// the re-probe loop's one-shot latch (LINUX.md §6.3).
+fn desktop_verdict(count: Result<i32, String>) -> Result<(), String> {
+    match count {
+        Ok(n) if n > 0 => Ok(()),
+        Ok(_) => Err(
+            "the a11y bus is up but its desktop exposes no accessible applications \
+             (no graphical session yet — a stray registry can be D-Bus-activated \
+             headless — or Assistive Technology is disabled; see \
+             docs/troubleshooting.md)"
+                .to_string(),
+        ),
+        Err(e) => Err(format!(
+            "the a11y bus is up but its desktop is not enumerable: {e}"
+        )),
+    }
+}
+
+/// The registry desktop's accessible-application count, or why it cannot be
+/// read. One `GetChildCount` round-trip on
+/// `/org/a11y/atspi/accessible_root` (destination: the registry's well-known
+/// name). On an app-less registry that object is an empty node — the call
+/// fails with `UnknownMethod`, which callers treat as "not available".
+fn desktop_app_count(verbose: bool) -> Result<i32, String> {
+    let Some((_addr, a11y)) = open_a11y_bus(verbose) else {
+        return Err(
+            "could not open the a11y bus (org.a11y.Bus.GetAddress + \
+             $ATSPI_BUS_ADDRESS both failed)"
+                .to_string(),
+        );
+    };
+    let desktop: zbus::blocking::Proxy<'_> = zbus::blocking::proxy::Builder::new(&a11y)
+        .destination("org.a11y.atspi.Registry")
+        .map_err(|e| format!("desktop proxy destination failed: {e}"))?
+        .path("/org/a11y/atspi/accessible_root")
+        .map_err(|e| format!("desktop proxy path failed: {e}"))?
+        .interface("org.a11y.atspi.Accessible")
+        .map_err(|e| format!("desktop proxy interface failed: {e}"))?
+        .build()
+        .map_err(|e| format!("desktop proxy build failed: {e}"))?;
+    let reply = desktop
+        .call_method("GetChildCount", &())
+        .map_err(|e| format!("GetChildCount failed: {e}"))?;
+    reply
+        .body()
+        .deserialize()
+        .map_err(|e| format!("GetChildCount reply undecodable: {e}"))
 }
 
 /// Tracked focused accessible as a single `(app_class, title)` row (empty vec
@@ -570,6 +636,60 @@ mod tests {
         assert_eq!(*cell.lock().unwrap(), Some((String::new(), String::new())));
         apply_and_notify(&cell, (String::new(), String::new()), false);
         assert_eq!(*cell.lock().unwrap(), Some((String::new(), String::new())));
+    }
+
+    #[test]
+    fn desktop_verdict_requires_apps() {
+        // An app-less desktop (a stray headless registry) must NOT count as
+        // available — that false positive latched the boot-race re-probe loop
+        // onto atspi with no session to observe (GOTCHA-8).
+        let err = desktop_verdict(Ok(0)).unwrap_err();
+        assert!(err.contains("no accessible applications"), "got: {err}");
+        assert!(desktop_verdict(Ok(1)).is_ok());
+        assert!(desktop_verdict(Ok(3)).is_ok());
+    }
+
+    #[test]
+    fn desktop_verdict_rejects_unqueryable_desktop() {
+        // An orphan registry serves NO org.a11y.atspi.Accessible on
+        // /org/a11y/atspi/accessible_root at all (the node introspects
+        // empty) → the call fails; that must read as "not available".
+        let err = desktop_verdict(Err("UnknownMethod …".into())).unwrap_err();
+        assert!(err.contains("not enumerable"), "got: {err}");
+    }
+
+    #[test]
+    fn probe_available_env_presence_is_not_availability() {
+        // THE regression guard for the boot-race false-positive latch
+        // (LINUX.md §6.3 / PLATFORMS.md §9): $ATSPI_BUS_ADDRESS being set
+        // (or org.a11y.Bus owned on some reachable bus) must NOT alone make
+        // the probe pass. Pre-fix it did, and a lingered service's re-probe
+        // loop latched this backend onto a stray app-less registry hours
+        // before anyone logged in, never emitting a focus event again.
+        // Hermetic: point BOTH bus addresses at dead sockets so the desktop
+        // query cannot succeed on any host, then demand an Err that says
+        // why — never an Ok on bare presence.
+        // Run single-threaded (mutates process-global env; GOTCHA-12).
+        let snap_atspi = std::env::var("ATSPI_BUS_ADDRESS").ok();
+        let snap_session = std::env::var("DBUS_SESSION_BUS_ADDRESS").ok();
+        std::env::set_var("ATSPI_BUS_ADDRESS", "unix:path=/nonexistent/qmkonnect-test");
+        std::env::set_var("DBUS_SESSION_BUS_ADDRESS", "unix:path=/nonexistent/qmkonnect-test");
+        let r = probe_available(false);
+        std::env::set_var("ATSPI_BUS_ADDRESS", snap_atspi.unwrap_or_default());
+        match snap_session {
+            Some(v) => std::env::set_var("DBUS_SESSION_BUS_ADDRESS", v),
+            None => std::env::remove_var("DBUS_SESSION_BUS_ADDRESS"),
+        }
+        match r {
+            Ok(()) => panic!(
+                "probe passed on bare $ATSPI_BUS_ADDRESS presence — the \
+                 false-positive latch is back (PLATFORMS.md §9)"
+            ),
+            Err(m) => assert!(
+                m.contains("not enumerable"),
+                "expected the usefulness-stage 'not enumerable' error; got: {m}"
+            ),
+        }
     }
 
     #[test]

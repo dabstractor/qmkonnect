@@ -537,7 +537,10 @@ elsewhere. **Best-effort, not primary** (see limitations).
   NOT availability: a registry can be D-Bus-activated headless with no
   graphical session — its desktop introspects as an empty node and the call
   fails — and a re-probe loop that accepted it would latch a backend that can
-  never emit a focus event. Most distros ship a11y **off** until the user
+  never emit a focus event. Regression-tested hermetically in
+  `src/platforms/atspi.rs` (`desktop_verdict_*` + the
+  `probe_available_env_presence_is_not_availability` guard). Most distros
+  ship a11y **off** until the user
   enables "Assistive Technology / Screen Reader" in Settings — document that
   enabling a11y is required for this backend.
 - **Known limitations (why it's not the GNOME primary):**
