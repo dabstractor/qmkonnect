@@ -1974,8 +1974,16 @@ fn send_legacy_string(
     label: &str,
     verbose: bool,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
+    // Non-verbose send journal (one line per keyboard notification). This is
+    // the post-mortem lifeline for "app hotkeys stopped working": the string
+    // below is EXACTLY what the firmware WT()-matches on, so a stale/wrong
+    // title (e.g. a busy browser renderer lagging document.title) shows up
+    // here as data the host sent, while a correct string + firmware misbe-
+    // havior indicts the board side — two failure classes that are otherwise
+    // indistinguishable after the fact. Titles are already leaving the machine
+    // to the keyboard; the journal adds no new exposure beyond localhost.
+    let sanitized = message.replace('\x1D', "|");
     if verbose {
-        let sanitized = message.replace('\x1D', "|");
         println!(
             "[{}ms] Notified QMK ({}): {}",
             crate::core::now_ms(),
@@ -1990,6 +1998,20 @@ fn send_legacy_string(
     let _t0 = Instant::now();
     let res = notifier.notify(message.to_string());
     let _send_ms = _t0.elapsed().as_millis();
+    match &res {
+        Ok(_) => println!(
+            "sent→keyboard [{}] {} bytes: {}",
+            label,
+            message.len(),
+            sanitized
+        ),
+        Err(e) => eprintln!(
+            "send→keyboard [{}] FAILED ({} bytes: {}): {e}",
+            label,
+            message.len(),
+            sanitized
+        ),
+    }
     if verbose {
         eprintln!(
             "[{}ms] send took {}ms ({} bytes)",
